@@ -2,3 +2,4 @@
 .vscode/
 .cache/
 cookies*
+__pycache__/

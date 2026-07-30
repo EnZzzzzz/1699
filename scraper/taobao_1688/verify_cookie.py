@@ -8,7 +8,7 @@
 3. 响应内容是否包含首页特征（而非滑块验证页特征）
 
 用法:
-    python3 verify_1688.py
+    python3 verify_cookie.py
 
 注意（会话链路一致性）:
     Cookie 是从本机真实浏览器导出的，出口 IP 为本机 IP。
@@ -26,7 +26,8 @@ except ImportError:
     sys.exit("缺少 requests 库，请先: pip3 install requests")
 
 BASE_DIR = Path(__file__).resolve().parent
-COOKIE_JSON = BASE_DIR / ".cache" / "cookies_1688.json"
+ROOT_DIR = BASE_DIR.parents[1]  # 项目根目录
+COOKIE_JSON = ROOT_DIR / ".cache" / "cookies_1688.json"
 
 # 与导出 Cookie 时的浏览器保持一致
 HEADERS = {
