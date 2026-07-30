@@ -8,10 +8,18 @@
 
     crawl_runs  每次店铺采集任务的运行记录
     shops       店铺主表（域名唯一），status 跟踪联系方式抓取状态:
-                    pending    — 待抓取联系方式
-                    done       — 已抓取，且店铺填有联系方式（已入 contacts 表）
-                    no_contact — 已抓取，但店铺未填任何联系方式（不入 contacts）
-                    failed     — 抓取失败（可用 --retry-failed 重置后重试）
+                    pending     — 待抓取联系方式
+                    in_progress — 已被某个 worker 认领、抓取中
+                                  （进程中断会残留，启动时自动重置回 pending）
+                    done        — 已抓取，且店铺填有联系方式（已入 contacts 表）
+                    no_contact  — 已抓取，但店铺未填任何联系方式（不入 contacts）
+                    failed      — 抓取失败（可用 --retry-failed 重置后重试）
+
+并发说明（contact_fetcher.py --workers / shop_crawler.py --workers）:
+    - 每个 worker 线程各自持有 ShopDB 实例（sqlite3 连接不可跨线程共享）；
+    - 数据库开 WAL 模式 + busy timeout 30s，多读单写互不阻塞；
+    - 店铺认领走 claim_pending_shops()（BEGIN IMMEDIATE 事务内
+      SELECT+UPDATE 为原子操作），不会两个 worker 抓到同一家店。
     contacts    店铺联系方式（一店一条；字段全空的也保留记录，
                 用 shops.status 区分 done / no_contact）
     cookies     按出口 IP 隔离的 1688 Cookie（identity = 出口 IP，
@@ -121,8 +129,12 @@ def _now() -> str:
 class ShopDB:
     def __init__(self, db_path: Path | str = DB_PATH):
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(str(db_path))
+        # busy timeout 30s：多 worker 并发写时等待锁而不是直接报 database is locked
+        self.conn = sqlite3.connect(str(db_path), timeout=30)
         self.conn.row_factory = sqlite3.Row
+        # WAL：多读单写并发互不阻塞（对多 worker 抓取至关重要）
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA busy_timeout=30000")
         self.conn.executescript(SCHEMA)
         self._migrate()
         self.conn.executescript(INDEXES_AFTER_MIGRATE)
@@ -201,6 +213,35 @@ class ShopDB:
         return self.conn.execute(
             "SELECT * FROM shops WHERE status='pending'"
             " ORDER BY first_seen_at, id LIMIT ?", (limit,)).fetchall()
+
+    def claim_pending_shops(self, limit: int = 1) -> list[sqlite3.Row]:
+        """原子认领 pending 店铺：SELECT + 置为 in_progress 在同一事务内完成。
+
+        多 worker 并发调用安全（BEGIN IMMEDIATE 立即取写锁），
+        同一店铺只会被一个 worker 领到。返回认领到的店铺行（可能少于 limit）。
+        """
+        try:
+            self.conn.execute("BEGIN IMMEDIATE")
+            rows = self.conn.execute(
+                "SELECT * FROM shops WHERE status='pending'"
+                " ORDER BY first_seen_at, id LIMIT ?", (limit,)).fetchall()
+            if rows:
+                ids = [r["id"] for r in rows]
+                self.conn.execute(
+                    f"UPDATE shops SET status='in_progress'"
+                    f" WHERE id IN ({','.join('?' * len(ids))})", ids)
+            self.conn.commit()
+            return rows
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def reset_in_progress(self) -> int:
+        """把 in_progress 重置回 pending（进程中断残留的认领，启动时调用）。"""
+        cur = self.conn.execute(
+            "UPDATE shops SET status='pending' WHERE status='in_progress'")
+        self.conn.commit()
+        return cur.rowcount
 
     def count_pending(self) -> int:
         return self.conn.execute(
@@ -331,6 +372,7 @@ class ShopDB:
             "runs": q("SELECT COUNT(*) FROM crawl_runs"),
             "shops": q("SELECT COUNT(*) FROM shops"),
             "pending": q("SELECT COUNT(*) FROM shops WHERE status='pending'"),
+            "in_progress": q("SELECT COUNT(*) FROM shops WHERE status='in_progress'"),
             "done": q("SELECT COUNT(*) FROM shops WHERE status='done'"),
             "no_contact": q("SELECT COUNT(*) FROM shops WHERE status='no_contact'"),
             "failed": q("SELECT COUNT(*) FROM shops WHERE status='failed'"),

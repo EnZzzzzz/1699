@@ -86,8 +86,12 @@ def seed_cookies_from_json(db, identity: str,
 
 # ---------- 浏览器 ----------
 
-def _get_qingguo_proxy() -> dict:
+def _get_qingguo_proxy(server: str = None, pool_size: int = None) -> dict:
     """从 util/proxy_qingguo.py 取青果隧道代理，拆成 Playwright proxy dict。
+
+    server 为空时从通道池（ChannelPool）轮询取一个通道 —— 多 worker 并发时
+    每个浏览器实例各拿一个不同通道，即独占一个出口 IP；
+    pool_size 可覆盖 CONFIG["channels"] 的通道数（仅首次建池时生效）。
 
     make_proxies() 返回的是内嵌账密的 URL（http://user:pwd@host:port/），
     原样传给 Chromium 会报 ERR_NO_SUPPORTED_PROXIES；拆开传 server /
@@ -98,7 +102,8 @@ def _get_qingguo_proxy() -> dict:
 
     sys.path.insert(0, str(ROOT_DIR / "util"))
     import proxy_qingguo
-    url = proxy_qingguo.make_proxies()["https"]  # 优先复用缓存的隧道入口
+    pool = proxy_qingguo.get_pool(pool_size)
+    url = pool.make_proxies(server)["https"]
     p = urlparse(url)
     return {
         "server": f"{p.scheme}://{p.hostname}:{p.port}",
@@ -118,9 +123,11 @@ def get_exit_ip(proxies: dict = None, timeout: int = 10) -> str | None:
         return None
 
 
-def launch_browser(headless: bool = True, use_proxy: bool = False, db=None):
+def launch_browser(headless: bool = True, use_proxy: bool = False, db=None,
+                   proxy_server: str = None, pool_size: int = None):
     """
-    启动 CloakBrowser 并注入 1688 Cookie，返回 (browser, page, identity, req_proxies)。
+    启动 CloakBrowser 并注入 1688 Cookie，返回
+    (browser, page, identity, req_proxies, proxy_server)。
 
     Cookie 存取（SQLite，按出口 IP 隔离，保持会话链路一致）：
         - identity: 直连记 'direct'；代理模式记当前出口 IP
@@ -129,12 +136,21 @@ def launch_browser(headless: bool = True, use_proxy: bool = False, db=None):
         - use_proxy=True 时若该出口 IP 的 Cookie 是从本机种子导入的，
           会打印错配警告（建议 --proxy --headed 重新登录/过滑块）
 
+    多通道并发（proxy_server / pool_size）：
+        - proxy_server: 指定隧道入口（host:port），None 时从通道池轮询取一个；
+          每个 worker 各 acquire 一次即各独占一个通道（独立出口 IP，
+          Cookie 按各自出口 IP 隔离，互不串号）
+        - pool_size: 覆盖通道池大小（青果 CONFIG["channels"]），仅首次建池生效
+
     Returns:
-        (browser, page, identity, req_proxies)
+        (browser, page, identity, req_proxies, proxy_server)
         req_proxies — 用于 requests 查询出口 IP 的代理字典（代理模式），
-                      直连模式为 None。
+                      直连模式为 None；
+        proxy_server — 本实例实际使用的隧道入口，直连模式为 None。
 
     db 为 ShopDB 实例（必传，Cookie 存取都走它）。
+    多线程用法：每个线程独立调用本函数（cloakbrowser 每次 launch 都会
+    新建自己的 Playwright 实例，线程间互不共享）。
     """
     from cloakbrowser import launch
 
@@ -143,8 +159,9 @@ def launch_browser(headless: bool = True, use_proxy: bool = False, db=None):
     seeded_from_local = False
     req_proxies = None  # 供调用方逐次查询出口 IP 用
     if use_proxy:
-        proxy_conf = _get_qingguo_proxy()
+        proxy_conf = _get_qingguo_proxy(proxy_server, pool_size)
         host = proxy_conf["server"].split("://")[-1]
+        proxy_server = host
         # requests 查询出口 IP 需要内嵌账密的 URL 形式
         req_proxies_url = (f"http://{proxy_conf['username']}"
                            f":{proxy_conf['password']}@{host}")
@@ -186,7 +203,7 @@ def launch_browser(headless: bool = True, use_proxy: bool = False, db=None):
     )
     ctx = browser.new_context(user_agent=UA, locale="zh-CN")
     ctx.add_cookies(cookies)
-    return browser, ctx.new_page(), identity, req_proxies
+    return browser, ctx.new_page(), identity, req_proxies, proxy_server
 
 
 def save_cookies(db, identity: str, ctx) -> int:
