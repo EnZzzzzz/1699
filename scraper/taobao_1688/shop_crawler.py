@@ -42,7 +42,8 @@ import random
 import sys
 import time
 
-from common import HOMEPAGE, human_pause, launch_browser, save_cookies
+from common import (HOMEPAGE, get_exit_ip, human_pause, launch_browser,
+                    save_cookies)
 from database import ShopDB
 
 
@@ -113,6 +114,9 @@ def main() -> int:
                                              use_proxy=args.proxy, db=db)
     print(f"[1] CloakBrowser 已启动 (headless={not args.headed}"
           f"{', proxy=' + identity if args.proxy else ''})")
+    # 打印当前出口 IP（代理模式下 identity 即出口 IP，直连模式实时查询）
+    cur_ip = identity if args.proxy else (get_exit_ip() or "查询失败")
+    print(f"    [ip] 当前出口 IP: {cur_ip}")
 
     try:
         # ---- 首页：取类目 ----
