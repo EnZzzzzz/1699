@@ -38,8 +38,16 @@
 
 多轮模式说明:
     每个 worker 从共享类目队列中取未采过的类目，轮间随机延迟（默认 15~45 秒）
-    控制频率；进度以库中店铺总数为准，Ctrl+C 中断后重新运行会接着补充；
-    全局连续 5 轮无新增（疑似被风控）自动停止。
+    控制频率；进度以库中店铺总数为准，Ctrl+C 中断后重新运行会接着补充。
+
+疑似风控处置（连续空轮 = 类目页打不开或未提取到店铺）:
+    - 连续 RISK_STREAK_THRESHOLD 轮为空即判定疑似风控，不再原地反复请求；
+    - 代理模式：先换到通道池内其他通道（不同出口 IP）重试，全局最多换
+      MAX_IP_SWITCHES 次，每次换 IP 后只给一轮验证机会（再空即回到阈值）；
+    - 换 IP 后仍为空 / 换 IP 次数用尽 / 直连模式无法换 IP：
+      主动终止整个采集任务，避免持续请求加重风控；
+    - 提取到店铺但全部已入库（无新增）不算风控，连续 STALE_STREAK_LIMIT
+      轮无新增才停止（类目枯竭）。
 """
 
 from __future__ import annotations
@@ -57,6 +65,11 @@ from database import ShopDB
 
 BASE_DIR = Path(__file__).resolve().parent
 ROOT_DIR = BASE_DIR.parents[1]  # 项目根目录
+
+# ---- 疑似风控处置参数 ----
+RISK_STREAK_THRESHOLD = 2  # 连续空轮达到该值即判定疑似风控，触发换 IP / 终止
+MAX_IP_SWITCHES = 2        # 代理模式下全局最多换 IP 重试次数（直连模式恒为 0）
+STALE_STREAK_LIMIT = 5     # 有提取但无新增的连续轮数上限（类目枯竭，非风控）
 
 
 def extract_categories(page) -> list[dict]:
@@ -101,14 +114,92 @@ def extract_shops(page) -> list[dict]:
     )
 
 
-def worker(worker_id: int, args, proxy_server: str | None, categories: list,
-           state: dict, lock: threading.Lock, stop: threading.Event):
-    """单个采集 worker：独立浏览器 + 独立 DB 连接，从共享类目队列取类目采集。"""
+def worker(worker_id: int, args, proxy_server: str | None, pool,
+           categories: list, state: dict, lock: threading.Lock,
+           stop: threading.Event):
+    """单个采集 worker：独立浏览器 + 独立 DB 连接，从共享类目队列取类目采集。
+
+    疑似风控（连续空轮）时先换 IP（代理模式，换池内其他通道 = 不同出口 IP），
+    换不了或换了仍为空则主动终止，绝不在同一出口上反复请求。
+    """
     tag = f"[w{worker_id}]"
     db = ShopDB()
     browser = None
+    page = None
     identity = "direct"
     ctx = None
+    req_proxies = None
+
+    def close_browser():
+        """把当前 identity 的 Cookie 写回数据库并关闭浏览器（幂等）。"""
+        nonlocal browser, ctx
+        if ctx is not None:
+            try:
+                save_cookies(db, identity, ctx)
+            except Exception as e:
+                print(f"{tag}   [!] Cookie 回写失败: {e}")
+        if browser is not None:
+            try:
+                browser.close()
+            except Exception:
+                pass
+        browser, ctx = None, None
+
+    def try_switch_ip() -> bool:
+        """疑似风控时更换出口 IP：关闭当前浏览器，换通道池内其他通道重启。
+
+        全局换 IP 次数受 state['max_ip_switches'] 限制（直连模式为 0，
+        直接返回 False）。成功换好并冷却完毕返回 True。
+        """
+        nonlocal browser, page, identity, ctx, req_proxies, proxy_server
+        if not args.proxy or pool is None:
+            return False
+        with lock:
+            if state["ip_switches"] >= state["max_ip_switches"]:
+                return False
+            state["ip_switches"] += 1
+            n, budget = state["ip_switches"], state["max_ip_switches"]
+        candidates = [s for s in pool.servers() if s != proxy_server]
+        if not candidates:
+            print(f"{tag}   [换IP] 通道池内没有其他可用通道，放弃切换")
+            return False
+        new_server = random.choice(candidates)
+        print(f"{tag}   [换IP] 第 {n}/{budget} 次更换出口: "
+              f"{proxy_server} -> {new_server}")
+        try:
+            close_browser()
+            browser, page, identity, req_proxies, proxy_server = launch_browser(
+                headless=not args.headed, use_proxy=True, db=db,
+                proxy_server=new_server, pool_size=args.channels)
+            ctx = page.context
+        except Exception as e:
+            print(f"{tag}   [换IP] 新出口浏览器启动失败: {e}")
+            return False
+        new_ip = (get_exit_ip(req_proxies) or "查询失败") if req_proxies else "?"
+        print(f"{tag}   [换IP] 新出口 IP: {new_ip} (identity={identity})")
+        t = random.uniform(10, 20)
+        print(f"{tag}   [换IP] 冷却 {t:.0f}s 后继续")
+        stop.wait(t)  # 可被 Ctrl+C / 终止信号提前唤醒
+        return not stop.is_set()
+
+    def on_suspected_block(reason: str):
+        """疑似风控统一处置：达到阈值先换 IP，换不了/换了仍空则主动终止。"""
+        with lock:
+            state["empty_streak"] += 1
+            streak = state["empty_streak"]
+        print(f"{tag}   [!] {reason}（全局连续 {streak} 轮），可能被风控")
+        if stop.is_set() or streak < RISK_STREAK_THRESHOLD:
+            return
+        if try_switch_ip():
+            # 换 IP 后只给一轮验证机会：再空一轮即回到阈值，触发再换 / 终止
+            with lock:
+                state["empty_streak"] = RISK_STREAK_THRESHOLD - 1
+            return
+        why = ("直连模式无法更换出口 IP" if not args.proxy
+               else "换 IP 次数已用尽或切换失败")
+        print(f"{tag}   [主动终止] {why}，停止采集，避免反复请求加重风控")
+        stop.set()
+
     try:
         browser, page, identity, req_proxies, _ = launch_browser(
             headless=not args.headed, use_proxy=args.proxy, db=db,
@@ -135,11 +226,7 @@ def worker(worker_id: int, args, proxy_server: str | None, categories: list,
                 page.goto(cat["url"], wait_until="domcontentloaded",
                           timeout=60000, referer=HOMEPAGE)
             except Exception as e:
-                print(f"{tag}   [X] 类目页打开失败: {e}，跳过")
-                with lock:
-                    state["empty_streak"] += 1
-                    if state["empty_streak"] >= 5:
-                        stop.set()
+                on_suspected_block(f"类目页打开失败: {e}")
                 continue
             human_pause(4, 8)
 
@@ -151,12 +238,7 @@ def worker(worker_id: int, args, proxy_server: str | None, categories: list,
             shops = extract_shops(page)
             print(f"{tag}   本页提取到 {len(shops)} 个店铺")
             if not shops:
-                with lock:
-                    state["empty_streak"] += 1
-                    streak = state["empty_streak"]
-                    if streak >= 5:
-                        stop.set()
-                print(f"{tag}   [!] 未提取到店铺（全局连续 {streak} 轮），可能被风控")
+                on_suspected_block("未提取到店铺")
                 continue
 
             run_id = db.start_run(cat["name"], cat["keyword"])
@@ -167,13 +249,18 @@ def worker(worker_id: int, args, proxy_server: str | None, categories: list,
             with lock:
                 state["total"] = db.stats()["shops"]
                 if inserted == 0:
+                    # 提取正常但无新增：类目枯竭，不算风控，不触发换 IP
                     state["empty_streak"] += 1
-                    if state["empty_streak"] >= 5:
+                    stale = state["empty_streak"]
+                    if stale >= STALE_STREAK_LIMIT:
                         stop.set()
                 else:
                     state["empty_streak"] = 0
+                    stale = 0
             print(f"{tag}   入库: 新增 {inserted}，库中累计 "
                   f"{state['total']}/{state['target']}")
+            if inserted == 0:
+                print(f"{tag}   [~] 本页店铺全部已入库（连续无新增 {stale} 轮）")
 
             # 轮间控频：长随机延迟，模拟正常浏览节奏
             if state["total"] < state["target"] and not stop.is_set():
@@ -184,16 +271,7 @@ def worker(worker_id: int, args, proxy_server: str | None, categories: list,
         print(f"{tag} [X] worker 异常退出: {e}")
     finally:
         # 退出前把浏览器里的最新 Cookie（含新 x5sec）写回该出口 IP 名下
-        if ctx is not None:
-            try:
-                save_cookies(db, identity, ctx)
-            except Exception as e:
-                print(f"{tag}   [!] Cookie 回写失败: {e}")
-        if browser is not None:
-            try:
-                browser.close()
-            except Exception:
-                pass
+        close_browser()
         db.close()
 
 
@@ -233,6 +311,7 @@ def main() -> int:
                   f"部分 worker 将共用通道（共享出口 IP）")
         proxy_servers = [pool.acquire() for _ in range(workers)]
     else:
+        pool = None
         workers = 1 if args.category else (args.workers or 1)
         proxy_servers = [None] * workers
         if workers > 1:
@@ -288,12 +367,14 @@ def main() -> int:
         "target": target,
         "rounds": 0,
         "empty_streak": 0,  # 全局连续无新增轮数，防死循环
+        "ip_switches": 0,   # 全局已换 IP 次数（疑似风控处置）
+        "max_ip_switches": MAX_IP_SWITCHES if args.proxy else 0,
     }
     lock = threading.Lock()
     stop = threading.Event()
     threads = [
         threading.Thread(target=worker,
-                         args=(i, args, proxy_servers[i], categories,
+                         args=(i, args, proxy_servers[i], pool, categories,
                                state, lock, stop),
                          name=f"crawler-{i}", daemon=True)
         for i in range(workers)
