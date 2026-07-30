@@ -270,9 +270,13 @@ def main():
         print("请先编辑 proxy_qingguo.py 顶部的 CONFIG，填入 Authkey / Authpwd")
         sys.exit(1)
 
-    # 1. 提取隧道入口
-    servers = get_proxy(use_cache=False)
-    print(f"[get_proxy] 提取到隧道入口: {servers}")
+    # 1. 提取隧道入口（优先复用 .cache 中未过期的缓存）
+    servers = get_proxy()
+    cache = _load_tunnel_cache()
+    if cache:
+        print(f"[get_proxy] 隧道入口: {servers}（过期时间: {cache['expire_at_str']}）")
+    else:
+        print(f"[get_proxy] 提取到隧道入口: {servers}")
 
     # 2. 查询在用IP
     try:
@@ -290,3 +294,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    

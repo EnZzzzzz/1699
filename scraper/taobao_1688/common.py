@@ -4,19 +4,36 @@
 
 被 shop_crawler.py（店铺采集）和 contact_fetcher.py（联系方式抓取）共用:
     - Cookie / License 加载
-    - CloakBrowser 启动（会话链路一致: 直连本机 IP + 原 UA）
+    - CloakBrowser 启动（会话链路一致: Cookie / UA / 出口 IP 不错配）
+    - 青果住宅代理接入（可选，util/proxy_qingguo.py）
     - 联系方式页解析（联系人/性别/电话/手机/传真/地址）
+
+代理模式会话链路说明（按 scraper/README.md 经验）:
+    - 直连模式: Cookie 是本机浏览器种下的，出口 IP = 本机 IP，链路一致
+    - 代理模式: 出口 IP 变成青果住宅 IP，本机种下的 Cookie 与 IP 错配，
+      容易触发 x5sec 风控。因此 Cookie 全部存进 SQLite（1688.db 的
+      cookies 表），按出口 IP（identity）隔离存取，并记录每个 Cookie
+      的过期时间 expires —— 哪个 IP 的 Cookie、什么时候过期一目了然。
+    - 首次 --proxy --headed 运行，在代理出口下登录/过滑块，脚本退出时
+      自动把浏览器最新 Cookie（含新 x5sec）写回该 IP 名下的记录，
+      之后同一出口 IP 都复用它，保持 Cookie / x5sec / UA / 出口 IP 一致。
+      .cache/cookies_1688.json 仅作为首次启动的种子导入一次。
+      （青果隧道出口 IP 每 30 分钟自动轮换一次，属产品特性；
+       换 IP 后库里没有该 IP 的 Cookie，需重新过一次验证。）
 """
+
+from __future__ import annotations  # 兼容 Python < 3.10 的 X | None 注解
 
 import json
 import random
 import re
+import sys
 import time
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
 ROOT_DIR = BASE_DIR.parents[1]  # 项目根目录
-COOKIE_JSON = ROOT_DIR / ".cache" / "cookies_1688.json"
+COOKIE_JSON = ROOT_DIR / ".cache" / "cookies_1688.json"  # 首次启动的种子
 CONFIG_JSON = ROOT_DIR / ".cache" / "config.json"
 
 HOMEPAGE = "https://www.1688.com/"
@@ -36,9 +53,13 @@ def load_license_key() -> str | None:
     return None
 
 
-def load_cookies_pw() -> list[dict]:
-    """把 CDP 导出的 Cookie 转成 Playwright 格式（仅 1688 域）。"""
-    raw = json.loads(COOKIE_JSON.read_text(encoding="utf-8"))
+def load_cookies_pw(cookie_path: Path = COOKIE_JSON) -> list[dict]:
+    """把 CDP 导出的 Cookie 转成 Playwright 格式（仅 1688 域）。
+
+    仅用于把 .cache/cookies_1688.json 作为种子导入 SQLite；
+    日常运行以数据库 cookies 表为准。
+    """
+    raw = json.loads(cookie_path.read_text(encoding="utf-8"))
     cookies = []
     for c in raw:
         domain = c.get("domain", "")
@@ -55,11 +76,99 @@ def load_cookies_pw() -> list[dict]:
     return cookies
 
 
+def seed_cookies_from_json(db, identity: str,
+                           cookie_path: Path = COOKIE_JSON) -> int:
+    """把 CDP 导出的 JSON Cookie 作为种子导入数据库（保留过期时间）。"""
+    raw = json.loads(cookie_path.read_text(encoding="utf-8"))
+    seeds = [c for c in raw if "1688.com" in c.get("domain", "")]
+    return db.save_cookies(identity, seeds)
+
+
 # ---------- 浏览器 ----------
 
-def launch_browser(headless: bool = True):
-    """启动 CloakBrowser 并注入 1688 Cookie，返回 (browser, page)。"""
+def _get_qingguo_proxy() -> dict:
+    """从 util/proxy_qingguo.py 取青果隧道代理，拆成 Playwright proxy dict。
+
+    make_proxies() 返回的是内嵌账密的 URL（http://user:pwd@host:port/），
+    原样传给 Chromium 会报 ERR_NO_SUPPORTED_PROXIES；拆开传 server /
+    username / password，由 cloakbrowser 按二进制能力选择内联认证或
+    Playwright CDP 认证。
+    """
+    from urllib.parse import urlparse
+
+    sys.path.insert(0, str(ROOT_DIR / "util"))
+    import proxy_qingguo
+    url = proxy_qingguo.make_proxies()["https"]  # 优先复用缓存的隧道入口
+    p = urlparse(url)
+    return {
+        "server": f"{p.scheme}://{p.hostname}:{p.port}",
+        "username": p.username,
+        "password": p.password,
+    }
+
+
+def get_exit_ip(proxies: dict = None, timeout: int = 10) -> str | None:
+    """查询当前出口 IP（代理模式下经代理查询），失败返回 None。"""
+    import requests
+    try:
+        r = requests.get("https://ipinfo.io/json", proxies=proxies,
+                         timeout=timeout)
+        return r.json().get("ip")
+    except Exception:
+        return None
+
+
+def launch_browser(headless: bool = True, use_proxy: bool = False, db=None):
+    """
+    启动 CloakBrowser 并注入 1688 Cookie，返回 (browser, page, identity)。
+
+    Cookie 存取（SQLite，按出口 IP 隔离，保持会话链路一致）：
+        - identity: 直连记 'direct'；代理模式记当前出口 IP
+        - 先从 1688.db 的 cookies 表取该 identity 下未过期的 Cookie；
+          库里没有时用 .cache/cookies_1688.json 作种子导入一次
+        - use_proxy=True 时若该出口 IP 的 Cookie 是从本机种子导入的，
+          会打印错配警告（建议 --proxy --headed 重新登录/过滑块）
+
+    db 为 ShopDB 实例（必传，Cookie 存取都走它）。
+    """
     from cloakbrowser import launch
+
+    proxy_conf = None
+    identity = "direct"
+    seeded_from_local = False
+    if use_proxy:
+        proxy_conf = _get_qingguo_proxy()
+        host = proxy_conf["server"].split("://")[-1]
+        # requests 查询出口 IP 需要内嵌账密的 URL 形式
+        req_proxies_url = (f"http://{proxy_conf['username']}"
+                           f":{proxy_conf['password']}@{host}")
+        exit_ip = get_exit_ip({"http": req_proxies_url,
+                               "https": req_proxies_url})
+        identity = exit_ip or f"qingguo:{host}"
+        print(f"    [proxy] 青果住宅代理: {host}，出口 IP: {exit_ip or '查询失败'}")
+
+    # ---- Cookie：库优先，JSON 种子兜底 ----
+    cookies = db.load_cookies(identity) if db else []
+    if not cookies:
+        if not COOKIE_JSON.exists():
+            sys.exit(f"[X] 数据库中没有 identity={identity} 的 Cookie，"
+                     f"且找不到种子文件 {COOKIE_JSON}，请先导出 Cookie")
+        n = seed_cookies_from_json(db, identity, COOKIE_JSON)
+        seeded_from_local = True
+        cookies = db.load_cookies(identity)
+        print(f"    [cookie] 已从 {COOKIE_JSON.name} 导入 {n} 个 Cookie "
+              f"到 identity={identity}")
+    info = db.cookie_info(identity)
+    print(f"    [cookie] identity={identity}，可用 {len(cookies)} 个"
+          f"（库内共 {info['total']}，已过期剔除 {info['expired']}，"
+          f"最近过期: {info['earliest_expiry'] or '未知'}）")
+    if use_proxy and seeded_from_local:
+        print(f"    [!] 该出口 IP 的 Cookie 来自本机种子 —— "
+              f"Cookie 与代理出口 IP 错配，可能触发 x5sec 风控；"
+              f"建议跑 --proxy --headed 在代理下登录/过滑块，"
+              f"退出时会自动把新 Cookie 写回该 IP 名下")
+    if not cookies:
+        sys.exit(f"[X] identity={identity} 下没有可用 Cookie（可能全部过期）")
 
     browser = launch(
         headless=headless,
@@ -67,10 +176,25 @@ def launch_browser(headless: bool = True):
         humanize=True,
         locale="zh-CN",
         timezone="Asia/Shanghai",
+        **({"proxy": proxy_conf, "geoip": True} if proxy_conf else {}),
     )
     ctx = browser.new_context(user_agent=UA, locale="zh-CN")
-    ctx.add_cookies(load_cookies_pw())
-    return browser, ctx.new_page()
+    ctx.add_cookies(cookies)
+    return browser, ctx.new_page(), identity
+
+
+def save_cookies(db, identity: str, ctx) -> int:
+    """把浏览器上下文中的 1688 Cookie 写回数据库（按 identity 隔离）。
+
+    每次运行结束调用：新下发的 x5sec 等字段随之持久化，
+    保证下次启动时 Cookie 与同一出口 IP 链路一致。
+    """
+    cookies = [c for c in ctx.cookies() if "1688.com" in c.get("domain", "")]
+    if not cookies:
+        return 0
+    n = db.save_cookies(identity, cookies)
+    print(f"    [cookie] 已把 {n} 个 Cookie 写回数据库 (identity={identity})")
+    return n
 
 
 def human_pause(lo: float = 2.0, hi: float = 5.0):

@@ -12,7 +12,12 @@
                     done       — 已抓取，且店铺填有联系方式（已入 contacts 表）
                     no_contact — 已抓取，但店铺未填任何联系方式（不入 contacts）
                     failed     — 抓取失败（可用 --retry-failed 重置后重试）
-    contacts    店铺联系方式（一店一条，仅记录有实际内容的店铺）
+    contacts    店铺联系方式（一店一条；字段全空的也保留记录，
+                用 shops.status 区分 done / no_contact）
+    cookies     按出口 IP 隔离的 1688 Cookie（identity = 出口 IP，
+                直连记 'direct'），记录每个 Cookie 的过期时间 expires；
+                会话链路一致性要求 Cookie 与出口 IP 不错配，
+                因此代理模式与直连模式的 Cookie 分开存取
 
 两个脚本分工:
     shop_crawler.py    生产者：类目 -> 店铺入库（status=pending）
@@ -28,8 +33,14 @@
     db.save_contact(domain, contact_dict, source_url=..., raw_text=...)
     db.mark_shop_failed(domain)
     db.finish_run(run_id, shops_found=35)
+
+    # Cookie（按出口 IP 隔离）
+    db.save_cookies(identity, playwright_cookies)
+    cookies = db.load_cookies(identity)   # 自动剔除已过期的
     db.close()
 """
+
+from __future__ import annotations  # 兼容 Python < 3.10 的 X | None 注解
 
 import sqlite3
 import time
@@ -79,6 +90,22 @@ CREATE TABLE IF NOT EXISTS contacts (
 
 CREATE INDEX IF NOT EXISTS idx_shops_run ON shops(run_id);
 CREATE INDEX IF NOT EXISTS idx_contacts_shop ON contacts(shop_id);
+
+CREATE TABLE IF NOT EXISTS cookies (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    identity   TEXT NOT NULL,               -- 出口 IP；直连记 'direct'
+    name       TEXT NOT NULL,
+    value      TEXT NOT NULL,
+    domain     TEXT NOT NULL,
+    path       TEXT DEFAULT '/',
+    secure     INTEGER DEFAULT 0,
+    http_only  INTEGER DEFAULT 0,
+    expires    INTEGER,                     -- Unix 时间戳；NULL/<=0 = 会话/未知
+    updated_at TEXT NOT NULL,
+    UNIQUE(identity, domain, path, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cookies_identity ON cookies(identity);
 """
 
 # 依赖迁移后列（status）的索引，单独在 _migrate 之后创建
@@ -114,17 +141,13 @@ class ShopDB:
         self.conn.execute(
             """UPDATE shops SET status='done'
                WHERE status='pending' AND id IN (SELECT shop_id FROM contacts)""")
-        # contacts 中字段全空的记录清理掉，对应店铺 -> no_contact
+        # 旧库中字段全空的 contacts 记录，对应店铺 -> no_contact（记录保留备查）
         self.conn.execute(
             """UPDATE shops SET status='no_contact'
                WHERE status='done' AND id IN (
                    SELECT shop_id FROM contacts
                    WHERE contact_person IS NULL AND phone IS NULL
                      AND mobile IS NULL AND fax IS NULL AND address IS NULL)""")
-        self.conn.execute(
-            """DELETE FROM contacts
-               WHERE contact_person IS NULL AND phone IS NULL
-                 AND mobile IS NULL AND fax IS NULL AND address IS NULL""")
 
     # ---------- crawl_runs ----------
     def start_run(self, category_name: str = None,
@@ -202,11 +225,16 @@ class ShopDB:
             (domain,))
         self.conn.commit()
 
-    def mark_shop_no_contact(self, domain: str):
-        """店铺已抓取但未填任何联系方式，标记 no_contact（不入 contacts 表）。"""
-        self.conn.execute(
-            "UPDATE shops SET status='no_contact', attempts=attempts+1"
-            " WHERE domain=?", (domain,))
+    def mark_shop_no_contact(self, domain: str, bump_attempts: bool = True):
+        """店铺已抓取但未填任何联系方式，标记 no_contact。
+
+        空联系方式现在也会入 contacts 表备查；此时 save_contact 已计过一次
+        attempts，调用方应传 bump_attempts=False 避免重复计数。
+        """
+        sql = "UPDATE shops SET status='no_contact'"
+        if bump_attempts:
+            sql += ", attempts=attempts+1"
+        self.conn.execute(sql + " WHERE domain=?", (domain,))
         self.conn.commit()
 
     # ---------- contacts ----------
@@ -240,6 +268,61 @@ class ShopDB:
             "UPDATE shops SET status='done', attempts=attempts+1 WHERE id=?",
             (shop_id,))
         self.conn.commit()
+
+    # ---------- cookies ----------
+    def save_cookies(self, identity: str, cookies: list[dict]) -> int:
+        """保存某出口 IP 下的 Cookie（按 identity+domain+path+name UPSERT 覆盖）。"""
+        now = _now()
+        for c in cookies:
+            exp = c.get("expires") or c.get("expirationDate")
+            try:
+                exp = int(float(exp)) if exp and float(exp) > 0 else None
+            except (TypeError, ValueError):
+                exp = None
+            self.conn.execute(
+                """INSERT INTO cookies (identity, name, value, domain, path,
+                                        secure, http_only, expires, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(identity, domain, path, name) DO UPDATE SET
+                       value=excluded.value, secure=excluded.secure,
+                       http_only=excluded.http_only, expires=excluded.expires,
+                       updated_at=excluded.updated_at""",
+                (identity, c["name"], c.get("value", ""), c.get("domain", ""),
+                 c.get("path") or "/", int(bool(c.get("secure"))),
+                 int(bool(c.get("httpOnly", c.get("http_only")))), exp, now))
+        self.conn.commit()
+        return len(cookies)
+
+    def load_cookies(self, identity: str) -> list[dict]:
+        """加载某出口 IP 下未过期的 Cookie（Playwright 格式，自动剔除已过期）。"""
+        now = int(time.time())
+        rows = self.conn.execute(
+            """SELECT * FROM cookies WHERE identity=?
+               AND (expires IS NULL OR expires <= 0 OR expires > ?)""",
+            (identity, now)).fetchall()
+        out = []
+        for r in rows:
+            c = {"name": r["name"], "value": r["value"], "domain": r["domain"],
+                 "path": r["path"] or "/", "secure": bool(r["secure"]),
+                 "httpOnly": bool(r["http_only"])}
+            if r["expires"]:
+                c["expires"] = r["expires"]
+            out.append(c)
+        return out
+
+    def cookie_info(self, identity: str) -> dict:
+        """某出口 IP 下 Cookie 的数量/已过期数/最近过期时间（用于日志）。"""
+        now = int(time.time())
+        q = lambda sql, *a: self.conn.execute(sql, (identity, *a)).fetchone()[0]
+        total = q("SELECT COUNT(*) FROM cookies WHERE identity=?")
+        expired = q("SELECT COUNT(*) FROM cookies WHERE identity=?"
+                    " AND expires IS NOT NULL AND expires > 0 AND expires <= ?",
+                    now)
+        earliest_ts = q("SELECT MIN(expires) FROM cookies WHERE identity=?"
+                        " AND expires IS NOT NULL AND expires > ?", now)
+        earliest = (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(earliest_ts))
+                    if earliest_ts else None)
+        return {"total": total, "expired": expired, "earliest_expiry": earliest}
 
     # ---------- 查询 ----------
     def stats(self) -> dict:

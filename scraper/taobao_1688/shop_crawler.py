@@ -13,7 +13,10 @@
 联系方式抓取由 contact_fetcher.py 完成（消费者，可断点续爬）。
 
 会话链路一致性（按经验执行）:
-    - 直连（不走快代理）：Cookie 是本机浏览器种下的，出口 IP 保持一致
+    - 直连（不走代理）：Cookie 是本机浏览器种下的，出口 IP 保持一致
+    - 代理（--proxy）：走青果住宅代理；Cookie 存 SQLite（1688.db cookies 表），
+      按出口 IP 隔离并记录过期时间，首次 --proxy --headed 登录/过滑块后
+      退出时自动写回该 IP 名下，保持 Cookie / x5sec / UA / 出口 IP 一致
     - UA 与导出 Cookie 的浏览器一致（Chrome 150 / macOS）
     - 单浏览器、低频率、页面间随机延迟
 
@@ -23,6 +26,8 @@
     python3 shop_crawler.py -t 1000 --delay-min 30 --delay-max 90  # 更慢的控频
     python3 shop_crawler.py --category 女装  # 指定类目（只采 1 轮）
     python3 shop_crawler.py --headed         # 有头模式（更不易被检测）
+    python3 shop_crawler.py --proxy          # 走青果住宅代理
+    python3 shop_crawler.py --proxy --headed # 首次代理运行：登录/过滑块并保存代理 Cookie
 
 多轮模式说明:
     每轮随机选一个未采过的类目，轮间随机延迟（默认 15~45 秒）控制频率；
@@ -30,12 +35,14 @@
     连续 5 轮无新增（疑似被风控）自动停止。
 """
 
+from __future__ import annotations
+
 import argparse
 import random
 import sys
 import time
 
-from common import (COOKIE_JSON, HOMEPAGE, human_pause, launch_browser)
+from common import HOMEPAGE, human_pause, launch_browser, save_cookies
 from database import ShopDB
 
 
@@ -94,14 +101,18 @@ def main() -> int:
                     help="多轮模式轮间最大延迟秒数（默认 45）")
     ap.add_argument("--headed", action="store_true",
                     help="有头模式运行（部分站点对 headless 更敏感）")
+    ap.add_argument("--proxy", action="store_true",
+                    help="走 util/proxy_qingguo.py 的青果住宅代理；"
+                         "Cookie 按出口 IP 存 SQLite（记录过期时间），"
+                         "该 IP 无记录时从本机 Cookie 种子导入并警告错配风险，"
+                         "退出时自动把最新 Cookie 写回该 IP 名下")
     args = ap.parse_args()
 
-    if not COOKIE_JSON.exists():
-        sys.exit(f"找不到 Cookie 文件: {COOKIE_JSON}，请先导出 Cookie")
-
     db = ShopDB()
-    browser, page = launch_browser(headless=not args.headed)
-    print(f"[1] CloakBrowser 已启动 (headless={not args.headed})")
+    browser, page, identity = launch_browser(headless=not args.headed,
+                                             use_proxy=args.proxy, db=db)
+    print(f"[1] CloakBrowser 已启动 (headless={not args.headed}"
+          f"{', proxy=' + identity if args.proxy else ''})")
 
     try:
         # ---- 首页：取类目 ----
@@ -197,6 +208,11 @@ def main() -> int:
         print(f"    运行 contact_fetcher.py 抓取联系方式")
         return 0
     finally:
+        # 退出前把浏览器里的最新 Cookie（含新 x5sec）写回该出口 IP 名下
+        try:
+            save_cookies(db, identity, page.context)
+        except Exception as e:
+            print(f"    [!] Cookie 回写失败: {e}")
         browser.close()
         db.close()
 
