@@ -114,6 +114,17 @@ class ShopDB:
         self.conn.execute(
             """UPDATE shops SET status='done'
                WHERE status='pending' AND id IN (SELECT shop_id FROM contacts)""")
+        # contacts 中字段全空的记录清理掉，对应店铺 -> no_contact
+        self.conn.execute(
+            """UPDATE shops SET status='no_contact'
+               WHERE status='done' AND id IN (
+                   SELECT shop_id FROM contacts
+                   WHERE contact_person IS NULL AND phone IS NULL
+                     AND mobile IS NULL AND fax IS NULL AND address IS NULL)""")
+        self.conn.execute(
+            """DELETE FROM contacts
+               WHERE contact_person IS NULL AND phone IS NULL
+                 AND mobile IS NULL AND fax IS NULL AND address IS NULL""")
 
     # ---------- crawl_runs ----------
     def start_run(self, category_name: str = None,
@@ -191,6 +202,13 @@ class ShopDB:
             (domain,))
         self.conn.commit()
 
+    def mark_shop_no_contact(self, domain: str):
+        """店铺已抓取但未填任何联系方式，标记 no_contact（不入 contacts 表）。"""
+        self.conn.execute(
+            "UPDATE shops SET status='no_contact', attempts=attempts+1"
+            " WHERE domain=?", (domain,))
+        self.conn.commit()
+
     # ---------- contacts ----------
     def save_contact(self, domain: str, contact: dict,
                      source_url: str = None, raw_text: str = None):
@@ -231,6 +249,7 @@ class ShopDB:
             "shops": q("SELECT COUNT(*) FROM shops"),
             "pending": q("SELECT COUNT(*) FROM shops WHERE status='pending'"),
             "done": q("SELECT COUNT(*) FROM shops WHERE status='done'"),
+            "no_contact": q("SELECT COUNT(*) FROM shops WHERE status='no_contact'"),
             "failed": q("SELECT COUNT(*) FROM shops WHERE status='failed'"),
             "with_mobile": q("SELECT COUNT(*) FROM contacts"
                              " WHERE mobile IS NOT NULL AND mobile != ''"),

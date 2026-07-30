@@ -4,8 +4,12 @@
 1688 联系方式抓取脚本（消费者）
 
 从 .cache/1688.db 中取 status='pending' 的店铺，逐个进入其
-「联系方式」页解析 联系人/性别(先生女士)/电话/手机/传真/地址，
-写入 contacts 表并把店铺标记为 done（失败标记 failed）。
+「联系方式」页解析 联系人/性别(先生女士)/电话/手机/传真/地址。
+
+结果处理:
+    - 有任何实际字段 → 写入 contacts 表，店铺标记 done
+    - 字段全部为空（店铺没填）→ 不入 contacts，店铺标记 no_contact
+    - 抓取失败 → 店铺标记 failed（--retry-failed 可重置）
 
 断点续爬:
     进度全部记录在 shops.status，随时 Ctrl+C 或重启脚本，
@@ -55,7 +59,7 @@ def main() -> int:
     browser, page = launch_browser(headless=not args.headed)
     print(f"[2] CloakBrowser 已启动 (headless={not args.headed})")
 
-    ok = failed = 0
+    ok = failed = empty = 0
     try:
         for i, shop in enumerate(pending, 1):
             print(f"[{i}/{len(pending)}] {shop['name'] or shop['domain']}")
@@ -63,6 +67,12 @@ def main() -> int:
             if info is None:
                 db.mark_shop_failed(shop["domain"])
                 failed += 1
+            elif not any(info[k] for k in
+                         ("contact_person", "phone", "mobile", "fax", "address")):
+                # 店铺未填任何联系方式：不入 contacts，标记 no_contact
+                db.mark_shop_no_contact(shop["domain"])
+                empty += 1
+                print(f"    - 店铺未填写联系方式，标记 no_contact")
             else:
                 raw = info.pop("_raw", None)
                 src = info.pop("_source_url", None)
@@ -78,7 +88,7 @@ def main() -> int:
     finally:
         browser.close()
 
-    print(f"[OK] 本批完成: 成功 {ok}, 失败 {failed}")
+    print(f"[OK] 本批完成: 有联系方式 {ok}, 无联系方式 {empty}, 失败 {failed}")
     print(f"    数据库统计: {db.stats()}")
     db.close()
     return 0
