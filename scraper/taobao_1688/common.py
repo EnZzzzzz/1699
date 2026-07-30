@@ -53,6 +53,44 @@ def load_license_key() -> str | None:
     return None
 
 
+def wait_for_license_seat(tag: str = "", timeout: float = 600.0,
+                          interval: float = 20.0) -> bool:
+    """启动浏览器前检查 CloakBrowser 会话席位（free 套餐仅 1 个）。
+
+    背景：会话席位由 Pro 二进制向服务端租约。上次运行异常退出
+    （Ctrl+C / 崩溃）时租约不会立即释放，残留期间新启动的二进制
+    会在 launch 成功后自行退出，表现为不透明的 TargetClosedError。
+    这里启动前主动轮询，等残留租约过期释放后再放行。
+
+    返回 True 表示可以启动；False 表示超时仍被占用。
+    查询失败（无 key / 网络问题 / 非 free 套餐上限未知）不阻塞，直接放行。
+    """
+    key = load_license_key()
+    if not key:
+        return True
+    from cloakbrowser.license import (get_active_session_count,
+                                      validate_license)
+    try:
+        info = validate_license(key)
+    except Exception:
+        return True
+    if not info or info.plan != "free":
+        return True  # 仅 free 套餐席位上限已知为 1
+    deadline = time.time() + timeout
+    while True:
+        n = get_active_session_count(key)
+        if n is None or n < 1:
+            return True
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            return False
+        wait = min(interval, remaining)
+        print(f"{tag}[license] 服务端仍有 {n} 个活跃会话未释放"
+              f"（free 套餐仅 1 个席位，多为上次异常退出的残留租约），"
+              f"{wait:.0f}s 后重查...")
+        time.sleep(wait)
+
+
 def load_cookies_pw(cookie_path: Path = COOKIE_JSON) -> list[dict]:
     """把 CDP 导出的 Cookie 转成 Playwright 格式（仅 1688 域）。
 

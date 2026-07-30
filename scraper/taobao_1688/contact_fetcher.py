@@ -29,12 +29,22 @@
     进度全部记录在 shops.status，随时 Ctrl+C 或重启脚本，
     下次运行自动把中断残留的 in_progress 重置回 pending 后继续。
 
+批次与防风控:
+    - 采满一批（-n 个）后所有 worker 强制休息 --batch-rest 秒
+      （默认 900 = 15 分钟，±10% 抖动），然后自动开下一批，
+      直到 pending 抓完或达到 --max-batches；
+    - 代理模式下每个 worker 每次抓取前检查出口 IP：
+      青果出口 IP 每 30 分钟轮换一次，发现 IP 已轮换或隧道失效时，
+      自动重启浏览器获取新 IP（--ip-retry 次重试，退避间隔），
+      新 IP 的 Cookie 按新 identity 重新绑定，避免会话错配。
+
 用法:
-    python3 contact_fetcher.py              # 本批抓 10 个
-    python3 contact_fetcher.py -n 30        # 本批抓 30 个
+    python3 contact_fetcher.py              # 每批 10 个，批间休息 15 分钟
+    python3 contact_fetcher.py -n 30 --batch-rest 600
     python3 contact_fetcher.py --headed     # 有头模式
     python3 contact_fetcher.py --proxy      # 走青果住宅代理（默认按通道数并发）
     python3 contact_fetcher.py --proxy -n 100 --workers 3 --channels 5
+    python3 contact_fetcher.py --proxy -n 50 --max-batches 4  # 最多采 4 批
     python3 contact_fetcher.py --retry-failed  # 先把 failed 重置回 pending 再抓
 """
 
@@ -55,6 +65,66 @@ from common import (get_exit_ip, human_pause, launch_browser, save_cookies,
 from database import ShopDB
 
 
+def relaunch_browser(tag: str, args, db: ShopDB, proxy_server: str | None,
+                     old_browser, old_ctx, old_identity: str,
+                     stop: threading.Event):
+    """关闭旧浏览器（先回写 Cookie），重开新实例以绑定新出口 IP。
+
+    青果出口 IP 每 30 分钟轮换一次，轮换后旧 identity 的 Cookie 与新
+    出口 IP 错配，必须重启浏览器让 launch_browser 重新查询出口 IP 并
+    按新 identity 加载/绑定 Cookie。最多重试 args.ip_retry 次（线性
+    退避），全部失败抛 RuntimeError。
+    """
+    if old_ctx is not None:
+        try:
+            save_cookies(db, old_identity, old_ctx)
+        except Exception as e:
+            print(f"{tag}   [!] 旧 Cookie 回写失败: {e}")
+    if old_browser is not None:
+        try:
+            old_browser.close()
+        except Exception:
+            pass
+
+    last_err = None
+    for attempt in range(1, args.ip_retry + 1):
+        if stop.is_set():
+            raise RuntimeError("用户中断")
+        try:
+            browser, page, identity, req_proxies, _ = launch_browser(
+                headless=not args.headed, use_proxy=args.proxy, db=db,
+                proxy_server=proxy_server, pool_size=args.channels)
+            print(f"{tag} 浏览器已重启，新 identity={identity}")
+            return browser, page, identity, req_proxies
+        except (Exception, SystemExit) as e:
+            last_err = e
+            backoff = min(30 * attempt, 120)
+            print(f"{tag}   [!] 获取新 IP 第 {attempt}/{args.ip_retry} 次失败: "
+                  f"{e}，{backoff}s 后重试...")
+            stop.wait(backoff)
+    raise RuntimeError(f"重试 {args.ip_retry} 次仍无法获取新 IP: {last_err}")
+
+
+def check_ip_fresh(tag: str, req_proxies: dict, identity: str) -> tuple:
+    """检查当前出口 IP 是否仍有效，返回 (need_relaunch, cur_ip, reason)。
+
+    青果出口 IP 每 30 分钟轮换一次：查询到的 IP 与 identity 不一致即
+    视为已过期；查询失败先短重试 3 次确认隧道是否真的失效。
+    """
+    cur_ip = get_exit_ip(req_proxies)
+    if cur_ip is None:
+        for _ in range(3):
+            time.sleep(5)
+            cur_ip = get_exit_ip(req_proxies)
+            if cur_ip:
+                break
+    if cur_ip is None:
+        return True, None, "出口 IP 查询失败，隧道疑似失效"
+    if cur_ip != identity:
+        return True, cur_ip, f"出口 IP 已轮换（{identity} -> {cur_ip}）"
+    return False, cur_ip, ""
+
+
 def worker(worker_id: int, args, proxy_server: str | None,
            state: dict, lock: threading.Lock, stop: threading.Event):
     """单个抓取 worker：独立浏览器 + 独立 DB 连接，认领-抓取-标记循环。"""
@@ -64,6 +134,7 @@ def worker(worker_id: int, args, proxy_server: str | None,
     stats = {"ok": 0, "empty": 0, "failed": 0}
     identity = "direct"
     ctx = None
+    req_proxies = None
     try:
         browser, page, identity, req_proxies, _ = launch_browser(
             headless=not args.headed, use_proxy=args.proxy, db=db,
@@ -72,11 +143,41 @@ def worker(worker_id: int, args, proxy_server: str | None,
         print(f"{tag} 浏览器就绪 (identity={identity})")
 
         while not stop.is_set():
-            # 全批次配额控制：达到 -n 即停
-            with lock:
-                if state["done"] >= args.num:
+            # ---- 批次配额：采满一批后强制休息，再自动开下一批 ----
+            while True:
+                with lock:
+                    if state["done"] < args.num:
+                        state["done"] += 1
+                        wait_for = 0.0
+                        batch_no = state["batch"]
+                    elif (args.max_batches and state["batch"] >= args.max_batches) \
+                            or db.count_pending() == 0:
+                        wait_for = -1.0  # 达到批次上限或没有剩余店铺，收工
+                        batch_no = state["batch"]
+                    else:
+                        now = time.time()
+                        if state["rest_until"] <= now:
+                            # 第一个发现配额满的 worker 决定本次休息时长（±10% 抖动）
+                            state["rest_until"] = now + random.uniform(
+                                args.batch_rest * 0.9, args.batch_rest * 1.1)
+                        wait_for = state["rest_until"] - now
+                        batch_no = state["batch"]
+                if wait_for == 0.0:
                     break
-                state["done"] += 1
+                if wait_for < 0:
+                    print(f"{tag} 第 {batch_no} 批采满，"
+                          f"已达批次上限或没有剩余店铺，收工")
+                    return  # finally 会保存 Cookie、关闭浏览器
+                print(f"{tag} ⏸ 第 {batch_no} 批已采满 {args.num} 个，"
+                      f"强制休息 {wait_for / 60:.1f} 分钟（防风控）...")
+                if stop.wait(wait_for):
+                    return  # 用户中断
+                with lock:
+                    if state["done"] >= args.num:  # 由第一个醒来的 worker 开新批次
+                        state["done"] = 0
+                        state["batch"] += 1
+                    batch_no = state["batch"]
+                print(f"{tag} ▶ 休息结束，开始第 {batch_no} 批")
 
             shops = db.claim_pending_shops(1)
             if not shops:
@@ -84,8 +185,18 @@ def worker(worker_id: int, args, proxy_server: str | None,
                 break
             shop = shops[0]
 
-            cur_ip = (get_exit_ip(req_proxies) or identity) if args.proxy else identity
-            print(f"{tag} {shop['name'] or shop['domain']}  提取IP：{cur_ip}")
+            # ---- 出口 IP 过期检查（青果每 30 分钟轮换一次出口）----
+            if args.proxy:
+                need_relaunch, cur_ip, reason = check_ip_fresh(
+                    tag, req_proxies, identity)
+                if need_relaunch:
+                    print(f"{tag} 🔄 {reason}，重启浏览器获取新 IP ...")
+                    browser, page, identity, req_proxies = relaunch_browser(
+                        tag, args, db, proxy_server, browser, ctx, identity, stop)
+                    ctx = page.context
+                print(f"{tag} {shop['name'] or shop['domain']}  提取IP：{identity}")
+            else:
+                print(f"{tag} {shop['name'] or shop['domain']}  提取IP：{identity}")
 
             info = scrape_contact(page, shop["domain"], referer=shop["url"])
             if info is None:
@@ -142,7 +253,13 @@ def worker(worker_id: int, args, proxy_server: str | None,
 def main() -> int:
     ap = argparse.ArgumentParser(description="1688 店铺联系方式抓取（多 worker 并发，断点续爬）")
     ap.add_argument("-n", "--num", type=int, default=10,
-                    help="本批次抓取的店铺数量（默认 10）")
+                    help="每批抓取的店铺数量（默认 10）；采满一批后强制休息再开下一批")
+    ap.add_argument("--batch-rest", type=float, default=900,
+                    help="每批采满后的强制休息秒数（默认 900=15 分钟，±10%% 抖动）")
+    ap.add_argument("--max-batches", type=int, default=0,
+                    help="最多采集多少批（默认 0=不限，抓完 pending 为止）")
+    ap.add_argument("--ip-retry", type=int, default=3,
+                    help="代理出口 IP 过期后重启浏览器获取新 IP 的重试次数（默认 3）")
     ap.add_argument("--headed", action="store_true",
                     help="有头模式运行（部分站点对 headless 更敏感）")
     ap.add_argument("--retry-failed", action="store_true",
@@ -157,9 +274,9 @@ def main() -> int:
                     help="走 util/proxy_qingguo.py 的青果住宅代理；"
                          "Cookie 按出口 IP 存 SQLite（记录过期时间），"
                          "退出时自动把最新 Cookie 写回该 IP 名下")
-    ap.add_argument("--channels", type=int, default=None,
+    ap.add_argument("--channels", type=int, default=1,
                     help="青果通道池大小（默认取 proxy_qingguo.CONFIG['channels']）")
-    ap.add_argument("--workers", type=int, default=None,
+    ap.add_argument("--workers", type=int, default=1,
                     help="并发 worker 数；代理模式默认=通道数，直连模式默认 1")
     args = ap.parse_args()
 
@@ -178,8 +295,11 @@ def main() -> int:
         print("    先运行 shop_crawler.py 采集更多店铺")
         db.close()
         return 0
-    batch = min(args.num, total_pending)
-    print(f"[1] 待抓取 {total_pending} 个，本批处理 {batch} 个")
+    est_batches = -(-total_pending // args.num)  # 向上取整
+    if args.max_batches:
+        est_batches = min(est_batches, args.max_batches)
+    print(f"[1] 待抓取 {total_pending} 个，每批 {args.num} 个"
+          f"（约 {est_batches} 批），批间强制休息 {args.batch_rest / 60:.0f} 分钟")
 
     # ---- 并发度与通道分配 ----
     proxy_servers: list = [None]
@@ -208,7 +328,7 @@ def main() -> int:
               f"超出部分的浏览器会被服务端强制关闭；"
               f"多 worker 需要 Pro license（https://cloakbrowser.dev）")
 
-    state = {"done": 0, "stats": {}}
+    state = {"done": 0, "batch": 1, "rest_until": 0.0, "stats": {}}
     lock = threading.Lock()
     stop = threading.Event()
     threads = [

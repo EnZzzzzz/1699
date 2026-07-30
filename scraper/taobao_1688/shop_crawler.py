@@ -9,8 +9,11 @@
        确认后写回 Cookie（含新 x5sec）再关闭（-y 可跳过确认）
     2. --workers N 个线程并发采集：每个线程独立 CloakBrowser 实例 +
        独立 ShopDB 连接，从共享类目队列中各取类目进入
-    3. 在类目搜索结果页中提取出现的店铺（shop*.1688.com + 公司名）
-    4. 全部存入 .cache/1688.db，status='pending' 等待联系方式抓取
+    3. 按数据库 category_progress 表记录的分页进度逐页采集类目搜索
+       结果：每个类目从上次采到的下一页继续（搜索分页参数 page=N），
+       深页无结果时标记 exhausted，之后跳过该类目
+    4. 提取页面中出现的店铺（shop*.1688.com + 公司名），
+       全部存入 .cache/1688.db，status='pending' 等待联系方式抓取
 
 联系方式抓取由 contact_fetcher.py 完成（消费者，可断点续爬）。
 
@@ -32,7 +35,7 @@
     python3 shop_crawler.py                  # 随机类目采集入库（每个 worker 1 轮）
     python3 shop_crawler.py -t 1000          # 多轮随机类目，直到库中累计 1000 个
     python3 shop_crawler.py -t 1000 --delay-min 30 --delay-max 90  # 更慢的控频
-    python3 shop_crawler.py --category 女装  # 指定类目（只采 1 轮，单 worker）
+    python3 shop_crawler.py --category 女装  # 指定类目：采它进度中的下一页（单 worker）
     python3 shop_crawler.py --headed         # 有头模式（更不易被检测）
     python3 shop_crawler.py --proxy          # 走青果住宅代理（默认按通道数并发）
     python3 shop_crawler.py --proxy -t 2000 --workers 3 --channels 5
@@ -46,8 +49,10 @@
     （含新 x5sec）后才启动采集 worker，绝不会一上来就直接采集。
 
 多轮模式说明:
-    每个 worker 从共享类目队列中取未采过的类目，轮间随机延迟（默认 15~45 秒）
-    控制频率；进度以库中店铺总数为准，Ctrl+C 中断后重新运行会接着补充。
+    每个 worker 从共享类目队列中取类目，按库中记录的页码采下一页；类目未采
+    完会放回队列，多轮模式下之后继续采它的下一页（类目间轮转，摊薄单类目
+    访问频率）。轮间随机延迟（默认 15~45 秒）控制频率；进度以库中店铺总数
+    为准，Ctrl+C 中断后重新运行会按库中页码续采，不会重复采已采过的页。
 
 疑似风控处置（连续空轮 = 类目页打不开或未提取到店铺）:
     - 连续 RISK_STREAK_THRESHOLD 轮为空即判定疑似风控，不再原地反复请求；
@@ -67,9 +72,10 @@ import sys
 import threading
 import time
 from pathlib import Path
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from common import (HOMEPAGE, get_exit_ip, human_pause, launch_browser,
-                    save_cookies)
+                    save_cookies, wait_for_license_seat)
 from database import ShopDB
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -121,6 +127,38 @@ def extract_shops(page) -> list[dict]:
             }));
         }"""
     )
+
+
+def category_page_url(url: str, page_no: int) -> str:
+    """给类目搜索 URL 设置分页参数（1688 搜索分页参数为 page）。
+
+    第 1 页保持原 URL 不变；第 N 页把 query 中的 page 参数置为 N
+    （首页提取的类目 URL 一般不带 page，直接新增）。
+    """
+    if page_no <= 1:
+        return url
+    parts = urlsplit(url)
+    q = dict(parse_qsl(parts.query))
+    q["page"] = str(page_no)
+    return urlunsplit((parts.scheme, parts.netloc, parts.path,
+                       urlencode(q), parts.fragment))
+
+
+def page_blocked(page) -> bool:
+    """粗判当前页是否为风控/验证页（x5sec 滑块、punish 跳转等）。
+
+    用于区分「类目采到末页（空结果）」和「被风控（空结果）」：
+    仅深页空结果且不是风控页时，才把类目标记为 exhausted。
+    """
+    try:
+        return bool(page.evaluate(
+            """() => {
+                if (/punish|x5sec|captcha|verify/i.test(location.href)) return true;
+                const t = document.body ? document.body.innerText.slice(0, 2000) : '';
+                return /滑动验证|安全验证|访问受限|异常流量/.test(t);
+            }"""))
+    except Exception:
+        return False
 
 
 def worker(worker_id: int, args, proxy_server: str | None, pool,
@@ -219,6 +257,10 @@ def worker(worker_id: int, args, proxy_server: str | None, pool,
         stop.set()
 
     try:
+        # 启动前等 CloakBrowser 会话席位（引导浏览器刚关闭，租约释放有几秒延迟）
+        if not wait_for_license_seat(tag=f"{tag} ", timeout=180.0):
+            print(f"{tag} [X] CloakBrowser 会话席位超时未释放，worker 退出")
+            return
         browser, page, identity, req_proxies, _ = launch_browser(
             headless=not args.headed, use_proxy=args.proxy, db=db,
             proxy_server=proxy_server, pool_size=args.channels)
@@ -228,21 +270,33 @@ def worker(worker_id: int, args, proxy_server: str | None, pool,
 
         round_no = 0
         while not stop.is_set():
-            # ---- 从共享队列取一个未采过的类目 ----
-            with lock:
-                if state["total"] >= state["target"]:
-                    break
-                if not state["queue"]:
-                    break
-                cat = state["queue"].pop()
-                state["rounds"] += 1
-                round_no = state["rounds"]
+            # ---- 从共享队列取一个未采完的类目（已采到末页的跳过）----
+            cat, page_no = None, 1
+            while not stop.is_set():
+                with lock:
+                    if state["total"] >= state["target"] or not state["queue"]:
+                        break
+                    candidate = state["queue"].pop()
+                prog = db.get_category_progress(candidate["keyword"])
+                if prog and prog["exhausted"]:
+                    print(f"{tag}   [~] 类目「{candidate['name']}」已采到末页"
+                          f"（共 {prog['pages_crawled']} 页），跳过")
+                    continue
+                cat = candidate
+                page_no = prog["next_page"] if prog else 1
+                with lock:
+                    state["rounds"] += 1
+                    round_no = state["rounds"]
+                break
+            if cat is None:
+                break
 
-            print(f"{tag} [轮次 {round_no}] 类目: {cat['name']}  "
+            url = category_page_url(cat["url"], page_no)
+            print(f"{tag} [轮次 {round_no}] 类目: {cat['name']} 第 {page_no} 页  "
                   f"(IP: {refresh_ip() or '查询失败'}，"
                   f"进度 {state['total']}/{state['target']})")
             try:
-                page.goto(cat["url"], wait_until="domcontentloaded",
+                page.goto(url, wait_until="domcontentloaded",
                           timeout=60000, referer=HOMEPAGE)
             except Exception as e:
                 on_suspected_block(f"类目页打开失败: {e}")
@@ -255,18 +309,30 @@ def worker(worker_id: int, args, proxy_server: str | None, pool,
                 time.sleep(random.uniform(1.0, 2.0))
 
             shops = extract_shops(page)
-            print(f"{tag}   本页提取到 {len(shops)} 个店铺")
+            print(f"{tag}   第 {page_no} 页提取到 {len(shops)} 个店铺")
             if not shops:
-                on_suspected_block("未提取到店铺")
+                if page_no > 1 and not page_blocked(page):
+                    # 深页无结果且非风控页：类目采到末页，标记后不再采
+                    db.mark_category_exhausted(cat["keyword"], cat["name"])
+                    print(f"{tag}   [~] 类目「{cat['name']}」第 {page_no} 页"
+                          f"无结果，标记为已采完")
+                else:
+                    on_suspected_block("未提取到店铺")
                 continue
 
             run_id = db.start_run(cat["name"], cat["keyword"])
             inserted = db.upsert_shops(shops, run_id=run_id,
                                        category_keyword=cat["keyword"])
             db.finish_run(run_id, shops_found=len(shops),
-                          note=f"new={inserted} worker={worker_id}")
+                          note=f"new={inserted} page={page_no} worker={worker_id}")
+            next_page = db.advance_category_page(cat["keyword"], cat["name"],
+                                                 shops_found=len(shops))
             with lock:
                 state["total"] = db.stats()["shops"]
+                # 类目未采完则放回队首，多轮模式下之后轮转回来采下一页
+                # （--category 单类目模式只采 1 页，不放回）
+                if not args.category:
+                    state["queue"].insert(0, cat)
                 if inserted == 0:
                     # 提取正常但无新增：类目枯竭，不算风控，不触发换 IP
                     state["empty_streak"] += 1
@@ -277,7 +343,8 @@ def worker(worker_id: int, args, proxy_server: str | None, pool,
                     state["empty_streak"] = 0
                     stale = 0
             print(f"{tag}   入库: 新增 {inserted}，库中累计 "
-                  f"{state['total']}/{state['target']}")
+                  f"{state['total']}/{state['target']}"
+                  f"（该类目下次采第 {next_page} 页）")
             if inserted == 0:
                 print(f"{tag}   [~] 本页店铺全部已入库（连续无新增 {stale} 轮）")
 
@@ -297,7 +364,8 @@ def worker(worker_id: int, args, proxy_server: str | None, pool,
 def main() -> int:
     ap = argparse.ArgumentParser(description="1688 类目店铺采集（多 worker 并发，入库 pending）")
     ap.add_argument("--category", default=None,
-                    help="指定类目关键词（默认从首页类目中随机选；指定后单 worker 只采 1 轮）")
+                    help="指定类目关键词（默认从首页类目中随机选；指定后单 worker "
+                         "只采该类目进度中的下一页，采完即退出）")
     ap.add_argument("-t", "--target", type=int, default=0,
                     help="目标店铺总数（按库中累计数计算）。0=每个 worker 只采 1 个类目；"
                          "例如 -t 1000 会持续多轮随机类目采集，直到库中达到 1000")
@@ -312,9 +380,9 @@ def main() -> int:
                          "Cookie 按出口 IP 存 SQLite（记录过期时间），"
                          "该 IP 无记录时从本机 Cookie 种子导入并警告错配风险，"
                          "退出时自动把最新 Cookie 写回该 IP 名下")
-    ap.add_argument("--channels", type=int, default=None,
+    ap.add_argument("--channels", type=int, default=1,
                     help="青果通道池大小（默认取 proxy_qingguo.CONFIG['channels']）")
-    ap.add_argument("--workers", type=int, default=None,
+    ap.add_argument("--workers", type=int, default=1,
                     help="并发 worker 数；代理模式默认=通道数，直连模式默认 1")
     ap.add_argument("-y", "--yes", action="store_true",
                     help="跳过启动时的人工确认（无人值守重跑用）；"
@@ -356,6 +424,12 @@ def main() -> int:
     # 始终以有头模式运行：先开首页提取类目，再进入一个具体类目页等待人工
     # 确认（有滑块请手动拖动），回车后写回 Cookie（含新 x5sec）再启动 worker。
     # -y 跳过人工确认，此时引导浏览器按 --headed 设置运行（可 headless）。
+    # 启动前先等 CloakBrowser 会话席位：free 套餐仅 1 个，上次异常退出的
+    # 残留租约未释放时新二进制会自行退出（不透明的 TargetClosedError）。
+    if not wait_for_license_seat(tag="    "):
+        print("[X] CloakBrowser 会话席位超时仍未释放（服务端残留会话），"
+              "请稍等几分钟再跑，或到 cloakbrowser.dev 确认套餐席位")
+        return 1
     bootstrap_headless = args.yes and not args.headed
     browser, page, identity, boot_proxies, _ = launch_browser(
         headless=bootstrap_headless, use_proxy=args.proxy, db=db,
@@ -417,7 +491,7 @@ def main() -> int:
             print(f"    [!] Cookie 回写失败: {e}")
         browser.close()
 
-    # ---- 组装共享类目队列 ----
+    # ---- 组装共享类目队列（过滤已采到末页的类目） ----
     if args.category:
         cat = next((c for c in categories if c["keyword"] == args.category),
                    {"name": args.category, "keyword": args.category,
@@ -427,6 +501,17 @@ def main() -> int:
     else:
         queue = categories[:]
         random.shuffle(queue)
+        n_all = len(queue)
+        queue = [c for c in queue
+                 if not ((p := db.get_category_progress(c["keyword"]))
+                         and p["exhausted"])]
+        if n_all - len(queue):
+            print(f"    {n_all - len(queue)} 个类目已采到末页，本轮跳过"
+                  f"（剩余 {len(queue)} 个）")
+        if not queue:
+            print(f"[OK] 所有类目均已采到末页，无需采集")
+            db.close()
+            return 0
 
     state = {
         "queue": queue,

@@ -22,6 +22,9 @@
       SELECT+UPDATE 为原子操作），不会两个 worker 抓到同一家店。
     contacts    店铺联系方式（一店一条；字段全空的也保留记录，
                 用 shops.status 区分 done / no_contact）
+    category_progress  类目分页进度（keyword 唯一）：next_page 为下次
+                       应采集的页码；深页无结果时置 exhausted=1，
+                       之后采集跳过该类目，避免重复采已采过的页
     cookies     按出口 IP 隔离的 1688 Cookie（identity = 出口 IP，
                 直连记 'direct'），记录每个 Cookie 的过期时间 expires；
                 会话链路一致性要求 Cookie 与出口 IP 不错配，
@@ -114,6 +117,17 @@ CREATE TABLE IF NOT EXISTS cookies (
 );
 
 CREATE INDEX IF NOT EXISTS idx_cookies_identity ON cookies(identity);
+
+CREATE TABLE IF NOT EXISTS category_progress (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    keyword         TEXT NOT NULL UNIQUE,           -- 类目关键词
+    name            TEXT,                           -- 类目显示名
+    next_page       INTEGER NOT NULL DEFAULT 1,     -- 下次应采集的页码（1 起）
+    pages_crawled   INTEGER NOT NULL DEFAULT 0,     -- 已采页数
+    shops_found     INTEGER NOT NULL DEFAULT 0,     -- 累计提取到的店铺数（含重复）
+    exhausted       INTEGER NOT NULL DEFAULT 0,     -- 1 = 已采到末页，之后跳过
+    last_crawled_at TEXT
+);
 """
 
 # 依赖迁移后列（status）的索引，单独在 _migrate 之后创建
@@ -278,6 +292,48 @@ class ShopDB:
         self.conn.execute(sql + " WHERE domain=?", (domain,))
         self.conn.commit()
 
+    # ---------- category_progress ----------
+    def get_category_progress(self, keyword: str) -> dict | None:
+        """取类目分页进度（无记录返回 None）。"""
+        row = self.conn.execute(
+            "SELECT * FROM category_progress WHERE keyword=?",
+            (keyword,)).fetchone()
+        return dict(row) if row else None
+
+    def advance_category_page(self, keyword: str, name: str = None,
+                              shops_found: int = 0) -> int:
+        """记录类目一页采集完成：页码 +1、累计页数/店铺数，返回下次应采页码。"""
+        self.conn.execute(
+            """INSERT INTO category_progress
+                   (keyword, name, next_page, pages_crawled, shops_found,
+                    last_crawled_at)
+               VALUES (?, ?, 2, 1, ?, ?)
+               ON CONFLICT(keyword) DO UPDATE SET
+                   name = COALESCE(excluded.name, category_progress.name),
+                   next_page = category_progress.next_page + 1,
+                   pages_crawled = category_progress.pages_crawled + 1,
+                   shops_found = category_progress.shops_found
+                                 + excluded.shops_found,
+                   last_crawled_at = excluded.last_crawled_at""",
+            (keyword, name, shops_found, _now()))
+        self.conn.commit()
+        return self.conn.execute(
+            "SELECT next_page FROM category_progress WHERE keyword=?",
+            (keyword,)).fetchone()[0]
+
+    def mark_category_exhausted(self, keyword: str, name: str = None):
+        """标记类目已采到末页（页码不前进，之后采集跳过该类目）。"""
+        self.conn.execute(
+            """INSERT INTO category_progress (keyword, name, exhausted,
+                                              last_crawled_at)
+               VALUES (?, ?, 1, ?)
+               ON CONFLICT(keyword) DO UPDATE SET
+                   name = COALESCE(excluded.name, category_progress.name),
+                   exhausted = 1,
+                   last_crawled_at = excluded.last_crawled_at""",
+            (keyword, name, _now()))
+        self.conn.commit()
+
     # ---------- contacts ----------
     def save_contact(self, domain: str, contact: dict,
                      source_url: str = None, raw_text: str = None):
@@ -378,6 +434,9 @@ class ShopDB:
             "failed": q("SELECT COUNT(*) FROM shops WHERE status='failed'"),
             "with_mobile": q("SELECT COUNT(*) FROM contacts"
                              " WHERE mobile IS NOT NULL AND mobile != ''"),
+            "categories_tracked": q("SELECT COUNT(*) FROM category_progress"),
+            "categories_exhausted": q("SELECT COUNT(*) FROM category_progress"
+                                      " WHERE exhausted=1"),
         }
 
     def close(self):
