@@ -18,9 +18,16 @@
     - 单浏览器、低频率、页面间随机延迟
 
 用法:
-    python3 shop_crawler.py                 # 随机类目采集入库
-    python3 shop_crawler.py --category 女装 # 指定类目
-    python3 shop_crawler.py --headed        # 有头模式（更不易被检测）
+    python3 shop_crawler.py                  # 随机 1 个类目采集入库
+    python3 shop_crawler.py -t 1000          # 多轮随机类目，直到库中累计 1000 个
+    python3 shop_crawler.py -t 1000 --delay-min 30 --delay-max 90  # 更慢的控频
+    python3 shop_crawler.py --category 女装  # 指定类目（只采 1 轮）
+    python3 shop_crawler.py --headed         # 有头模式（更不易被检测）
+
+多轮模式说明:
+    每轮随机选一个未采过的类目，轮间随机延迟（默认 15~45 秒）控制频率；
+    进度以库中店铺总数为准，Ctrl+C 中断后重新运行会接着补充；
+    连续 5 轮无新增（疑似被风控）自动停止。
 """
 
 import argparse
@@ -78,6 +85,13 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="1688 类目店铺采集（入库 pending）")
     ap.add_argument("--category", default=None,
                     help="指定类目关键词（默认从首页类目中随机选 1 个）")
+    ap.add_argument("-t", "--target", type=int, default=0,
+                    help="目标店铺总数（按库中累计数计算）。0=只采 1 个类目；"
+                         "例如 -t 1000 会持续多轮随机类目采集，直到库中达到 1000")
+    ap.add_argument("--delay-min", type=float, default=15.0,
+                    help="多轮模式轮间最小延迟秒数（默认 15）")
+    ap.add_argument("--delay-max", type=float, default=45.0,
+                    help="多轮模式轮间最大延迟秒数（默认 45）")
     ap.add_argument("--headed", action="store_true",
                     help="有头模式运行（部分站点对 headless 更敏感）")
     args = ap.parse_args()
@@ -101,42 +115,86 @@ def main() -> int:
         print(f"    提取到 {len(categories)} 个类目: "
               f"{[c['name'] for c in categories[:8]]}...")
 
-        if args.category:
-            cat = next((c for c in categories if c["keyword"] == args.category),
-                       {"name": args.category, "keyword": args.category,
-                        "url": f"https://s.1688.com/selloffer/offer_search.htm"
-                               f"?charset=utf8&keywords={args.category}"})
-            print(f"[3] 使用指定类目: {cat['name']}")
-        else:
-            cat = random.choice(categories)
-            print(f"[3] 随机选中类目: {cat['name']} ({cat['keyword']})")
+        # ---- 多轮采集循环（--target 控制总量，控频慢慢补充）----
+        total = db.stats()["shops"]
+        target = args.target or (total + 1)  # 不指定则只跑 1 轮
+        print(f"[3] 当前库中 {total} 个店铺，目标 {target} 个")
+        if total >= target:
+            print(f"[OK] 已达到目标，无需采集")
+            return 0
 
-        # ---- 类目页：取店铺 ----
-        print(f"[4] 进入类目页: {cat['url']}")
-        page.goto(cat["url"], wait_until="domcontentloaded", timeout=60000,
-                  referer=HOMEPAGE)
-        human_pause(4, 8)
+        round_no = 0
+        empty_streak = 0  # 连续无新增轮数，防死循环
+        used_keywords = set()
+        try:
+            while total < target and empty_streak < 5:
+                round_no += 1
+                if args.category:
+                    cat = next((c for c in categories
+                                if c["keyword"] == args.category),
+                               {"name": args.category, "keyword": args.category,
+                                "url": f"https://s.1688.com/selloffer/offer_search.htm"
+                                       f"?charset=utf8&keywords={args.category}"})
+                    if round_no > 1:
+                        break  # 指定类目只采一轮
+                else:
+                    # 随机选没用过的类目
+                    pool = [c for c in categories
+                            if c["keyword"] not in used_keywords]
+                    if not pool:
+                        print("[!] 类目已用完")
+                        break
+                    cat = random.choice(pool)
+                    used_keywords.add(cat["keyword"])
 
-        # 模拟滚动加载更多结果
-        for _ in range(3):
-            page.mouse.wheel(0, random.randint(600, 1200))
-            time.sleep(random.uniform(1.0, 2.0))
+                print(f"[轮次 {round_no}] 类目: {cat['name']}  "
+                      f"(进度 {total}/{target})")
+                try:
+                    page.goto(cat["url"], wait_until="domcontentloaded",
+                              timeout=60000, referer=HOMEPAGE)
+                except Exception as e:
+                    print(f"    [X] 类目页打开失败: {e}，跳过")
+                    empty_streak += 1
+                    continue
+                human_pause(4, 8)
 
-        shops = extract_shops(page)
-        print(f"    本页提取到 {len(shops)} 个店铺")
-        if not shops:
-            sys.exit("[X] 类目页未提取到店铺，可能被风控或页面结构变化")
+                # 模拟滚动加载更多结果
+                for _ in range(3):
+                    page.mouse.wheel(0, random.randint(600, 1200))
+                    time.sleep(random.uniform(1.0, 2.0))
 
-        # ---- 入库（status=pending）----
-        run_id = db.start_run(cat["name"], cat["keyword"])
-        inserted = db.upsert_shops(shops, run_id=run_id,
-                                   category_keyword=cat["keyword"])
-        db.finish_run(run_id, shops_found=len(shops),
-                      note=f"new={inserted}")
-        print(f"[5] 入库完成: 本页 {len(shops)} 个，其中新增 {inserted} 个 "
-              f"(run_id={run_id})")
+                shops = extract_shops(page)
+                print(f"    本页提取到 {len(shops)} 个店铺")
+                if not shops:
+                    empty_streak += 1
+                    print(f"    [!] 未提取到店铺（连续 {empty_streak} 轮），"
+                          f"可能被风控")
+                    continue
+
+                run_id = db.start_run(cat["name"], cat["keyword"])
+                inserted = db.upsert_shops(shops, run_id=run_id,
+                                           category_keyword=cat["keyword"])
+                db.finish_run(run_id, shops_found=len(shops),
+                              note=f"new={inserted}")
+                total = db.stats()["shops"]
+                print(f"    入库: 新增 {inserted}，库中累计 {total}/{target}")
+
+                if inserted == 0:
+                    empty_streak += 1
+                else:
+                    empty_streak = 0
+
+                # 轮间控频：长随机延迟，模拟正常浏览节奏
+                if total < target:
+                    t = random.uniform(args.delay_min, args.delay_max)
+                    print(f"    ...轮间等待 {t:.0f}s（控频）")
+                    time.sleep(t)
+        except KeyboardInterrupt:
+            print("\n[!] 用户中断，已入库数据不受影响，可随时再跑继续补充")
+
+        print(f"[OK] 采集结束: 共 {round_no} 轮，库中 {total} 个店铺")
         print(f"    数据库统计: {db.stats()}")
-        print(f"[OK] 店铺已入队等待联系方式抓取，运行 contact_fetcher.py 继续")
+        print(f"    运行 contact_fetcher.py 抓取联系方式")
         return 0
     finally:
         browser.close()
