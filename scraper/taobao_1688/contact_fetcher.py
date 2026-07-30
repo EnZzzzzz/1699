@@ -23,7 +23,9 @@
 """
 
 import argparse
+import random
 import sys
+import time
 
 from common import COOKIE_JSON, human_pause, launch_browser, scrape_contact
 from database import ShopDB
@@ -37,6 +39,12 @@ def main() -> int:
                     help="有头模式运行（部分站点对 headless 更敏感）")
     ap.add_argument("--retry-failed", action="store_true",
                     help="先把 failed 店铺重置为 pending 再开始抓取")
+    ap.add_argument("--rest-every", type=int, default=20,
+                    help="每抓取多少个店铺后长休息一次（默认 20，0 关闭）")
+    ap.add_argument("--rest-min", type=float, default=60,
+                    help="长休息随机时长的下限秒数（默认 60）")
+    ap.add_argument("--rest-max", type=float, default=180,
+                    help="长休息随机时长的上限秒数（默认 180）")
     args = ap.parse_args()
 
     if not COOKIE_JSON.exists():
@@ -83,6 +91,12 @@ def main() -> int:
                       f"({info['gender']}) 电话={info['phone']} "
                       f"手机={info['mobile']} 地址={info['address']}")
             human_pause(3, 7)  # 控制节奏，降低风控概率
+            # 每隔一定轮次随机长休息一次，模拟真人连续浏览后的停顿
+            if (args.rest_every > 0 and i % args.rest_every == 0
+                    and i < len(pending)):
+                t = random.uniform(args.rest_min, args.rest_max)
+                print(f"    ☕ 已连续抓取 {i} 个，随机长休息 {t:.0f}s ...")
+                time.sleep(t)
     except KeyboardInterrupt:
         print("\n[!] 用户中断，进度已保存在数据库，下次运行自动续爬")
     finally:
