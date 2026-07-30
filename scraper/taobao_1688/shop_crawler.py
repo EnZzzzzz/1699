@@ -4,7 +4,9 @@
 1688 店铺采集脚本（生产者，多 worker 并发版）
 
 流程:
-    1. 主线程启动一个引导浏览器，打开 1688 首页提取全部类目链接后关闭
+    1. 主线程启动一个有头引导浏览器：打开 1688 首页提取全部类目链接，
+       再进入一个具体类目页暂停，等待人工检查/过滑块并回车确认，
+       确认后写回 Cookie（含新 x5sec）再关闭（-y 可跳过确认）
     2. --workers N 个线程并发采集：每个线程独立 CloakBrowser 实例 +
        独立 ShopDB 连接，从共享类目队列中各取类目进入
     3. 在类目搜索结果页中提取出现的店铺（shop*.1688.com + 公司名）
@@ -35,6 +37,13 @@
     python3 shop_crawler.py --proxy          # 走青果住宅代理（默认按通道数并发）
     python3 shop_crawler.py --proxy -t 2000 --workers 3 --channels 5
     python3 shop_crawler.py --proxy --headed # 首次代理运行：登录/过滑块并保存代理 Cookie
+    python3 shop_crawler.py -y -t 1000       # 跳过人工确认（无人值守重跑用）
+
+启动时人工确认（默认开启，-y 可跳过）:
+    1688 首页一般不触发风控，进具体类目页才可能出现滑块。因此脚本启动后
+    先用有头引导浏览器打开首页提取类目，再进入一个具体类目页暂停等待 ——
+    如有滑块请手动拖动通过，确认页面正常后回终端按回车，脚本写回 Cookie
+    （含新 x5sec）后才启动采集 worker，绝不会一上来就直接采集。
 
 多轮模式说明:
     每个 worker 从共享类目队列中取未采过的类目，轮间随机延迟（默认 15~45 秒）
@@ -129,6 +138,15 @@ def worker(worker_id: int, args, proxy_server: str | None, pool,
     identity = "direct"
     ctx = None
     req_proxies = None
+    cur_ip = None  # 当前出口 IP 缓存（每轮刷新一次）
+
+    def refresh_ip() -> str | None:
+        """查询当前出口 IP（直连查本机，代理经通道查询）并刷新缓存。"""
+        nonlocal cur_ip
+        ip = get_exit_ip(req_proxies)
+        if ip:
+            cur_ip = ip
+        return cur_ip
 
     def close_browser():
         """把当前 identity 的 Cookie 写回数据库并关闭浏览器（幂等）。"""
@@ -175,7 +193,7 @@ def worker(worker_id: int, args, proxy_server: str | None, pool,
         except Exception as e:
             print(f"{tag}   [换IP] 新出口浏览器启动失败: {e}")
             return False
-        new_ip = (get_exit_ip(req_proxies) or "查询失败") if req_proxies else "?"
+        new_ip = refresh_ip() or "查询失败"
         print(f"{tag}   [换IP] 新出口 IP: {new_ip} (identity={identity})")
         t = random.uniform(10, 20)
         print(f"{tag}   [换IP] 冷却 {t:.0f}s 后继续")
@@ -205,8 +223,8 @@ def worker(worker_id: int, args, proxy_server: str | None, pool,
             headless=not args.headed, use_proxy=args.proxy, db=db,
             proxy_server=proxy_server, pool_size=args.channels)
         ctx = page.context
-        cur_ip = (get_exit_ip(req_proxies) or identity) if args.proxy else identity
-        print(f"{tag} 浏览器就绪 (identity={identity}，出口 IP: {cur_ip})")
+        print(f"{tag} 浏览器就绪 (identity={identity}，"
+              f"出口 IP: {refresh_ip() or '查询失败'})")
 
         round_no = 0
         while not stop.is_set():
@@ -221,7 +239,8 @@ def worker(worker_id: int, args, proxy_server: str | None, pool,
                 round_no = state["rounds"]
 
             print(f"{tag} [轮次 {round_no}] 类目: {cat['name']}  "
-                  f"(进度 {state['total']}/{state['target']})")
+                  f"(IP: {refresh_ip() or '查询失败'}，"
+                  f"进度 {state['total']}/{state['target']})")
             try:
                 page.goto(cat["url"], wait_until="domcontentloaded",
                           timeout=60000, referer=HOMEPAGE)
@@ -297,6 +316,10 @@ def main() -> int:
                     help="青果通道池大小（默认取 proxy_qingguo.CONFIG['channels']）")
     ap.add_argument("--workers", type=int, default=None,
                     help="并发 worker 数；代理模式默认=通道数，直连模式默认 1")
+    ap.add_argument("-y", "--yes", action="store_true",
+                    help="跳过启动时的人工确认（无人值守重跑用）；"
+                         "默认会先打开一个具体类目页等待人工检查/过滑块，"
+                         "回车确认并写回 Cookie 后才开始采集")
     args = ap.parse_args()
 
     # ---- 并发度与通道分配 ----
@@ -328,12 +351,19 @@ def main() -> int:
         db.close()
         return 0
 
-    # ---- 引导浏览器：打开首页提取类目（用完即关） ----
-    browser, page, identity, _, _ = launch_browser(
-        headless=not args.headed, use_proxy=args.proxy, db=db,
+    # ---- 引导浏览器：首页提取类目 + 类目页人工确认（用完即关） ----
+    # 1688 首页一般不触发风控，进具体类目页才可能出现滑块；因此引导浏览器
+    # 始终以有头模式运行：先开首页提取类目，再进入一个具体类目页等待人工
+    # 确认（有滑块请手动拖动），回车后写回 Cookie（含新 x5sec）再启动 worker。
+    # -y 跳过人工确认，此时引导浏览器按 --headed 设置运行（可 headless）。
+    bootstrap_headless = args.yes and not args.headed
+    browser, page, identity, boot_proxies, _ = launch_browser(
+        headless=bootstrap_headless, use_proxy=args.proxy, db=db,
         proxy_server=proxy_servers[0], pool_size=args.channels)
-    print(f"[2] 引导浏览器已启动 (headless={not args.headed}"
-          f"{', proxy=' + identity if args.proxy else ''})，打开首页 {HOMEPAGE}")
+    print(f"[2] 引导浏览器已启动 (headless={bootstrap_headless}"
+          f"{', proxy=' + identity if args.proxy else ''}，"
+          f"出口 IP: {get_exit_ip(boot_proxies) or '查询失败'})，"
+          f"打开首页 {HOMEPAGE}")
     try:
         page.goto(HOMEPAGE, wait_until="domcontentloaded", timeout=60000)
         human_pause(3, 6)
@@ -343,6 +373,43 @@ def main() -> int:
             return 1
         print(f"    提取到 {len(categories)} 个类目: "
               f"{[c['name'] for c in categories[:8]]}...")
+
+        # ---- 人工确认阶段：进入具体类目页（首页不触发风控，类目页才可能出滑块）----
+        if args.category:
+            warmup_cat = next(
+                (c for c in categories if c["keyword"] == args.category),
+                {"name": args.category, "keyword": args.category,
+                 "url": f"https://s.1688.com/selloffer/offer_search.htm"
+                        f"?charset=utf8&keywords={args.category}"})
+        else:
+            warmup_cat = random.choice(categories)
+        print(f"[3] 打开类目页「{warmup_cat['name']}」进行采集前检查")
+        try:
+            page.goto(warmup_cat["url"], wait_until="domcontentloaded",
+                      timeout=60000, referer=HOMEPAGE)
+            human_pause(4, 8)
+            n_probe = len(extract_shops(page))
+            print(f"    类目页提取到 {n_probe} 个店铺"
+                  + ("" if n_probe else "（为 0，页面可能有滑块/验证，请在浏览器中检查）"))
+        except Exception as e:
+            print(f"    [!] 类目页打开失败: {e}（请在浏览器中检查页面状态）")
+
+        if args.yes:
+            print("    [-y] 跳过人工确认，直接开始采集")
+        else:
+            print("    ┌─────────────────────────────────────────────")
+            print("    │ 请在浏览器窗口中检查类目页：")
+            print("    │   1. 如出现滑块 / 验证码，请手动拖动通过；")
+            print("    │   2. 确认页面已正常显示商品列表；")
+            print("    │   3. 回到本终端按【回车】，脚本保存 Cookie 后才开始采集。")
+            print("    └─────────────────────────────────────────────")
+            try:
+                input("    >>> 确认无误后按回车开始采集（Ctrl+C 取消）...")
+            except (EOFError, KeyboardInterrupt):
+                print("\n[!] 未确认，取消采集（Cookie 仍会写回数据库）")
+                return 1
+        # 人工确认后立刻写回 Cookie（含刚拿到的 x5sec），worker 启动即复用
+        save_cookies(db, identity, page.context)
     finally:
         try:
             save_cookies(db, identity, page.context)
@@ -379,7 +446,7 @@ def main() -> int:
                          name=f"crawler-{i}", daemon=True)
         for i in range(workers)
     ]
-    print(f"[3] 启动 {workers} 个采集 worker"
+    print(f"[4] 启动 {workers} 个采集 worker"
           f"（{'代理通道: ' + ', '.join(proxy_servers) if args.proxy else '直连'}）")
     if workers > 1:
         print(f"[!] 注意：CloakBrowser Free  license 仅允许 1 个并发会话，"
