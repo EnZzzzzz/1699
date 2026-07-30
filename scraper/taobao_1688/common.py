@@ -120,7 +120,7 @@ def get_exit_ip(proxies: dict = None, timeout: int = 10) -> str | None:
 
 def launch_browser(headless: bool = True, use_proxy: bool = False, db=None):
     """
-    启动 CloakBrowser 并注入 1688 Cookie，返回 (browser, page, identity)。
+    启动 CloakBrowser 并注入 1688 Cookie，返回 (browser, page, identity, req_proxies)。
 
     Cookie 存取（SQLite，按出口 IP 隔离，保持会话链路一致）：
         - identity: 直连记 'direct'；代理模式记当前出口 IP
@@ -129,6 +129,11 @@ def launch_browser(headless: bool = True, use_proxy: bool = False, db=None):
         - use_proxy=True 时若该出口 IP 的 Cookie 是从本机种子导入的，
           会打印错配警告（建议 --proxy --headed 重新登录/过滑块）
 
+    Returns:
+        (browser, page, identity, req_proxies)
+        req_proxies — 用于 requests 查询出口 IP 的代理字典（代理模式），
+                      直连模式为 None。
+
     db 为 ShopDB 实例（必传，Cookie 存取都走它）。
     """
     from cloakbrowser import launch
@@ -136,14 +141,15 @@ def launch_browser(headless: bool = True, use_proxy: bool = False, db=None):
     proxy_conf = None
     identity = "direct"
     seeded_from_local = False
+    req_proxies = None  # 供调用方逐次查询出口 IP 用
     if use_proxy:
         proxy_conf = _get_qingguo_proxy()
         host = proxy_conf["server"].split("://")[-1]
         # requests 查询出口 IP 需要内嵌账密的 URL 形式
         req_proxies_url = (f"http://{proxy_conf['username']}"
                            f":{proxy_conf['password']}@{host}")
-        exit_ip = get_exit_ip({"http": req_proxies_url,
-                               "https": req_proxies_url})
+        req_proxies = {"http": req_proxies_url, "https": req_proxies_url}
+        exit_ip = get_exit_ip(req_proxies)
         identity = exit_ip or f"qingguo:{host}"
         print(f"    [proxy] 青果住宅代理: {host}，出口 IP: {exit_ip or '查询失败'}")
 
@@ -180,7 +186,7 @@ def launch_browser(headless: bool = True, use_proxy: bool = False, db=None):
     )
     ctx = browser.new_context(user_agent=UA, locale="zh-CN")
     ctx.add_cookies(cookies)
-    return browser, ctx.new_page(), identity
+    return browser, ctx.new_page(), identity, req_proxies
 
 
 def save_cookies(db, identity: str, ctx) -> int:

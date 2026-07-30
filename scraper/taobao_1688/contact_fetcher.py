@@ -76,18 +76,23 @@ def main() -> int:
     total_pending = db.count_pending()
     print(f"[1] 待抓取 {total_pending} 个，本批处理 {len(pending)} 个")
 
-    browser, page, identity = launch_browser(headless=not args.headed,
-                                             use_proxy=args.proxy, db=db)
+    browser, page, identity, req_proxies = launch_browser(
+        headless=not args.headed, use_proxy=args.proxy, db=db)
     print(f"[2] CloakBrowser 已启动 (headless={not args.headed}"
           f"{', proxy=' + identity if args.proxy else ''})")
-    # 打印当前出口 IP（代理模式下 identity 即出口 IP，直连模式实时查询）
-    cur_ip = identity if args.proxy else (get_exit_ip() or "查询失败")
-    print(f"    [ip] 当前出口 IP: {cur_ip}")
+
+    # 直连模式下出口 IP 固定不变，提前查好缓存
+    direct_ip = None if args.proxy else (get_exit_ip() or "查询失败")
 
     ok = failed = empty = 0
     try:
         for i, shop in enumerate(pending, 1):
-            print(f"[{i}/{len(pending)}] {shop['name'] or shop['domain']}")
+            # 每次抓取前获取当前出口 IP（代理模式可能轮转，直连复用缓存）
+            if args.proxy:
+                cur_ip = get_exit_ip(req_proxies) or identity
+            else:
+                cur_ip = direct_ip
+            print(f"[{i}/{len(pending)}] {shop['name'] or shop['domain']}  提取IP：{cur_ip}")
             info = scrape_contact(page, shop["domain"], referer=shop["url"])
             if info is None:
                 db.mark_shop_failed(shop["domain"])

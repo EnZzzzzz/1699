@@ -110,8 +110,8 @@ def main() -> int:
     args = ap.parse_args()
 
     db = ShopDB()
-    browser, page, identity = launch_browser(headless=not args.headed,
-                                             use_proxy=args.proxy, db=db)
+    browser, page, identity, _ = launch_browser(headless=not args.headed,
+                                                use_proxy=args.proxy, db=db)
     print(f"[1] CloakBrowser 已启动 (headless={not args.headed}"
           f"{', proxy=' + identity if args.proxy else ''})")
     # 打印当前出口 IP（代理模式下 identity 即出口 IP，直连模式实时查询）
