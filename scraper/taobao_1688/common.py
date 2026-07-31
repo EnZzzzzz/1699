@@ -266,6 +266,32 @@ def human_pause(lo: float = 2.0, hi: float = 5.0):
 
 # ---------- 风控拦截检测 ----------
 
+# 网络/代理层错误特征（Chromium net 错误码）。
+# 这类错误说明请求根本没到目标站（隧道断、连接重置、DNS 失败等），
+# 与风控无关，调用方不应计入风控连续失败计数，应换通道/退避后重试。
+NETWORK_ERR_MARKERS = (
+    "ERR_TUNNEL_CONNECTION_FAILED",
+    "ERR_PROXY_CONNECTION_FAILED",
+    "ERR_CONNECTION_RESET",
+    "ERR_CONNECTION_CLOSED",
+    "ERR_CONNECTION_REFUSED",
+    "ERR_CONNECTION_TIMED_OUT",
+    "ERR_TIMED_OUT",
+    "ERR_NAME_NOT_RESOLVED",
+    "ERR_SOCKET_NOT_CONNECTED",
+    "ERR_ADDRESS_UNREACHABLE",
+    "ERR_NETWORK_CHANGED",
+    "ERR_HTTP2_PROTOCOL_ERROR",
+    "net::ERR",  # 兜底：所有 Chromium 网络层错误都先按网络故障处理
+)
+
+
+def is_network_error(err) -> bool:
+    """判断异常是否属于网络/代理层错误（与目标站风控无关）。"""
+    s = str(err or "")
+    return any(m in s for m in NETWORK_ERR_MARKERS)
+
+
 # 风控拦截页的 URL 特征（1688 常见拦截跳转）
 BLOCK_URL_PATTERNS = (
     "login.1688.com",   # 被强制跳登录
@@ -342,7 +368,15 @@ def parse_contact_text(text: str) -> dict:
 
 
 def scrape_contact(page, shop_domain: str, referer: str = None) -> dict | None:
-    """进入店铺「联系方式」页并解析字段，失败返回 None。"""
+    """进入店铺「联系方式」页并解析字段。
+
+    返回值约定（调用方按优先级判断）：
+        - 正常解析：dict，含联系方式字段 + _raw/_source_url/_blocked
+        - 网络/代理层错误（隧道断、连接重置等，与风控无关）：
+          返回 {"_net_error": <原因>} 标记 dict，调用方应换通道/退避重试，
+          不应计入风控连续失败计数
+        - 其他异常（超时、解析失败等）：返回 None
+    """
     url = f"https://{shop_domain}/page/contactinfo.htm"
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=60000,
@@ -356,5 +390,10 @@ def scrape_contact(page, shop_domain: str, referer: str = None) -> dict | None:
         info["_blocked"] = is_risk_blocked(page.url, text)
         return info
     except Exception as e:
+        if is_network_error(e):
+            reason = str(e).splitlines()[0][:200]
+            print(f"    [X] {shop_domain} 联系方式抓取失败"
+                  f"（网络/代理层错误，非风控）: {e}")
+            return {"_net_error": reason}
         print(f"    [X] {shop_domain} 联系方式抓取失败: {e}")
         return None

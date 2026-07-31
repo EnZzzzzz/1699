@@ -38,7 +38,11 @@
       自动重启浏览器获取新 IP（--ip-retry 次重试，退避间隔），
       新 IP 的 Cookie 按新 identity 重新绑定，避免会话错配；
     - 抓取时检测风控拦截（跳转登录/安全中心/x5sec 滑块/页面空白等），
-      疑似被拦截时换 IP 重试同一店铺（--block-retry 次）；
+      疑似被拦截时切换到池内其他通道（全新出口 IP）重试同一店铺
+      （--block-retry 次）；
+    - 网络/代理层错误（ERR_TUNNEL_CONNECTION_FAILED 等隧道断开、
+      连接重置、DNS 失败）与风控区分处理：不计入风控连续失败计数，
+      自动切换代理通道并退避重试（--net-retry 次）；
       连续失败达到 --max-consecutive-fail 次（默认 5）判定被风控，
       立即中止整个任务，当前店铺留在 in_progress，下次运行自动放回 pending。
 
@@ -129,7 +133,35 @@ def check_ip_fresh(tag: str, req_proxies: dict, identity: str) -> tuple:
     return False, cur_ip, ""
 
 
-def worker(worker_id: int, args, proxy_server: str | None,
+def switch_proxy_channel(tag: str, pool, current_server: str | None) -> str | None:
+    """隧道故障/风控时切换到通道池里另一条通道（全新出口 IP）。
+
+    优先从池内现有通道中选一条非当前通道；池内只有当前一条时
+    强制 refresh() 跳过缓存向青果后台重新校准；仍无备选则返回
+    原通道（调用方在原通道上退避重试）。直连模式（pool=None）原样返回。
+    """
+    if pool is None:
+        return current_server
+    try:
+        servers = pool.servers()
+    except Exception as e:
+        print(f"{tag}   [!] 查询通道池失败: {e}，仍在原通道上重试")
+        return current_server
+    others = [s for s in servers if s != current_server]
+    if not others:
+        try:
+            others = [s for s in pool.refresh() if s != current_server]
+        except Exception as e:
+            print(f"{tag}   [!] 强制刷新通道池失败: {e}")
+    if others:
+        new = random.choice(others)
+        print(f"{tag}   🔀 切换代理通道: {current_server} -> {new}")
+        return new
+    print(f"{tag}   [!] 池内没有其他可用通道，仍在原通道 {current_server} 上重试")
+    return current_server
+
+
+def worker(worker_id: int, args, proxy_server: str | None, pool,
            state: dict, lock: threading.Lock, stop: threading.Event):
     """单个抓取 worker：独立浏览器 + 独立 DB 连接，认领-抓取-标记循环。"""
     tag = f"[w{worker_id}]"
@@ -195,6 +227,10 @@ def worker(worker_id: int, args, proxy_server: str | None,
                 need_relaunch, cur_ip, reason = check_ip_fresh(
                     tag, req_proxies, identity)
                 if need_relaunch:
+                    if cur_ip is None:
+                        # 隧道疑似失效：换一条通道，而不是在原死隧道上重启
+                        proxy_server = switch_proxy_channel(
+                            tag, pool, proxy_server)
                     print(f"{tag} 🔄 {reason}，重启浏览器获取新 IP ...")
                     browser, page, identity, req_proxies = relaunch_browser(
                         tag, args, db, proxy_server, browser, ctx, identity, stop)
@@ -203,16 +239,51 @@ def worker(worker_id: int, args, proxy_server: str | None,
             else:
                 print(f"{tag} {shop['name'] or shop['domain']}  提取IP：{identity}")
 
-            # ---- 抓取（疑似风控时换 IP 重试；连续失败超限则中止任务）----
+            # ---- 抓取（网络故障换通道重试，不计入风控计数；
+            #      疑似风控换通道重试；连续风控失败超限则中止任务）----
             block_retried = 0
+            net_retried = 0
             while True:
                 info = scrape_contact(page, shop["domain"], referer=shop["url"])
+                net_reason = info.pop("_net_error", None) if info else None
                 block_reason = info.pop("_blocked", None) if info else None
-                if info is not None and not block_reason:
+                if info is not None and not net_reason and not block_reason:
                     consecutive_fail = 0  # 抓到了，连续失败清零
                     break
 
-                # 失败或疑似被风控拦截
+                # ---- 网络/代理层错误：与风控无关，不计入风控连续失败计数 ----
+                if net_reason:
+                    net_retried += 1
+                    if net_retried > args.net_retry:
+                        print(f"{tag}   [X] 网络故障重试 {args.net_retry} 次"
+                              f"仍失败，标记 failed 跳过（{net_reason}）")
+                        db.mark_shop_failed(shop["domain"])
+                        stats["failed"] += 1
+                        info = None
+                        break
+                    backoff = min(30 * net_retried, 180)
+                    print(f"{tag} ⚠ 网络/代理故障（{net_reason}），"
+                          f"不计入风控计数，第 {net_retried}/{args.net_retry} "
+                          f"次重试（{backoff}s 后）...")
+                    if args.proxy:
+                        proxy_server = switch_proxy_channel(
+                            tag, pool, proxy_server)
+                        try:
+                            browser, page, identity, req_proxies = \
+                                relaunch_browser(
+                                    tag, args, db, proxy_server,
+                                    browser, ctx, identity, stop)
+                            ctx = page.context
+                        except RuntimeError as e:
+                            print(f"{tag} [X] 换通道重启浏览器失败: {e}，"
+                                  f"中止整个任务")
+                            stop.set()
+                            return
+                    if stop.wait(backoff):
+                        return  # 用户中断
+                    continue  # 重试同一店铺
+
+                # ---- 抓取失败或疑似被风控拦截 ----
                 consecutive_fail += 1
                 reason = block_reason or "页面加载失败（疑似风控拦截）"
                 if consecutive_fail >= args.max_consecutive_fail:
@@ -229,6 +300,9 @@ def worker(worker_id: int, args, proxy_server: str | None,
                           f"{consecutive_fail}/{args.max_consecutive_fail}），"
                           f"第 {block_retried}/{args.block_retry} 次换 IP 重试...")
                     if args.proxy:
+                        # 当前出口 IP 已被风控，直接换一条通道拿全新 IP
+                        proxy_server = switch_proxy_channel(
+                            tag, pool, proxy_server)
                         try:
                             browser, page, identity, req_proxies = \
                                 relaunch_browser(
@@ -316,6 +390,9 @@ def main() -> int:
                     help="代理出口 IP 过期后重启浏览器获取新 IP 的重试次数（默认 3）")
     ap.add_argument("--block-retry", type=int, default=2,
                     help="单店疑似被风控拦截时换 IP 重试的次数（默认 2）")
+    ap.add_argument("--net-retry", type=int, default=5,
+                    help="单店遇到网络/代理层错误（隧道断开等，非风控）时的"
+                         "重试次数（默认 5，不计入风控连续失败计数）")
     ap.add_argument("--max-consecutive-fail", type=int, default=5,
                     help="连续失败多少次后判定被风控并中止整个任务（默认 5）")
     ap.add_argument("--headed", action="store_true",
@@ -360,6 +437,7 @@ def main() -> int:
           f"（约 {est_batches} 批），批间强制休息 {args.batch_rest / 60:.0f} 分钟")
 
     # ---- 并发度与通道分配 ----
+    pool = None
     proxy_servers: list = [None]
     if args.proxy:
         sys.path.insert(0, str(ROOT_DIR / "util"))
@@ -391,7 +469,8 @@ def main() -> int:
     stop = threading.Event()
     threads = [
         threading.Thread(target=worker,
-                         args=(i, args, proxy_servers[i], state, lock, stop),
+                         args=(i, args, proxy_servers[i], pool,
+                               state, lock, stop),
                          name=f"fetcher-{i}", daemon=True)
         for i in range(workers)
     ]
