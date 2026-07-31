@@ -264,6 +264,44 @@ def human_pause(lo: float = 2.0, hi: float = 5.0):
     time.sleep(t)
 
 
+# ---------- 风控拦截检测 ----------
+
+# 风控拦截页的 URL 特征（1688 常见拦截跳转）
+BLOCK_URL_PATTERNS = (
+    "login.1688.com",   # 被强制跳登录
+    "sec.1688.com",     # 安全中心拦截
+    "punish",           # 处罚/验证页
+    "x5sec",            # x5sec 滑块验证
+    "captcha",
+)
+
+# 风控拦截页的内容关键词
+BLOCK_TEXT_KEYWORDS = (
+    "滑动验证", "安全验证", "拖动下方滑块", "验证中心",
+    "访问受限", "访问存在异常", "访问过于频繁",
+    "系统检测到您的访问异常", "亲，请完成验证",
+)
+
+
+def is_risk_blocked(url: str, text: str) -> str | None:
+    """判定是否疑似被风控拦截，返回命中原因；未命中返回 None。
+
+    1688 被风控时的典型表现：跳转登录/安全中心/x5sec 滑块页，
+    或页面出现验证类关键词，或 body 异常空白。
+    """
+    u = (url or "").lower()
+    for p in BLOCK_URL_PATTERNS:
+        if p in u:
+            return f"URL 命中风控特征 '{p}'（{url}）"
+    t = (text or "").strip()
+    for kw in BLOCK_TEXT_KEYWORDS:
+        if kw in t:
+            return f"页面内容命中风控关键词 '{kw}'"
+    if len(t) < 30:
+        return f"页面内容异常空白（仅 {len(t)} 字符，疑似拦截页）"
+    return None
+
+
 # ---------- 联系方式解析 ----------
 
 def parse_contact_text(text: str) -> dict:
@@ -314,6 +352,8 @@ def scrape_contact(page, shop_domain: str, referer: str = None) -> dict | None:
         info = parse_contact_text(text)
         info["_raw"] = text[:500]
         info["_source_url"] = page.url
+        # 风控拦截检测：命中时返回原因字符串，调用方据此换 IP 重试
+        info["_blocked"] = is_risk_blocked(page.url, text)
         return info
     except Exception as e:
         print(f"    [X] {shop_domain} 联系方式抓取失败: {e}")

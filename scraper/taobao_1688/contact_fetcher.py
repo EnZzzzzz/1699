@@ -36,7 +36,11 @@
     - 代理模式下每个 worker 每次抓取前检查出口 IP：
       青果出口 IP 每 30 分钟轮换一次，发现 IP 已轮换或隧道失效时，
       自动重启浏览器获取新 IP（--ip-retry 次重试，退避间隔），
-      新 IP 的 Cookie 按新 identity 重新绑定，避免会话错配。
+      新 IP 的 Cookie 按新 identity 重新绑定，避免会话错配；
+    - 抓取时检测风控拦截（跳转登录/安全中心/x5sec 滑块/页面空白等），
+      疑似被拦截时换 IP 重试同一店铺（--block-retry 次）；
+      连续失败达到 --max-consecutive-fail 次（默认 5）判定被风控，
+      立即中止整个任务，当前店铺留在 in_progress，下次运行自动放回 pending。
 
 用法:
     python3 contact_fetcher.py              # 每批 10 个，批间休息 15 分钟
@@ -132,6 +136,7 @@ def worker(worker_id: int, args, proxy_server: str | None,
     db = ShopDB()
     browser = None
     stats = {"ok": 0, "empty": 0, "failed": 0}
+    consecutive_fail = 0  # 连续失败计数（含换 IP 重试），超限中止整个任务
     identity = "direct"
     ctx = None
     req_proxies = None
@@ -198,10 +203,59 @@ def worker(worker_id: int, args, proxy_server: str | None,
             else:
                 print(f"{tag} {shop['name'] or shop['domain']}  提取IP：{identity}")
 
-            info = scrape_contact(page, shop["domain"], referer=shop["url"])
-            if info is None:
+            # ---- 抓取（疑似风控时换 IP 重试；连续失败超限则中止任务）----
+            block_retried = 0
+            while True:
+                info = scrape_contact(page, shop["domain"], referer=shop["url"])
+                block_reason = info.pop("_blocked", None) if info else None
+                if info is not None and not block_reason:
+                    consecutive_fail = 0  # 抓到了，连续失败清零
+                    break
+
+                # 失败或疑似被风控拦截
+                consecutive_fail += 1
+                reason = block_reason or "页面加载失败（疑似风控拦截）"
+                if consecutive_fail >= args.max_consecutive_fail:
+                    print(f"{tag} [X] 已连续失败 {consecutive_fail} 次"
+                          f"（最近一次: {reason}），判定被风控，中止整个任务")
+                    print(f"{tag}     店铺 {shop['domain']} 留在 in_progress，"
+                          f"下次运行自动放回 pending")
+                    stop.set()
+                    return  # finally 会保存 Cookie、关闭浏览器
+
+                if block_retried < args.block_retry:
+                    block_retried += 1
+                    print(f"{tag} ⚠ {reason}（连续失败 "
+                          f"{consecutive_fail}/{args.max_consecutive_fail}），"
+                          f"第 {block_retried}/{args.block_retry} 次换 IP 重试...")
+                    if args.proxy:
+                        try:
+                            browser, page, identity, req_proxies = \
+                                relaunch_browser(
+                                    tag, args, db, proxy_server,
+                                    browser, ctx, identity, stop)
+                            ctx = page.context
+                        except RuntimeError as e:
+                            print(f"{tag} [X] 换 IP 失败: {e}，中止整个任务")
+                            stop.set()
+                            return
+                    else:
+                        # 直连模式无法换 IP，退避等待后重试
+                        backoff = min(60 * block_retried, 300)
+                        print(f"{tag}   直连模式无法换 IP，退避 {backoff}s 后重试...")
+                        stop.wait(backoff)
+                    continue  # 重试同一店铺
+
+                # 换 IP 重试仍失败：标记 failed，放过这家继续下一家
+                print(f"{tag}   [X] 换 IP 重试 {args.block_retry} 次仍失败，"
+                      f"标记 failed 跳过（{reason}）")
                 db.mark_shop_failed(shop["domain"])
                 stats["failed"] += 1
+                info = None
+                break
+
+            if info is None:
+                pass  # 上面已标记 failed
             elif not any(info[k] for k in
                          ("contact_person", "phone", "mobile", "fax", "address")):
                 # 店铺未填任何联系方式：也入 contacts 表备查（含原始文本），
@@ -260,6 +314,10 @@ def main() -> int:
                     help="最多采集多少批（默认 0=不限，抓完 pending 为止）")
     ap.add_argument("--ip-retry", type=int, default=3,
                     help="代理出口 IP 过期后重启浏览器获取新 IP 的重试次数（默认 3）")
+    ap.add_argument("--block-retry", type=int, default=2,
+                    help="单店疑似被风控拦截时换 IP 重试的次数（默认 2）")
+    ap.add_argument("--max-consecutive-fail", type=int, default=5,
+                    help="连续失败多少次后判定被风控并中止整个任务（默认 5）")
     ap.add_argument("--headed", action="store_true",
                     help="有头模式运行（部分站点对 headless 更敏感）")
     ap.add_argument("--retry-failed", action="store_true",
