@@ -14,9 +14,9 @@
     - 店铺认领走数据库事务（claim_pending_shops），不会重复抓同一家店。
 
 结果处理:
-    - 有任何实际字段 → 写入 contacts 表，店铺标记 done
-    - 字段全部为空（店铺没填）→ 同样写入 contacts 表备查（含原始文本），
-      店铺标记 no_contact，便于统计和后续复核
+    - 座机或手机至少有一个 → 写入 contacts 表，店铺标记 done
+    - 座机和手机都为空（即使填了联系人/地址/传真）→ 同样写入 contacts
+      表备查（含原始文本），店铺标记 no_contact，便于统计和后续复核
     - 抓取失败 → 店铺标记 failed（--retry-failed 可重置）
 
 会话链路:
@@ -256,17 +256,17 @@ def worker(worker_id: int, args, proxy_server: str | None,
 
             if info is None:
                 pass  # 上面已标记 failed
-            elif not any(info[k] for k in
-                         ("contact_person", "phone", "mobile", "fax", "address")):
-                # 店铺未填任何联系方式：也入 contacts 表备查（含原始文本），
-                # 店铺标记 no_contact 便于统计和复核
+            elif not (info.get("phone") or info.get("mobile")):
+                # 座机和手机都为空即视为无有效联系方式（只填联系人/地址/传真
+                # 也不算）：仍入 contacts 表备查（含地址、原始文本等），
+                # 但店铺标记 no_contact 而不是 done，便于统计和复核
                 raw = info.pop("_raw", None)
                 src = info.pop("_source_url", None)
                 db.save_contact(shop["domain"], info,
                                 source_url=src, raw_text=raw)
                 db.mark_shop_no_contact(shop["domain"], bump_attempts=False)
                 stats["empty"] += 1
-                print(f"{tag}   - 店铺未填写联系方式，已记录空条目并标记 no_contact")
+                print(f"{tag}   - 无有效电话（座机/手机均空），已记录条目并标记 no_contact")
             else:
                 raw = info.pop("_raw", None)
                 src = info.pop("_source_url", None)

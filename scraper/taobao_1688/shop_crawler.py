@@ -40,6 +40,7 @@
     python3 shop_crawler.py --proxy          # 走青果住宅代理（默认按通道数并发）
     python3 shop_crawler.py --proxy -t 2000 --workers 3 --channels 5
     python3 shop_crawler.py --proxy --headed # 首次代理运行：登录/过滑块并保存代理 Cookie
+    python3 shop_crawler.py --proxy -t 1000 --rest-every 3  # 每采 3 轮休息 5~10 分钟（默认行为）
     python3 shop_crawler.py -y -t 1000       # 跳过人工确认（无人值守重跑用）
 
 启动时人工确认（默认开启，-y 可跳过）:
@@ -51,15 +52,14 @@
 多轮模式说明:
     每个 worker 从共享类目队列中取类目，按库中记录的页码采下一页；类目未采
     完会放回队列，多轮模式下之后继续采它的下一页（类目间轮转，摊薄单类目
-    访问频率）。轮间随机延迟（默认 15~45 秒）控制频率；进度以库中店铺总数
-    为准，Ctrl+C 中断后重新运行会按库中页码续采，不会重复采已采过的页。
+    访问频率）。轮间随机延迟（默认 15~45 秒）控制频率；每采满 --rest-every
+    轮（默认 3）再强制长时休息 5~10 分钟，模拟正常用户离开，防风控。
+    进度以库中店铺总数为准，Ctrl+C 中断后重新运行会按库中页码续采，
+    不会重复采已采过的页。
 
 疑似风控处置（连续空轮 = 类目页打不开或未提取到店铺）:
-    - 连续 RISK_STREAK_THRESHOLD 轮为空即判定疑似风控，不再原地反复请求；
-    - 代理模式：先换到通道池内其他通道（不同出口 IP）重试，全局最多换
-      MAX_IP_SWITCHES 次，每次换 IP 后只给一轮验证机会（再空即回到阈值）；
-    - 换 IP 后仍为空 / 换 IP 次数用尽 / 直连模式无法换 IP：
-      主动终止整个采集任务，避免持续请求加重风控；
+    - 连续 RISK_STREAK_THRESHOLD 轮为空即判定疑似风控，不再原地反复请求，
+      主动终止整个采集任务，避免持续请求加重风控（隔段时间再跑即可续采）；
     - 提取到店铺但全部已入库（无新增）不算风控，连续 STALE_STREAK_LIMIT
       轮无新增才停止（类目枯竭）。
 """
@@ -82,8 +82,7 @@ BASE_DIR = Path(__file__).resolve().parent
 ROOT_DIR = BASE_DIR.parents[1]  # 项目根目录
 
 # ---- 疑似风控处置参数 ----
-RISK_STREAK_THRESHOLD = 2  # 连续空轮达到该值即判定疑似风控，触发换 IP / 终止
-MAX_IP_SWITCHES = 2        # 代理模式下全局最多换 IP 重试次数（直连模式恒为 0）
+RISK_STREAK_THRESHOLD = 2  # 连续空轮达到该值即判定疑似风控，主动终止
 STALE_STREAK_LIMIT = 5     # 有提取但无新增的连续轮数上限（类目枯竭，非风控）
 
 
@@ -166,8 +165,9 @@ def worker(worker_id: int, args, proxy_server: str | None, pool,
            stop: threading.Event):
     """单个采集 worker：独立浏览器 + 独立 DB 连接，从共享类目队列取类目采集。
 
-    疑似风控（连续空轮）时先换 IP（代理模式，换池内其他通道 = 不同出口 IP），
-    换不了或换了仍为空则主动终止，绝不在同一出口上反复请求。
+    节奏控制：每采满 args.rest_every 轮强制休息 5~10 分钟（长时静默，模拟
+    正常用户离开）。疑似风控（连续空轮）达到阈值即主动终止，绝不在同一
+    出口上反复请求加重风控。
     """
     tag = f"[w{worker_id}]"
     db = ShopDB()
@@ -201,59 +201,16 @@ def worker(worker_id: int, args, proxy_server: str | None, pool,
                 pass
         browser, ctx = None, None
 
-    def try_switch_ip() -> bool:
-        """疑似风控时更换出口 IP：关闭当前浏览器，换通道池内其他通道重启。
-
-        全局换 IP 次数受 state['max_ip_switches'] 限制（直连模式为 0，
-        直接返回 False）。成功换好并冷却完毕返回 True。
-        """
-        nonlocal browser, page, identity, ctx, req_proxies, proxy_server
-        if not args.proxy or pool is None:
-            return False
-        with lock:
-            if state["ip_switches"] >= state["max_ip_switches"]:
-                return False
-            state["ip_switches"] += 1
-            n, budget = state["ip_switches"], state["max_ip_switches"]
-        candidates = [s for s in pool.servers() if s != proxy_server]
-        if not candidates:
-            print(f"{tag}   [换IP] 通道池内没有其他可用通道，放弃切换")
-            return False
-        new_server = random.choice(candidates)
-        print(f"{tag}   [换IP] 第 {n}/{budget} 次更换出口: "
-              f"{proxy_server} -> {new_server}")
-        try:
-            close_browser()
-            browser, page, identity, req_proxies, proxy_server = launch_browser(
-                headless=not args.headed, use_proxy=True, db=db,
-                proxy_server=new_server, pool_size=args.channels)
-            ctx = page.context
-        except Exception as e:
-            print(f"{tag}   [换IP] 新出口浏览器启动失败: {e}")
-            return False
-        new_ip = refresh_ip() or "查询失败"
-        print(f"{tag}   [换IP] 新出口 IP: {new_ip} (identity={identity})")
-        t = random.uniform(10, 20)
-        print(f"{tag}   [换IP] 冷却 {t:.0f}s 后继续")
-        stop.wait(t)  # 可被 Ctrl+C / 终止信号提前唤醒
-        return not stop.is_set()
-
     def on_suspected_block(reason: str):
-        """疑似风控统一处置：达到阈值先换 IP，换不了/换了仍空则主动终止。"""
+        """疑似风控统一处置：连续空轮达到阈值即主动终止，不再原地反复请求。"""
         with lock:
             state["empty_streak"] += 1
             streak = state["empty_streak"]
         print(f"{tag}   [!] {reason}（全局连续 {streak} 轮），可能被风控")
         if stop.is_set() or streak < RISK_STREAK_THRESHOLD:
             return
-        if try_switch_ip():
-            # 换 IP 后只给一轮验证机会：再空一轮即回到阈值，触发再换 / 终止
-            with lock:
-                state["empty_streak"] = RISK_STREAK_THRESHOLD - 1
-            return
-        why = ("直连模式无法更换出口 IP" if not args.proxy
-               else "换 IP 次数已用尽或切换失败")
-        print(f"{tag}   [主动终止] {why}，停止采集，避免反复请求加重风控")
+        print(f"{tag}   [主动终止] 连续 {streak} 轮为空，停止采集，"
+              f"避免反复请求加重风控（可隔段时间再跑）")
         stop.set()
 
     try:
@@ -269,6 +226,7 @@ def worker(worker_id: int, args, proxy_server: str | None, pool,
               f"出口 IP: {refresh_ip() or '查询失败'})")
 
         round_no = 0
+        rounds_since_rest = 0  # 距上次长时休息以来已采的轮数
         while not stop.is_set():
             # ---- 从共享队列取一个未采完的类目（已采到末页的跳过）----
             cat, page_no = None, 1
@@ -334,7 +292,7 @@ def worker(worker_id: int, args, proxy_server: str | None, pool,
                 if not args.category:
                     state["queue"].insert(0, cat)
                 if inserted == 0:
-                    # 提取正常但无新增：类目枯竭，不算风控，不触发换 IP
+                    # 提取正常但无新增：类目枯竭，不算风控
                     state["empty_streak"] += 1
                     stale = state["empty_streak"]
                     if stale >= STALE_STREAK_LIMIT:
@@ -347,6 +305,16 @@ def worker(worker_id: int, args, proxy_server: str | None, pool,
                   f"（该类目下次采第 {next_page} 页）")
             if inserted == 0:
                 print(f"{tag}   [~] 本页店铺全部已入库（连续无新增 {stale} 轮）")
+
+            # ---- 节奏控制：每采满 rest_every 轮强制长时休息（5~10 分钟）----
+            rounds_since_rest += 1
+            if (args.rest_every > 0 and rounds_since_rest >= args.rest_every
+                    and state["total"] < state["target"] and not stop.is_set()):
+                rounds_since_rest = 0
+                t = random.uniform(args.rest_min, args.rest_max)
+                print(f"{tag}   [休息] 已连续采集 {args.rest_every} 轮，"
+                      f"静默 {t / 60:.1f} 分钟后继续（长时控频防风控）")
+                stop.wait(t)  # 可被 Ctrl+C 提前唤醒
 
             # 轮间控频：长随机延迟，模拟正常浏览节奏
             if state["total"] < state["target"] and not stop.is_set():
@@ -382,6 +350,13 @@ def main() -> int:
                          "退出时自动把最新 Cookie 写回该 IP 名下")
     ap.add_argument("--channels", type=int, default=1,
                     help="青果通道池大小（默认取 proxy_qingguo.CONFIG['channels']）")
+    ap.add_argument("--rest-every", type=int, default=3,
+                    help="节奏控制：每个 worker 每采满 N 轮强制长时休息"
+                         "（默认 3，0=关闭长时休息）")
+    ap.add_argument("--rest-min", type=float, default=300.0,
+                    help="长时休息最短秒数（默认 300 = 5 分钟）")
+    ap.add_argument("--rest-max", type=float, default=600.0,
+                    help="长时休息最长秒数（默认 600 = 10 分钟）")
     ap.add_argument("--workers", type=int, default=1,
                     help="并发 worker 数；代理模式默认=通道数，直连模式默认 1")
     ap.add_argument("-y", "--yes", action="store_true",
@@ -519,8 +494,6 @@ def main() -> int:
         "target": target,
         "rounds": 0,
         "empty_streak": 0,  # 全局连续无新增轮数，防死循环
-        "ip_switches": 0,   # 全局已换 IP 次数（疑似风控处置）
-        "max_ip_switches": MAX_IP_SWITCHES if args.proxy else 0,
     }
     lock = threading.Lock()
     stop = threading.Event()
@@ -533,6 +506,9 @@ def main() -> int:
     ]
     print(f"[4] 启动 {workers} 个采集 worker"
           f"（{'代理通道: ' + ', '.join(proxy_servers) if args.proxy else '直连'}）")
+    if args.rest_every > 0:
+        print(f"    节奏控制: 每个 worker 每 {args.rest_every} 轮休息 "
+              f"{args.rest_min / 60:.0f}~{args.rest_max / 60:.0f} 分钟")
     if workers > 1:
         print(f"[!] 注意：CloakBrowser Free  license 仅允许 1 个并发会话，"
               f"超出部分的浏览器会被服务端强制关闭；"
