@@ -17,7 +17,10 @@
     - 首次 --proxy --headed 运行，在代理出口下登录/过滑块，脚本退出时
       自动把浏览器最新 Cookie（含新 x5sec）写回该 IP 名下的记录，
       之后同一出口 IP 都复用它，保持 Cookie / x5sec / UA / 出口 IP 一致。
-      .cache/cookies_1688.json 仅作为首次启动的种子导入一次。
+    - 代理模式的新出口 IP 不从 .cache/cookies_1688.json 播种：种子里的
+      cookie2 / t / cna 等匿名身份标识一旦跨 IP 复制，就是「同一访客
+      同时从多个 IP 出现」的 Cookie 重放特征（多 worker 并发时成倍放大）。
+      新 IP 以空会话启动，由 warmup 时站点为当前出口现场签发全新身份。
       （青果隧道出口 IP 每 30 分钟自动轮换一次，属产品特性；
        换 IP 后库里没有该 IP 的 Cookie，需重新过一次验证。）
 """
@@ -160,6 +163,11 @@ def load_cookies_pw(cookie_path: Path = COOKIE_JSON) -> list[dict]:
 # 不能跨 IP 复制 —— 把 A 地签发的 x5sec/sgcookie/isg 带到 B 地出口，
 # 等于主动告诉风控系统「同一客户端在 IP 池里跳」，是账号被标记的
 # 最强信号。新 identity 播种时必须剔除，让站点为当前出口重新签发。
+#
+# 同理，cookie2 / t / cna / _tb_token_ 等匿名身份与设备标识也不能
+# 跨 IP 复制（不登录站点也会用它们识别「同一个访客」）。因此代理模式
+# 的新出口 IP 已改为完全不播种（见 launch_browser），本集合仅作
+# 直连模式之外的历史参考保留。
 SECURITY_COOKIE_NAMES = frozenset({
     "x5sec", "x5secdata", "x5sectag", "sgcookie", "sg", "isg",
 })
@@ -169,24 +177,13 @@ def seed_cookies_from_json(db, identity: str,
                            cookie_path: Path = COOKIE_JSON) -> int:
     """把 CDP 导出的 JSON Cookie 作为种子导入数据库（保留过期时间）。
 
-    代理模式（identity 为出口 IP）播种时剔除风控安全 Cookie
-    （x5sec/sgcookie/isg 等）：它们由站点按 IP+会话签发，跨 IP 复制
-    会触发风控；剔除后首次访问由站点为当前出口重新签发，之后
-    save_cookies 写回的才是与该 IP 配套的安全 Cookie。
-    直连模式（identity='direct'）Cookie 本来就是本机 IP 下签发的，全量保留。
+    仅供直连模式（identity='direct'）：Cookie 是本机 IP 下签发的，
+    链路一致，全量保留。代理模式的新出口 IP 不播种（见 launch_browser
+    的 Cookie 加载段），避免把种子里的匿名身份标识（cookie2 / t / cna
+    等）复制到多个 IP，形成「同一访客多 IP 并发」的 Cookie 重放特征。
     """
     raw = json.loads(cookie_path.read_text(encoding="utf-8"))
     seeds = [c for c in raw if "1688.com" in c.get("domain", "")]
-    if identity != "direct":
-        stripped = [c for c in seeds
-                    if c.get("name") in SECURITY_COOKIE_NAMES]
-        if stripped:
-            seeds = [c for c in seeds
-                     if c.get("name") not in SECURITY_COOKIE_NAMES]
-            _log(f"    [cookie] 播种 identity={identity} 时已剔除 "
-                 f"{len(stripped)} 个跨 IP 风控 Cookie"
-                 f"（{', '.join(sorted(c['name'] for c in stripped))}），"
-                 f"将由站点为当前出口重新签发")
     return db.save_cookies(identity, seeds)
 
 
@@ -230,17 +227,19 @@ def get_exit_ip(proxies: dict = None, timeout: int = 10) -> str | None:
 
 
 def launch_browser(headless: bool = True, use_proxy: bool = False, db=None,
-                   proxy_server: str = None, pool_size: int = None):
+                   proxy_server: str = None, pool_size: int = None,
+                   stop=None):
     """
     启动 CloakBrowser 并注入 1688 Cookie，返回
     (browser, page, identity, req_proxies, proxy_server)。
 
     Cookie 存取（SQLite，按出口 IP 隔离，保持会话链路一致）：
         - identity: 直连记 'direct'；代理模式记当前出口 IP
-        - 先从 1688.db 的 cookies 表取该 identity 下未过期的 Cookie；
-          库里没有时用 .cache/cookies_1688.json 作种子导入一次
-        - use_proxy=True 时若该出口 IP 的 Cookie 是从本机种子导入的，
-          会打印错配警告（建议 --proxy --headed 重新登录/过滑块）
+        - 先从 1688.db 的 cookies 表取该 identity 下未过期的 Cookie
+        - 直连模式库里没有时用 .cache/cookies_1688.json 作种子导入一次；
+          代理模式的新出口 IP 不播种 —— 种子里的 cookie2 / t / cna 等
+          匿名身份标识跨 IP 复制会被风控识别为 Cookie 重放（同一访客
+          多 IP 并发），改为空会话启动，由 warmup 现场签发全新身份
 
     多通道并发（proxy_server / pool_size）：
         - proxy_server: 指定隧道入口（host:port），None 时从通道池轮询取一个；
@@ -262,7 +261,6 @@ def launch_browser(headless: bool = True, use_proxy: bool = False, db=None,
 
     proxy_conf = None
     identity = "direct"
-    seeded_from_local = False
     req_proxies = None  # 供调用方逐次查询出口 IP 用
     if use_proxy:
         proxy_conf = _get_qingguo_proxy(proxy_server, pool_size)
@@ -289,14 +287,13 @@ def launch_browser(headless: bool = True, use_proxy: bool = False, db=None,
         identity = exit_ip
         _log(f"    [proxy] 青果住宅代理: {host}，出口 IP: {exit_ip}")
 
-    # ---- Cookie：库优先，JSON 种子兜底 ----
+    # ---- Cookie：库优先；仅直连模式用 JSON 种子兜底 ----
     cookies = db.load_cookies(identity) if db else []
-    if not cookies:
+    if not cookies and not use_proxy:
         if not COOKIE_JSON.exists():
             sys.exit(f"[X] 数据库中没有 identity={identity} 的 Cookie，"
                      f"且找不到种子文件 {COOKIE_JSON}，请先导出 Cookie")
         n = seed_cookies_from_json(db, identity, COOKIE_JSON)
-        seeded_from_local = True
         cookies = db.load_cookies(identity)
         _log(f"    [cookie] 已从 {COOKIE_JSON.name} 导入 {n} 个 Cookie "
              f"到 identity={identity}")
@@ -304,10 +301,14 @@ def launch_browser(headless: bool = True, use_proxy: bool = False, db=None,
     _log(f"    [cookie] identity={identity}，可用 {len(cookies)} 个"
          f"（库内共 {info['total']}，已过期剔除 {info['expired']}，"
          f"最近过期: {info['earliest_expiry'] or '未知'}）")
-    if use_proxy and seeded_from_local:
-        _log(f"    [cookie] 该出口 IP 的 Cookie 来自本机种子（已剔除跨 IP"
-             f" 风控 Cookie），预热时将由站点为当前出口重新签发")
-    if not cookies:
+    if use_proxy and not cookies:
+        # 新出口 IP 不播种旧会话：种子里的 cookie2 / t / cna 等匿名身份
+        # 标识跨 IP 复制 = 「同一访客多 IP 并发」的 Cookie 重放特征
+        # （多 worker 并发时成倍放大）。空会话启动，由 warmup 让站点
+        # 为当前出口现场签发一套全新的匿名身份。
+        _log(f"    [cookie] 新出口 IP 不播种旧会话身份，"
+             f"warmup 时由站点为 {identity} 现场签发全新匿名身份")
+    if not cookies and not use_proxy:
         sys.exit(f"[X] identity={identity} 下没有可用 Cookie（可能全部过期）")
 
     # 启动前等服务端有空余会话席位（上次异常退出的残留租约未释放时，
@@ -332,20 +333,49 @@ def launch_browser(headless: bool = True, use_proxy: bool = False, db=None,
     if use_proxy:
         # 新 IP / 新会话预热：访问首页让站点为当前出口现场签发独立
         # Cookie（sgcookie/isg/cna 等），立即回写该 IP 名下 ——
-        # 每个 IP 的 Cookie 从此在值层面也是独立的，不再跨 IP 复制
-        warmup_cookies(db, identity, page, ctx)
+        # 每个 IP 的 Cookie 从此在值层面也是独立的，不再跨 IP 复制。
+        # 有头模式下首页弹滑块会停下来等手动过证，过了立即保存 x5sec
+        warmup_cookies(db, identity, page, ctx,
+                       headed=not headless, stop=stop)
     return browser, page, identity, req_proxies, proxy_server
 
 
-def warmup_cookies(db, identity: str, page, ctx) -> bool:
+def _wait_manual_pass(page, stop, seconds: float, interval: float = 5.0) -> bool:
+    """轮询当前页面是否已脱离拦截态（不发起新请求，只在当前页读
+    innerText，不会加重风控）。检测到验证通过返回 True；超时、
+    页面/浏览器异常或收到停止信号返回 False。"""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if stop is not None and stop.is_set():
+            return False
+        try:
+            text = page.evaluate("() => document.body.innerText") or ""
+        except Exception:
+            return False  # 页面/浏览器异常，交给调用方后续流程
+        if not is_risk_blocked(page.url, text):
+            return True
+        if stop is not None:
+            stop.wait(interval)
+        else:
+            time.sleep(interval)
+    return False
+
+
+def warmup_cookies(db, identity: str, page, ctx, headed: bool = False,
+                   stop=None, max_wait: float = 600.0) -> bool:
     """新 IP 的 Cookie 自动更新：访问 1688 首页触发站点现场签发。
 
-    播种只能提供登录态（cookie2/_tb_token_），风控与会话 Cookie 必须由
-    站点按「当前出口 IP + 当前会话」签发才算配套。首页是低风险页面，
-    预热一次即完成绑定，顺带让首个店铺请求带上真实的站内浏览轨迹
-    （直接深链 contactinfo.htm 而无首页访问记录本身也是爬虫特征）。
+    匿名身份与风控 Cookie（cookie2/cna/x5sec/sgcookie/isg 等）必须由
+    站点按「当前出口 IP + 当前会话」现场签发才算配套，不能跨 IP 复制。
+    首页是低风险页面，预热一次即完成绑定，顺带让首个店铺请求带上真实
+    的站内浏览轨迹（直接深链 contactinfo.htm 而无首页访问记录本身
+    也是爬虫特征）。
 
-    返回 True 表示预热顺利；首页即命中风控或预热失败返回 False
+    headed=True 且首页即命中滑块时：停下来等用户手动拖动滑块
+    （每 5s 检测一次，最长 max_wait 秒），检测到通过立即把新签发的
+    x5sec 等 Cookie 写回该出口 IP 名下并返回 True。
+
+    返回 True 表示预热顺利（含手动过证后）；未过证/预热失败返回 False
     （不阻断启动，后续抓取重试/手动过证流程会处理）。
     """
     try:
@@ -357,6 +387,22 @@ def warmup_cookies(db, identity: str, page, ctx) -> bool:
         except Exception:
             pass
         blocked = is_risk_blocked(page.url, text)
+        if blocked and headed:
+            # 有头模式：等用户手动拖滑块，过了立即保存 x5sec 并继续
+            _log(f"    [warmup] 首页命中风控（{blocked}）")
+            _log(f"    [warmup] 👉 请在 {identity} 的浏览器窗口里手动"
+                 f"拖动滑块，脚本每 5s 自动检测"
+                 f"（最长 {max_wait / 60:.0f} 分钟）...")
+            if _wait_manual_pass(page, stop, max_wait):
+                n = save_cookies(db, identity, ctx)
+                _log(f"    [warmup] ✓ 检测到验证已通过，{n} 个 Cookie"
+                     f"（含新 x5sec）已写回 {identity} 名下")
+                return True
+            if stop is not None and stop.is_set():
+                return False
+            _log(f"    [warmup] 等待超时仍未过证（不阻断启动，"
+                 f"后续抓取重试流程会处理）")
+            return False
         n = save_cookies(db, identity, ctx)
         if blocked:
             _log(f"    [warmup] 首页即命中风控（{blocked}），已回写 {n} 个"
@@ -389,6 +435,166 @@ def human_pause(lo: float = 2.0, hi: float = 5.0):
     t = random.uniform(lo, hi)
     _log(f"    ...随机等待 {t:.1f}s")
     time.sleep(t)
+
+
+# ---------- 终端状态板与等待工具（contact_fetcher / shop_crawler 共用） ----------
+
+def fmt_dur(sec: float) -> str:
+    """秒 -> mm:ss（状态行倒计时用）。"""
+    m, s = divmod(max(0, int(sec)), 60)
+    return f"{m:02d}:{s:02d}"
+
+
+def _disp_width(s: str) -> int:
+    """字符串的终端显示宽度（CJK 全角字符占 2 列）。"""
+    import unicodedata
+    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+               for ch in s)
+
+
+def _truncate_disp(s: str, max_cols: int) -> str:
+    """按终端显示宽度截断（中文按 2 列算），防止超宽换行打乱固定行渲染。"""
+    import unicodedata
+    w, out = 0, []
+    for ch in s:
+        cw = 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+        if w + cw > max_cols:
+            break
+        out.append(ch)
+        w += cw
+    return "".join(out)
+
+
+class StatusBoard:
+    """终端底部固定 workers 行显示各 worker 实时状态（不刷屏）。
+
+    - fields 结构由调用方自定，渲染格式由 compose(wid, fields) 回调决定；
+      detail 字段保留给 common 内部日志路由（set 时未显式给则清空）；
+    - set() 更新某 worker 的状态字段并重绘整板（有最小重绘间隔节流）；
+    - log() 把重要事件以滚动日志打印在状态板上方；
+    - 非 TTY（重定向到文件/管道）时 set() 不重绘、log() 直接 print。
+    """
+
+    def __init__(self, n_workers: int, compose=None):
+        self.n = n_workers
+        self.tty = sys.stdout.isatty()
+        self.lock = threading.Lock()
+        self.compose = compose or (lambda wid, f: str(f.get("line", "")))
+        self.fields = [{"detail": ""} for _ in range(n_workers)]
+        self._started = False
+        self._last_render = 0.0
+
+    # ---- 渲染 ----
+
+    def _width(self) -> int:
+        import shutil
+        return max(60, shutil.get_terminal_size((120, 24)).columns - 1)
+
+    def _render_locked(self, force: bool = False):
+        if not self.tty or not self._started:
+            return
+        now = time.monotonic()
+        if not force and now - self._last_render < 0.2:
+            return
+        self._last_render = now
+        out = [f"\033[{self.n}A"]  # 光标回到状态板首行
+        for wid in range(self.n):
+            f = self.fields[wid]
+            line = self.compose(wid, f)
+            if f.get("detail"):
+                line += f" · {f['detail']}"
+            out.append("\033[2K\r" + _truncate_disp(line, self._width()) + "\n")
+        sys.stdout.write("".join(out))
+        sys.stdout.flush()
+
+    # ---- 对外接口 ----
+
+    def start(self):
+        """预留状态板空间并首次绘制（启动日志打印完之后调用）。"""
+        if self.tty and not self._started:
+            sys.stdout.write("\n" * self.n)
+            sys.stdout.flush()
+            self._started = True
+            with self.lock:
+                self._render_locked(force=True)
+
+    def set(self, wid: int, force: bool = False, **kw):
+        """更新 worker 状态字段；未显式给 detail 时清空旧细节。"""
+        with self.lock:
+            f = self.fields[wid]
+            if "detail" not in kw:
+                f["detail"] = ""
+            f.update(kw)
+            self._render_locked(force=force)
+
+    def log(self, msg: str):
+        """重要事件：滚动打印在状态板上方（自动按显示宽度折行）。"""
+        with self.lock:
+            if not self.tty or not self._started:
+                print(msg, flush=True)
+                return
+            width = self._width()
+            # 先按显示宽度折行，保证每物理行触发一次滚动，状态板位置不错位
+            lines = []
+            for part in str(msg).splitlines() or [""]:
+                while _disp_width(part) > width:
+                    cut = _truncate_disp(part, width)
+                    lines.append(cut)
+                    part = part[len(cut):]
+                lines.append(part)
+            out = [f"\033[{self.n}A"]  # 光标回到状态板首行
+            for ln in lines:
+                out.append("\033[2K\r" + ln + "\n")  # 逐行下推，终端随之滚动
+            for wid in range(self.n):  # 在腾出的新位置重绘状态板
+                f = self.fields[wid]
+                line = self.compose(wid, f)
+                if f.get("detail"):
+                    line += f" · {f['detail']}"
+                out.append("\033[2K\r"
+                           + _truncate_disp(line, width) + "\n")
+            sys.stdout.write("".join(out))
+            sys.stdout.flush()
+            self._last_render = time.monotonic()
+
+
+def wait_countdown(board: StatusBoard, wid: int, stop: threading.Event,
+                   seconds: float, state_prefix: str,
+                   state_key: str = "state") -> bool:
+    """可中断等待，状态行每秒刷新倒计时。返回 True 表示被用户中断。"""
+    deadline = time.monotonic() + seconds
+    while True:
+        remain = deadline - time.monotonic()
+        if remain <= 0:
+            return False
+        board.set(wid, **{state_key: f"{state_prefix} 剩 {fmt_dur(remain)}"})
+        if stop.wait(min(1.0, remain)):
+            return True
+
+
+def wait_manual_unblock(board: StatusBoard, wid: int, stop: threading.Event,
+                        page, seconds: float,
+                        state_key: str = "state") -> bool:
+    """有头模式专用：等用户在浏览器窗口里手动过滑块/验证。
+
+    每 15s 检测一次当前页面是否已脱离拦截态（不发起新请求，只在
+    当前页面上读 innerText，不会加重风控）。检测到验证通过立即返回
+    True；超时、页面异常或浏览器死亡返回 False（调用方走原计划休息）。
+    """
+    deadline = time.monotonic() + seconds
+    while True:
+        remain = deadline - time.monotonic()
+        if remain <= 0:
+            return False
+        board.set(wid, **{state_key: f"等待手动过验证 剩 {fmt_dur(remain)}"})
+        if stop.wait(min(15.0, remain)):
+            return False  # 用户中断，按未解决处理
+        try:
+            text = page.evaluate("() => document.body.innerText")
+            if not is_risk_blocked(page.url, text):
+                return True
+        except Exception:
+            if not browser_alive(page):
+                return False  # 浏览器已死，交给后续流程
 
 
 # ---------- 风控拦截检测 ----------

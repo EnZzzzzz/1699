@@ -56,6 +56,9 @@ class ForEachShopAtom(Atom):
             "parallel": {"type": "integer", "minimum": 1, "default": 1,
                          "description": "并行 worker 数（P0 按串行执行，"
                                         ">1 由 P1 引擎支持）"},
+            "headed": {"type": "boolean", "default": False,
+                       "description": "并行 worker 浏览器有头模式"
+                                      "（引擎 parallel>1 接管时读取）"},
             "body": {"type": "array", "default": [],
                      "description": "子节点列表 [{\"id\", \"atom\", \"params\"}]"},
         },

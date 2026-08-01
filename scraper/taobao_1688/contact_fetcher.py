@@ -73,7 +73,6 @@ from __future__ import annotations
 import argparse
 import random
 import re
-import shutil
 import sys
 import threading
 import time
@@ -83,170 +82,18 @@ BASE_DIR = Path(__file__).resolve().parent
 ROOT_DIR = BASE_DIR.parents[1]  # 项目根目录
 
 import common
-from common import (get_exit_ip, is_risk_blocked, launch_browser,
-                    save_cookies, scrape_contact)
+from common import (StatusBoard, get_exit_ip, launch_browser,
+                    save_cookies, scrape_contact, wait_countdown,
+                    wait_manual_unblock)
 from database import ShopDB
 
 
-def fmt_dur(sec: float) -> str:
-    """秒 -> mm:ss（状态行倒计时用）。"""
-    m, s = divmod(max(0, int(sec)), 60)
-    return f"{m:02d}:{s:02d}"
-
-
-def _disp_width(s: str) -> int:
-    """字符串的终端显示宽度（CJK 全角字符占 2 列）。"""
-    import unicodedata
-    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
-               for ch in s)
-
-
-def _truncate_disp(s: str, max_cols: int) -> str:
-    """按终端显示宽度截断（中文按 2 列算），防止超宽换行打乱固定行渲染。"""
-    import unicodedata
-    w, out = 0, []
-    for ch in s:
-        cw = 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
-        if w + cw > max_cols:
-            break
-        out.append(ch)
-        w += cw
-    return "".join(out)
-
-
-# ---------- 状态板（固定 N 行，不刷屏） ----------
-
-class StatusBoard:
-    """终端底部固定 workers 行显示各 worker 实时状态。
-
-    - set() 更新某 worker 的状态字段并重绘整板（有最小重绘间隔节流）；
-    - log() 把重要事件以滚动日志打印在状态板上方；
-    - 非 TTY（重定向到文件/管道）时 set() 不重绘、log() 直接 print。
-    """
-
-    _FIELDS = ("ip", "batch", "n", "ok", "empty", "failed",
-               "shop", "state", "detail")
-
-    def __init__(self, n_workers: int):
-        self.n = n_workers
-        self.tty = sys.stdout.isatty()
-        self.lock = threading.Lock()
-        self.fields = [dict(zip(self._FIELDS,
-                                ("…", 1, 0, 0, 0, 0, "-", "初始化", "")))
-                       for _ in range(n_workers)]
-        self._started = False
-        self._last_render = 0.0
-
-    # ---- 渲染 ----
-
-    def _width(self) -> int:
-        return max(60, shutil.get_terminal_size((120, 24)).columns - 1)
-
-    def _compose(self, wid: int) -> str:
-        f = self.fields[wid]
-        line = (f"[w{wid}] 出口 {f['ip']} | 批 {f['batch']} | "
-                f"采 {f['n']}（✓{f['ok']} ○{f['empty']} ✗{f['failed']}）"
-                f" | {f['shop']} | {f['state']}")
-        if f["detail"]:
-            line += f" · {f['detail']}"
-        return _truncate_disp(line, self._width())
-
-    def _render_locked(self, force: bool = False):
-        if not self.tty or not self._started:
-            return
-        now = time.monotonic()
-        if not force and now - self._last_render < 0.2:
-            return
-        self._last_render = now
-        out = [f"\033[{self.n}A"]  # 光标回到状态板首行
-        for wid in range(self.n):
-            out.append("\033[2K\r" + self._compose(wid) + "\n")
-        sys.stdout.write("".join(out))
-        sys.stdout.flush()
-
-    # ---- 对外接口 ----
-
-    def start(self):
-        """预留状态板空间并首次绘制（启动日志打印完之后调用）。"""
-        if self.tty and not self._started:
-            sys.stdout.write("\n" * self.n)
-            sys.stdout.flush()
-            self._started = True
-            with self.lock:
-                self._render_locked(force=True)
-
-    def set(self, wid: int, force: bool = False, **kw):
-        """更新 worker 状态字段；未显式给 detail 时清空旧细节。"""
-        with self.lock:
-            f = self.fields[wid]
-            if ("state" in kw or "shop" in kw) and "detail" not in kw:
-                f["detail"] = ""
-            for k, v in kw.items():
-                if k in f:
-                    f[k] = v
-            self._render_locked(force=force)
-
-    def log(self, msg: str):
-        """重要事件：滚动打印在状态板上方（自动按终端宽度折行）。"""
-        with self.lock:
-            if not self.tty or not self._started:
-                print(msg, flush=True)
-                return
-            width = self._width()
-            # 先按显示宽度折行，保证每物理行触发一次滚动，状态板位置不错位
-            lines = []
-            for part in str(msg).splitlines() or [""]:
-                while _disp_width(part) > width:
-                    cut = _truncate_disp(part, width)
-                    lines.append(cut)
-                    part = part[len(cut):]
-                lines.append(part)
-            out = [f"\033[{self.n}A"]  # 光标回到状态板首行
-            for ln in lines:
-                out.append("\033[2K\r" + ln + "\n")  # 逐行下推，终端随之滚动
-            for wid in range(self.n):  # 在腾出的新位置重绘状态板
-                out.append("\033[2K\r" + self._compose(wid) + "\n")
-            sys.stdout.write("".join(out))
-            sys.stdout.flush()
-            self._last_render = time.monotonic()
-
-
-def wait_countdown(board: StatusBoard, wid: int, stop: threading.Event,
-                   seconds: float, state_prefix: str) -> bool:
-    """可中断等待，状态行每秒刷新倒计时。返回 True 表示被用户中断。"""
-    deadline = time.monotonic() + seconds
-    while True:
-        remain = deadline - time.monotonic()
-        if remain <= 0:
-            return False
-        board.set(wid, state=f"{state_prefix} 剩 {fmt_dur(remain)}")
-        if stop.wait(min(1.0, remain)):
-            return True
-
-
-def wait_manual_unblock(board: StatusBoard, wid: int, stop: threading.Event,
-                        page, seconds: float) -> bool:
-    """有头模式专用：等用户在浏览器窗口里手动过滑块/验证。
-
-    每 15s 检测一次当前页面是否已脱离拦截态（不发起新请求，只在
-    当前页面上读 innerText，不会加重风控）。检测到验证通过立即返回
-    True；超时、页面异常或浏览器死亡返回 False（调用方走原计划休息）。
-    """
-    deadline = time.monotonic() + seconds
-    while True:
-        remain = deadline - time.monotonic()
-        if remain <= 0:
-            return False
-        board.set(wid, state=f"等待手动过验证 剩 {fmt_dur(remain)}")
-        if stop.wait(min(15.0, remain)):
-            return False  # 用户中断，按未解决处理
-        try:
-            text = page.evaluate("() => document.body.innerText")
-            if not is_risk_blocked(page.url, text):
-                return True
-        except Exception:
-            if not common.browser_alive(page):
-                return False  # 浏览器已死，交给后续流程
+def _compose_fetcher(wid: int, f: dict) -> str:
+    """contact_fetcher 状态行格式（StatusBoard compose 回调）。"""
+    return (f"[w{wid}] 出口 {f.get('ip', '…')} | 批 {f.get('batch', 1)} | "
+            f"采 {f.get('n', 0)}（✓{f.get('ok', 0)} ○{f.get('empty', 0)} "
+            f"✗{f.get('failed', 0)}） | {f.get('shop', '-')} | "
+            f"{f.get('state', '初始化')}")
 
 
 # ---------- 浏览器生命周期 ----------
@@ -281,7 +128,8 @@ def relaunch_browser(board: StatusBoard, tag: str, wid: int, args,
         try:
             browser, page, identity, req_proxies, _ = launch_browser(
                 headless=not args.headed, use_proxy=args.proxy, db=db,
-                proxy_server=proxy_server, pool_size=args.channels or None)
+                proxy_server=proxy_server, pool_size=args.channels or None,
+                stop=stop)
             board.set(wid, ip=identity, state="浏览器已重启", force=True)
             board.log(f"{tag} 浏览器已重启，新出口 IP={identity}")
             return browser, page, identity, req_proxies
@@ -348,7 +196,8 @@ def worker(worker_id: int, args, proxy_server: str | None,
                 browser, page, identity, req_proxies, _ = launch_browser(
                     headless=not args.headed, use_proxy=args.proxy, db=db,
                     proxy_server=proxy_server,
-                    pool_size=args.channels or None)
+                    pool_size=args.channels or None,
+                    stop=stop)
                 break
             except (Exception, SystemExit) as e:
                 last_err = e
@@ -361,45 +210,28 @@ def worker(worker_id: int, args, proxy_server: str | None,
             raise RuntimeError(f"启动浏览器重试 {args.ip_retry} "
                                f"次仍失败: {last_err}")
         ctx = page.context
-        set_status(ip=identity, state="就绪", force=True)
+        batch_no = 1
+        done_in_batch = 0  # 本 worker 当前批次已采数量（-n 按 worker 各自计）
+        set_status(ip=identity, batch=batch_no, state="就绪", force=True)
 
         while not stop.is_set():
-            # ---- 批次配额：采满一批后强制大休息，再自动开下一批 ----
-            while True:
-                with lock:
-                    if state["done"] < args.num:
-                        state["done"] += 1
-                        wait_for = 0.0
-                        batch_no = state["batch"]
-                    elif (args.max_batches and state["batch"] >= args.max_batches) \
-                            or db.count_pending() == 0:
-                        wait_for = -1.0  # 达到批次上限或没有剩余店铺，收工
-                        batch_no = state["batch"]
-                    else:
-                        now = time.time()
-                        if state["rest_until"] <= now:
-                            # 第一个发现配额满的 worker 决定本次休息时长（±10% 抖动）
-                            state["rest_until"] = now + random.uniform(
-                                args.batch_rest * 0.9, args.batch_rest * 1.1)
-                        wait_for = state["rest_until"] - now
-                        batch_no = state["batch"]
-                set_status(batch=batch_no)
-                if wait_for == 0.0:
-                    break
-                if wait_for < 0:
+            # ---- 批次配额（每个 worker 各自计数）：本 worker 采满 -n 个后
+            #      各自强制大休息（±10% 抖动），再自动开下一批；
+            #      各 worker 批次互不同步，避免集体停工 ----
+            if done_in_batch >= args.num:
+                if args.max_batches and batch_no >= args.max_batches:
                     board.log(f"{tag} 第 {batch_no} 批采满，"
-                              f"已达批次上限或没有剩余店铺，收工")
+                              f"已达批次上限（--max-batches），收工")
                     set_status(state="收工")
                     return  # finally 会保存 Cookie、关闭浏览器
+                rest = random.uniform(args.batch_rest * 0.9,
+                                      args.batch_rest * 1.1)
                 board.log(f"{tag} ⏸ 第 {batch_no} 批已采满 {args.num} 个，"
-                          f"强制休息 {wait_for / 60:.1f} 分钟（防风控）...")
-                if wait_countdown(board, worker_id, stop, wait_for, "批次休息"):
+                          f"强制休息 {rest / 60:.1f} 分钟（防风控）...")
+                if wait_countdown(board, worker_id, stop, rest, "批次休息"):
                     return  # 用户中断
-                with lock:
-                    if state["done"] >= args.num:  # 由第一个醒来的 worker 开新批次
-                        state["done"] = 0
-                        state["batch"] += 1
-                    batch_no = state["batch"]
+                batch_no += 1
+                done_in_batch = 0
                 board.log(f"{tag} ▶ 休息结束，开始第 {batch_no} 批")
                 set_status(batch=batch_no, state="采集中")
 
@@ -590,6 +422,18 @@ def worker(worker_id: int, args, proxy_server: str | None,
                                  f"电话={info['phone'] or '-'} "
                                  f"手机={info['mobile'] or '-'}")
 
+            # 本店处理完毕（含标记 failed），计入本 worker 当前批次配额
+            done_in_batch += 1
+
+            # 每次成功后把浏览器里的最新 Cookie（含可能轮换的 x5sec、
+            # 以及手动过证后新签发的安全 Cookie）写回该出口 IP 名下 ——
+            # 进程意外退出也不丢信任链，同 IP 复访直接复用
+            if info is not None:
+                try:
+                    save_cookies(db, identity, ctx)
+                except Exception:
+                    pass
+
             n_local = sum(stats.values())
             set_status(n=n_local, ok=stats["ok"], empty=stats["empty"],
                        failed=stats["failed"])
@@ -631,11 +475,12 @@ def main() -> int:
     ap = argparse.ArgumentParser(
         description="1688 店铺联系方式抓取（多 worker 并发，状态板显示，断点续爬）")
     ap.add_argument("-n", "--num", type=int, default=10,
-                    help="每批抓取的店铺数量（默认 10）；采满一批后强制休息再开下一批")
+                    help="每个 worker 每批抓取的店铺数量（默认 10）；"
+                         "采满一批后各自强制休息再开下一批")
     ap.add_argument("--batch-rest", type=float, default=900,
                     help="每批采满后的强制休息秒数（默认 900=15 分钟，±10%% 抖动）")
     ap.add_argument("--max-batches", type=int, default=0,
-                    help="最多采集多少批（默认 0=不限，抓完 pending 为止）")
+                    help="每个 worker 最多采集多少批（默认 0=不限，抓完 pending 为止）")
     ap.add_argument("--ip-retry", type=int, default=3,
                     help="重启浏览器获取新出口 IP 的重试次数（默认 3）")
     ap.add_argument("--block-rest-min", type=float, default=600,
@@ -686,11 +531,9 @@ def main() -> int:
         print("    先运行 shop_crawler.py 采集更多店铺")
         db.close()
         return 0
-    est_batches = -(-total_pending // args.num)  # 向上取整
-    if args.max_batches:
-        est_batches = min(est_batches, args.max_batches)
-    print(f"[1] 待抓取 {total_pending} 个，每批 {args.num} 个"
-          f"（约 {est_batches} 批），批间强制休息 {args.batch_rest / 60:.0f} 分钟")
+    print(f"[1] 待抓取 {total_pending} 个，每个 worker 每批 {args.num} 个"
+          f"（{'最多 ' + str(args.max_batches) + ' 批' if args.max_batches else '不限批数，抓完 pending 为止'}），"
+          f"批间强制休息 {args.batch_rest / 60:.0f} 分钟")
 
     # ---- 并发度与通道分配（一 worker 一通道，IP + Cookie 配套）----
     proxy_servers: list = [None]
@@ -716,7 +559,7 @@ def main() -> int:
           f"（{'代理通道: ' + ', '.join(proxy_servers) if args.proxy else '直连'}）")
 
     # ---- 状态板：common 内部日志按线程标签路由进来 ----
-    board = StatusBoard(workers)
+    board = StatusBoard(workers, compose=_compose_fetcher)
 
     def _sink(tag: str, msg: str):
         """common 内部日志路由：错误/警告进滚动日志，常规细节进状态行。"""
@@ -734,7 +577,7 @@ def main() -> int:
     common.set_log_sink(_sink)
     board.start()
 
-    state = {"done": 0, "batch": 1, "rest_until": 0.0, "stats": {}}
+    state = {"stats": {}}
     lock = threading.Lock()
     stop = threading.Event()
 
