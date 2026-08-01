@@ -4,3 +4,20 @@
 cookies*
 __pycache__/
 .DS_Store
+
+# Node.js
+node_modules/
+dist/
+
+# Python
+.venv/
+venv/
+*.pyc
+
+# Environment files
+.env
+.env.*
+
+# Logs
+logs/
+*.log
