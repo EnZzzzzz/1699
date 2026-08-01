@@ -23,7 +23,9 @@
     - worker i 从青果通道池独占通道 i（独立出口 IP），Cookie 按各自
       出口 IP（identity）隔离存取，互不串号；
     - 每次启动/重启浏览器都会先访问首页预热：站点为当前出口现场签发
-      独立 Cookie 并立即回写该 IP 名下（见 common.warmup_cookies）。
+      独立 Cookie 并立即回写该 IP 名下（见 common.warmup_cookies）；
+      有头模式下首页弹滑块会停下来等手动拖动，检测通过即保存 x5sec
+      并继续；
 
 风控处置（与 contact_fetcher 同一策略，不急于换 IP）:
     第 1 次疑似风控（类目页打不开/页面是拦截页）→ 不换 IP，
@@ -46,8 +48,11 @@
 
 会话链路一致性:
     Cookie 存 SQLite（1688.db cookies 表），按出口 IP 隔离并记录过期时间；
-    新 identity 播种时剔除跨 IP 风控 Cookie（x5sec/sgcookie/isg 等），
-    由站点为当前出口重新签发；退出/重启时自动把最新 Cookie 写回该 IP 名下。
+    代理模式的新出口 IP 不播种旧会话 —— 种子里的 cookie2 / t / cna 等
+    匿名身份标识跨 IP 复制 = 「同一访客多 IP 并发」的 Cookie 重放特征，
+    故以空会话启动，由 warmup 时站点为当前出口现场签发全新身份；
+    每轮成功、退出/重启时自动把最新 Cookie（含 x5sec）写回该 IP 名下，
+    同一出口 IP 复访才复用。
 
 用法:
     python3 shop_crawler.py --proxy -t 1000     # 5 通道并发采到 1000 个
@@ -162,14 +167,13 @@ def page_blocked(page) -> bool:
 
     用于区分「类目采到末页（空结果）」和「被风控（空结果）」：
     仅深页空结果且不是风控页时，才把类目标记为 exhausted。
+
+    判定规则统一走 common.page_block_reason（URL + 文本特征 +
+    内嵌滑块组件），避免滑块页被误判为类目无货/末页而错误标记
+    exhausted，也避免内嵌滑块与商品列表同屏时的漏判。
     """
     try:
-        return bool(page.evaluate(
-            """() => {
-                if (/punish|x5sec|captcha|verify/i.test(location.href)) return true;
-                const t = document.body ? document.body.innerText.slice(0, 2000) : '';
-                return /滑动验证|安全验证|访问受限|异常流量/.test(t);
-            }"""))
+        return bool(common.page_block_reason(page))
     except Exception:
         return False
 
@@ -244,7 +248,8 @@ def worker(worker_id: int, args, proxy_server: str | None,
                 browser, page, identity, req_proxies, _ = launch_browser(
                     headless=not args.headed, use_proxy=args.proxy, db=db,
                     proxy_server=proxy_server,
-                    pool_size=args.channels or None)
+                    pool_size=args.channels or None,
+                    stop=stop)
                 ctx = page.context
                 set_status(ip=identity, state="浏览器已重启", force=True)
                 board.log(f"{tag} 浏览器已重启，新出口 IP={identity}")
@@ -261,6 +266,16 @@ def worker(worker_id: int, args, proxy_server: str | None,
     def on_block(reason: str) -> bool:
         """疑似风控三级处置。返回 False 表示应终止任务/退出。"""
         nonlocal block_stage
+        # 记录该出口 IP 的风控遭遇；登录墙是更高一级的风控（会话被要求
+        # 强制登录），原地休息/手动滑块都无意义，直接进修复换 IP 阶段
+        login_wall = "login.1688.com" in reason
+        db.record_ip_event(identity,
+                           "block_login" if login_wall else "block_slider",
+                           reason)
+        if login_wall and block_stage == 0:
+            block_stage = 1
+            board.log(f"{tag} ⚠ 触发登录墙（{reason}），出口 {identity} "
+                      f"已被高风险标记，不原地休息，直接修复换 IP")
         if block_stage == 0:
             # 第一次：不换 IP，当前 IP 长时间休息后再试
             block_stage = 1
@@ -311,7 +326,8 @@ def worker(worker_id: int, args, proxy_server: str | None,
                 browser, page, identity, req_proxies, _ = launch_browser(
                     headless=not args.headed, use_proxy=args.proxy, db=db,
                     proxy_server=proxy_server,
-                    pool_size=args.channels or None)
+                    pool_size=args.channels or None,
+                    stop=stop)
                 break
             except (Exception, SystemExit) as e:
                 last_err = e
@@ -413,6 +429,15 @@ def worker(worker_id: int, args, proxy_server: str | None,
                 time.sleep(random.uniform(1.0, 2.0))
 
             shops = extract_shops(page)
+            # 内嵌滑块与商品列表同屏：提取正常也不能算过，
+            # 先等手动过证/风控处置，避免带着未验证会话继续请求
+            embedded = common.detect_embedded_slider(page)
+            if embedded:
+                if not on_block(f"页面内嵌滑块验证（{embedded}）"):
+                    return
+                with lock:  # 类目放回队首，过证/修复后重试同一页
+                    state["queue"].insert(0, cat)
+                continue
             if not shops:
                 if page_blocked(page):
                     if not on_block("页面命中风控（滑块/验证页）"):
@@ -475,6 +500,14 @@ def worker(worker_id: int, args, proxy_server: str | None,
                           f"{state['total']}/{state['target']}"
                           f"（该类目下次采第 {next_page} 页）")
 
+            # 每轮成功后把浏览器里的最新 Cookie（含可能轮换的 x5sec、
+            # 以及手动过证后新签发的安全 Cookie）写回该出口 IP 名下 ——
+            # 进程意外退出也不丢信任链，同 IP 复访直接复用
+            try:
+                save_cookies(db, identity, ctx)
+            except Exception:
+                pass
+
             # ---- 节奏控制：每采满 rest_every 轮强制长时休息（5~10 分钟）----
             rounds_since_rest += 1
             if (args.rest_every > 0 and rounds_since_rest >= args.rest_every
@@ -486,9 +519,11 @@ def worker(worker_id: int, args, proxy_server: str | None,
                 if wait_countdown(board, worker_id, stop, t, "长时休息"):
                     return  # 用户中断
 
-            # 轮间控频：长随机延迟，模拟正常浏览节奏
+            # 轮间控频：长随机延迟，模拟正常浏览节奏；各 worker 按编号
+            # 递增基准延迟，避免多 worker 同频齐步请求形成集群特征
             if state["total"] < state["target"] and not stop.is_set():
-                t = random.uniform(args.delay_min, args.delay_max)
+                t = random.uniform(args.delay_min + worker_id * 5,
+                                   args.delay_max + worker_id * 8)
                 if wait_countdown(board, worker_id, stop, t, "轮间等待"):
                     return  # 用户中断
         set_status(state="已完成，退出")
@@ -541,6 +576,11 @@ def main() -> int:
                     help="长时休息最短秒数（默认 300 = 5 分钟）")
     ap.add_argument("--rest-max", type=float, default=600.0,
                     help="长时休息最长秒数（默认 600 = 10 分钟）")
+    ap.add_argument("--stagger-min", type=float, default=15.0,
+                    help="worker 启动错开的最小秒数（默认 15；多会话同分钟出生、"
+                         "同节奏访问是集群特征，启动时间必须打散）")
+    ap.add_argument("--stagger-max", type=float, default=60.0,
+                    help="worker 启动错开的最大秒数（默认 60）")
     ap.add_argument("-y", "--yes", action="store_true",
                     help="跳过启动时的人工确认（无人值守重跑用）；"
                          "默认会先打开一个具体类目页等待人工检查/过滑块，"
@@ -724,9 +764,14 @@ def main() -> int:
     if args.rest_every > 0:
         print(f"    节奏控制: 每个 worker 每 {args.rest_every} 轮休息 "
               f"{args.rest_min / 60:.0f}~{args.rest_max / 60:.0f} 分钟")
-    for t in threads:
+    for i, t in enumerate(threads):
         t.start()
-        time.sleep(2.0)  # 错开浏览器启动，避免资源争抢
+        if i < len(threads) - 1:
+            # 启动时间打散（默认 15~60s/个）：多会话同一分钟内出生、
+            # 同一节奏访问同一端点，是风控识别爬虫集群的强特征
+            d = random.uniform(args.stagger_min, args.stagger_max)
+            print(f"    错开启动：{d:.0f}s 后启动下一个 worker ...")
+            time.sleep(d)
 
     try:
         for t in threads:

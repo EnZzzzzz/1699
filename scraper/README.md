@@ -11,3 +11,13 @@
 - `.cache/cookies_1688.json` 只作为直连模式首次启动的种子导入一次；代理模式的新出口 IP 不播种（见下条）。
 - 匿名 ≠ 无身份：1688 会给未登录访客签发 `cookie2` / `t` / `cna` / `_tb_token_` 等匿名身份标识。把它们跨 IP 复制，就是「同一访客同时从多个 IP 出现」的 Cookie 重放特征，多 worker 并发时成倍放大，比访问频率更容易触发风控。因此代理模式下新出口 IP 以空会话启动，由 warmup 访问首页时让站点为当前出口现场签发一套全新的匿名身份；同一出口 IP 复访才复用其名下的 Cookie（含 x5sec）。
 - 青果动态长效代理的出口 IP 每 30 分钟自动轮换：换 IP 后库里没有该 IP 的 Cookie，需重新过一次验证，这是产品特性，不要强行复用旧 IP 的 Cookie。
+
+## 设备指纹与 UA（1688）
+
+- 不要硬编码 UA：CloakBrowser 二进制按自身 Chromium 版本自报 UA 与 UA-CH（sec-ch-ua），硬编码不一致的版本号（如二进制 145 报 Chrome/150）会造成 UA / UA-CH / JS 特征错配，是"UA 被篡改"的典型信号，抬高每个会话的基础风险分。
+- 设备指纹按出口 IP 稳定生成（--fingerprint 种子取 identity 哈希）：同一 IP 重启浏览器指纹不变，与该 IP 名下按设备签发的 Cookie（cna 等）配套；不同 IP 指纹不同，避免跨 IP 设备关联。默认的每次随机种子会造成"同 IP 设备突变"。
+
+## 风控分级（1688）
+
+- 滑块（x5sec/punish 页）：低级风控，原地休息或 headed 手动拖动可恢复，过后保存新 x5sec。
+- 强制跳登录（login.1688.com）：高级风控，该 IP/会话已被高风险标记，原地休息无意义，直接换 IP；遭遇记录在 1688.db 的 ip_events 表（launch / block_slider / block_login），可用于评估代理 IP 质量和发现重复发放的 IP。

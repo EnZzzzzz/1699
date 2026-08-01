@@ -118,6 +118,18 @@ CREATE TABLE IF NOT EXISTS cookies (
 
 CREATE INDEX IF NOT EXISTS idx_cookies_identity ON cookies(identity);
 
+-- 出口 IP 事件流水：记录每个 IP 的启动/风控遭遇（滑块/登录墙），
+-- 用于评估代理 IP 质量、发现重复发放的 IP 和高危 IP
+CREATE TABLE IF NOT EXISTS ip_events (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    identity   TEXT NOT NULL,      -- 出口 IP；直连记 'direct'
+    event      TEXT NOT NULL,      -- launch / block_slider / block_login / block_other
+    detail     TEXT,               -- 通道入口、风控原因等
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_ip_events_identity ON ip_events(identity);
+
 CREATE TABLE IF NOT EXISTS category_progress (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     keyword         TEXT NOT NULL UNIQUE,           -- 类目关键词
@@ -420,6 +432,32 @@ class ShopDB:
         earliest = (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(earliest_ts))
                     if earliest_ts else None)
         return {"total": total, "expired": expired, "earliest_expiry": earliest}
+
+    # ---------- IP 事件流水 ----------
+
+    def record_ip_event(self, identity: str, event: str,
+                        detail: str = "") -> None:
+        """记录一条出口 IP 事件（launch / block_slider / block_login 等）。"""
+        try:
+            self.conn.execute(
+                "INSERT INTO ip_events (identity, event, detail, created_at)"
+                " VALUES (?, ?, ?, ?)",
+                (identity, event, detail[:300] if detail else "", _now()))
+            self.conn.commit()
+        except Exception:
+            pass  # 事件流水不影响主流程
+
+    def ip_event_summary(self) -> list[dict]:
+        """按 IP 汇总事件次数（评估 IP 质量用）。"""
+        rows = self.conn.execute(
+            """SELECT identity,
+                      SUM(event='launch')       AS launches,
+                      SUM(event='block_slider') AS sliders,
+                      SUM(event='block_login')  AS login_walls,
+                      MAX(created_at)           AS last_seen
+               FROM ip_events WHERE identity != 'direct'
+               GROUP BY identity ORDER BY last_seen DESC""").fetchall()
+        return [dict(r) for r in rows]
 
     # ---------- 查询 ----------
     def stats(self) -> dict:

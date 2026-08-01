@@ -16,8 +16,9 @@
 单个 worker 的完整生命周期:
     1. 从通道池领到自己的通道，启动浏览器，按出口 IP 配好 Cookie；
     2. 循环：认领店铺 → 抓取 → 样本之间随机间隔（3-7s）；
-    3. 每采满一批（-n 个）所有 worker 强制大休息 --batch-rest 秒
+    3. 每个 worker 各自计批：采满 -n 个后各自强制大休息 --batch-rest 秒
        （默认 900 = 15 分钟，±10% 抖动），再自动开下一批；
+       各 worker 批次互不同步，不会集体停工；
     4. 遇到风控不换 IP：先在当前 IP 上长时间休息
        （--block-rest-min ~ --block-rest-max，默认 10-15 分钟）后重试；
        仍被风控再修复 —— 重启浏览器拿新出口 IP（青果 IP 时效 30 分钟，
@@ -62,7 +63,7 @@ DNS 失败）与风控区分处理：不计入风控连续失败计数，在原�
 用法:
     export CLOAKBROWSER_LICENSE_KEY=cb_xxx   # 或直接写进 .cache/config.json
     python3 contact_fetcher.py --proxy              # 5 通道 5 worker 并发
-    python3 contact_fetcher.py --proxy -n 100       # 每批 100 个
+    python3 contact_fetcher.py --proxy -n 100       # 每个 worker 每批 100 个
     python3 contact_fetcher.py --proxy -n 50 --max-batches 4   # 最多采 4 批
     python3 contact_fetcher.py --proxy --headed     # 有头模式（首次过滑块）
     python3 contact_fetcher.py --retry-failed       # 先把 failed 重置回 pending
@@ -212,6 +213,7 @@ def worker(worker_id: int, args, proxy_server: str | None,
         ctx = page.context
         batch_no = 1
         done_in_batch = 0  # 本 worker 当前批次已采数量（-n 按 worker 各自计）
+        warm_shop = True   # 新会话冷启动：首个店铺先逛首页再进联系方式页
         set_status(ip=identity, batch=batch_no, state="就绪", force=True)
 
         while not stop.is_set():
@@ -254,6 +256,20 @@ def worker(worker_id: int, args, proxy_server: str | None,
                         board, tag, worker_id, args, db, proxy_server,
                         browser, ctx, identity, stop)
                     ctx = page.context
+                    warm_shop = True  # 新会话重新冷启动软着陆
+
+            # ---- 会话冷启动软着陆：新浏览器会话的第一个店铺，先逛店铺
+            #      首页留下真实浏览轨迹，再进联系方式页 —— 新会话一上来
+            #      就深链 contactinfo.htm 是明显的爬虫特征 ----
+            if warm_shop:
+                set_status(state="冷启动先逛店铺首页…")
+                try:
+                    page.goto(f"https://{shop['domain']}/",
+                              wait_until="domcontentloaded", timeout=45000)
+                    time.sleep(random.uniform(2.0, 5.0))
+                except Exception:
+                    pass  # 首页打不开不阻断，照常走抓取流程
+                warm_shop = False
 
             # ---- 抓取（网络故障原通道退避重试，不计入风控计数；
             #      风控：先休息当前 IP → 再修复换 IP → 仍失败标 failed）----
@@ -296,6 +312,7 @@ def worker(worker_id: int, args, proxy_server: str | None,
                                     board, tag, worker_id, args, db,
                                     proxy_server, browser, ctx, identity, stop)
                             ctx = page.context
+                            warm_shop = True  # 新会话重新冷启动软着陆
                         except RuntimeError as e:
                             board.log(f"{tag} [X] 原通道重启浏览器失败: {e}，"
                                       f"中止整个任务")
@@ -309,6 +326,19 @@ def worker(worker_id: int, args, proxy_server: str | None,
                 # ---- 抓取失败或疑似被风控拦截 ----
                 consecutive_fail += 1
                 reason = block_reason or "页面加载失败（疑似风控拦截）"
+                # 记录该出口 IP 的风控遭遇（评估代理 IP 质量用）；
+                # 登录墙是更高一级的风控（会话被要求强制登录），
+                # 原地休息/手动滑块都无意义，直接进修复换 IP 阶段
+                login_wall = "login.1688.com" in reason
+                db.record_ip_event(
+                    identity,
+                    "block_login" if login_wall else
+                    ("block_slider" if block_reason else "block_other"),
+                    reason)
+                if login_wall and block_stage == 0:
+                    block_stage = 1
+                    board.log(f"{tag} ⚠ 触发登录墙（{reason}），出口 {identity} "
+                              f"已被高风险标记，不原地休息，直接修复换 IP")
                 if consecutive_fail >= args.max_consecutive_fail:
                     board.log(f"{tag} [X] 已连续失败 {consecutive_fail} 次"
                               f"（最近一次: {reason}），判定被风控，中止整个任务")
@@ -364,6 +394,7 @@ def worker(worker_id: int, args, proxy_server: str | None,
                                 board, tag, worker_id, args, db,
                                 proxy_server, browser, ctx, identity, stop)
                         ctx = page.context
+                        warm_shop = True  # 新会话重新冷启动软着陆
                     except RuntimeError as e:
                         board.log(f"{tag} [X] 修复换 IP 失败: {e}，中止整个任务")
                         stop.set()
@@ -383,6 +414,7 @@ def worker(worker_id: int, args, proxy_server: str | None,
                                     board, tag, worker_id, args, db,
                                     proxy_server, browser, ctx, identity, stop)
                             ctx = page.context
+                            warm_shop = True  # 新会话重新冷启动软着陆
                         except RuntimeError as e:
                             board.log(f"{tag} [X] 二次修复仍失败: {e}，"
                                       f"中止整个任务")
@@ -438,8 +470,11 @@ def worker(worker_id: int, args, proxy_server: str | None,
             set_status(n=n_local, ok=stats["ok"], empty=stats["empty"],
                        failed=stats["failed"])
 
-            # 样本之间的随机间隔（防风控）
-            t = random.uniform(args.sample_min, args.sample_max)
+            # 样本之间的随机间隔（防风控）；各 worker 按编号递增基准
+            # 间隔，避免多 worker 同频齐步请求形成集群特征
+            lo = args.sample_min + worker_id * 1.5
+            hi = args.sample_max + worker_id * 2.5
+            t = random.uniform(lo, hi)
             set_status(state=f"样本间隔 {t:.1f}s")
             if stop.wait(t):
                 return
@@ -498,14 +533,19 @@ def main() -> int:
                     help="先把 failed 店铺重置为 pending 再开始抓取")
     ap.add_argument("--rest-every", type=int, default=20,
                     help="每个 worker 每抓取多少个店铺后长休息一次（默认 20，0 关闭）")
-    ap.add_argument("--sample-min", type=float, default=3.0,
-                    help="样本之间随机间隔的下限秒数（默认 3）")
-    ap.add_argument("--sample-max", type=float, default=7.0,
-                    help="样本之间随机间隔的上限秒数（默认 7）")
+    ap.add_argument("--sample-min", type=float, default=13.0,
+                    help="样本之间随机间隔的下限秒数（默认 13）")
+    ap.add_argument("--sample-max", type=float, default=20.0,
+                    help="样本之间随机间隔的上限秒数（默认 20）")
     ap.add_argument("--rest-min", type=float, default=60,
                     help="长休息随机时长的下限秒数（默认 60）")
     ap.add_argument("--rest-max", type=float, default=180,
                     help="长休息随机时长的上限秒数（默认 180）")
+    ap.add_argument("--stagger-min", type=float, default=15.0,
+                    help="worker 启动错开的最小秒数（默认 15；多会话同分钟出生、"
+                         "同节奏访问是集群特征，启动时间必须打散）")
+    ap.add_argument("--stagger-max", type=float, default=60.0,
+                    help="worker 启动错开的最大秒数（默认 60）")
     ap.add_argument("--proxy", action="store_true",
                     help="走 util/proxy_qingguo.py 的青果住宅代理；"
                          "Cookie 按出口 IP 存 SQLite（记录过期时间），"
@@ -603,9 +643,14 @@ def main() -> int:
                          name=f"fetcher-{i}", daemon=True)
         for i in range(workers)
     ]
-    for t in threads:
+    for i, t in enumerate(threads):
         t.start()
-        time.sleep(2.0)  # 错开浏览器启动，避免资源争抢
+        if i < len(threads) - 1:
+            # 启动时间打散（默认 15~60s/个）：多会话同一分钟内出生、
+            # 同一节奏访问同一端点，是风控识别爬虫集群的强特征
+            d = random.uniform(args.stagger_min, args.stagger_max)
+            print(f"    错开启动：{d:.0f}s 后启动下一个 worker ...")
+            time.sleep(d)
 
     try:
         for t in threads:

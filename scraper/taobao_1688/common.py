@@ -28,6 +28,7 @@
 from __future__ import annotations  # 兼容 Python < 3.10 的 X | None 注解
 
 import json
+import math
 import os
 import random
 import re
@@ -42,9 +43,29 @@ COOKIE_JSON = ROOT_DIR / ".cache" / "cookies_1688.json"  # 首次启动的种子
 CONFIG_JSON = ROOT_DIR / ".cache" / "config.json"
 
 HOMEPAGE = "https://www.1688.com/"
-UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-      "AppleWebKit/537.36 (KHTML, like Gecko) "
-      "Chrome/150.0.0.0 Safari/537.36")
+
+# 注意：不要给浏览器上下文硬编码 user_agent。CloakBrowser 二进制的
+# 指纹补丁会按自身 Chromium 版本自报 UA 与 UA-CH（sec-ch-ua），
+# 硬编码一个不一致的版本号（如二进制 145 却报 Chrome/150）会造成
+# UA 与 UA-CH / JS 特征错配 —— 这是风控识别"UA 被篡改"的典型信号，
+# 会抬高每个会话的基础风险分。让二进制原生指纹自报即可。
+
+
+def _fingerprint_args(identity: str) -> list[str]:
+    """按 identity 生成稳定的 CloakBrowser 指纹参数（替代默认的随机种子）。
+
+    默认行为是每次 launch 用随机 --fingerprint 种子：同一出口 IP 被风控
+    后重启浏览器，会顶着全新设备指纹加载该 IP 名下的旧 Cookie（cna 等
+    按设备签发）——设备突变本身就是风控信号。改为按 identity 哈希取种：
+    同一 IP 重启指纹不变（与库中 Cookie 配套），不同 IP 指纹不同
+    （避免跨 IP 的设备关联）。种子空间与官方默认一致（10000-99999）。
+    """
+    import hashlib
+    import platform
+    seed = int(hashlib.md5(identity.encode()).hexdigest()[:8], 16) % 90000 + 10000
+    plat = ("--fingerprint-platform=macos" if platform.system() == "Darwin"
+            else "--fingerprint-platform=windows")
+    return ["--no-sandbox", f"--fingerprint={seed}", plat]
 
 
 # ---------- 日志出口（多 worker 时可把内部消息路由到状态板，避免刷屏） ----------
@@ -325,9 +346,14 @@ def launch_browser(headless: bool = True, use_proxy: bool = False, db=None,
         humanize=True,
         locale="zh-CN",
         timezone="Asia/Shanghai",
+        # 指纹按 identity 稳定生成（同 IP 重启指纹不变，与 Cookie 配套），
+        # 替代库默认的每次随机种子；不硬编码 UA，由二进制指纹自报，
+        # 避免 UA 与 UA-CH 版本错配
+        stealth_args=False,
+        args=_fingerprint_args(identity),
         **({"proxy": proxy_conf, "geoip": True} if proxy_conf else {}),
     )
-    ctx = browser.new_context(user_agent=UA, locale="zh-CN")
+    ctx = browser.new_context(locale="zh-CN")
     ctx.add_cookies(cookies)
     page = ctx.new_page()
     if use_proxy:
@@ -337,6 +363,8 @@ def launch_browser(headless: bool = True, use_proxy: bool = False, db=None,
         # 有头模式下首页弹滑块会停下来等手动过证，过了立即保存 x5sec
         warmup_cookies(db, identity, page, ctx,
                        headed=not headless, stop=stop)
+    if use_proxy and db:
+        db.record_ip_event(identity, "launch", proxy_server or "")
     return browser, page, identity, req_proxies, proxy_server
 
 
@@ -349,11 +377,11 @@ def _wait_manual_pass(page, stop, seconds: float, interval: float = 5.0) -> bool
         if stop is not None and stop.is_set():
             return False
         try:
-            text = page.evaluate("() => document.body.innerText") or ""
+            # 综合判定（含内嵌滑块），与 wait_manual_unblock 同口径
+            if page_block_reason(page) is None:
+                return True
         except Exception:
             return False  # 页面/浏览器异常，交给调用方后续流程
-        if not is_risk_blocked(page.url, text):
-            return True
         if stop is not None:
             stop.wait(interval)
         else:
@@ -381,12 +409,7 @@ def warmup_cookies(db, identity: str, page, ctx, headed: bool = False,
     try:
         page.goto(HOMEPAGE, wait_until="domcontentloaded", timeout=60000)
         time.sleep(random.uniform(2.0, 4.0))
-        text = ""
-        try:
-            text = page.evaluate("() => document.body.innerText") or ""
-        except Exception:
-            pass
-        blocked = is_risk_blocked(page.url, text)
+        blocked = page_block_reason(page)
         if blocked and headed:
             # 有头模式：等用户手动拖滑块，过了立即保存 x5sec 并继续
             _log(f"    [warmup] 首页命中风控（{blocked}）")
@@ -432,7 +455,19 @@ def save_cookies(db, identity: str, ctx) -> int:
 
 
 def human_pause(lo: float = 2.0, hi: float = 5.0):
-    t = random.uniform(lo, hi)
+    """拟人随机等待：对数正态（重尾）分布。
+
+    大部分等待落在 lo~hi 附近（中位数取区间中点），但允许偶发的
+    长停（截断上限 hi*5），间隔序列的形状比均匀分布更接近真人浏览
+    节奏。均匀分布截断了头尾（永不快于 lo、永不久于 hi），长时间
+    运行后"上千次操作零长停"本身就是可被判定的机器特征。
+
+    lo / hi 语义保持与旧版兼容：大致的等待量级不变，只是分布形状
+    从平顶换成长尾。
+    """
+    median = (lo + hi) / 2
+    t = random.lognormvariate(math.log(median), 0.5)
+    t = max(lo * 0.5, min(t, hi * 5))
     _log(f"    ...随机等待 {t:.1f}s")
     time.sleep(t)
 
@@ -589,8 +624,9 @@ def wait_manual_unblock(board: StatusBoard, wid: int, stop: threading.Event,
         if stop.wait(min(15.0, remain)):
             return False  # 用户中断，按未解决处理
         try:
-            text = page.evaluate("() => document.body.innerText")
-            if not is_risk_blocked(page.url, text):
+            # 综合判定（含内嵌滑块）：滑块与内容同屏时纯文本判定会
+            # 误判为已通过，必须走 page_block_reason
+            if page_block_reason(page) is None:
                 return True
         except Exception:
             if not browser_alive(page):
@@ -677,6 +713,10 @@ def is_risk_blocked(url: str, text: str) -> str | None:
 
     1688 被风控时的典型表现：跳转登录/安全中心/x5sec 滑块页，
     或页面出现验证类关键词，或 body 异常空白。
+
+    注意：本函数只看 URL + innerText，检测不到**内嵌**在页面里的
+    滑块组件（iframe 内容不进 innerText，会出现「滑块与页面内容
+    同屏」的漏判）。完整判定请用 page_block_reason(page)。
     """
     u = (url or "").lower()
     for p in BLOCK_URL_PATTERNS:
@@ -689,6 +729,64 @@ def is_risk_blocked(url: str, text: str) -> str | None:
     if len(t) < 30:
         return f"页面内容异常空白（仅 {len(t)} 字符，疑似拦截页）"
     return None
+
+
+# 内嵌滑块/验证组件特征：阿里系滑块常作为 iframe 或独立 DOM 容器
+# 注入业务页面（联系方式与滑块同屏的场景），innerText 检测会漏判
+EMBEDDED_SLIDER_IFRAME_PATTERNS = (
+    "x5sec", "punish", "captcha", "_____tmd_____", "sec.1688.com",
+)
+EMBEDDED_SLIDER_SELECTORS = (
+    "#nocaptcha",        # 阿里滑动验证容器（经典版）
+    "[id^='nc_']",       # nc_1_wrapper / nc_1_nocaptcha 等新版滑块
+    ".nc-container",     # 新版滑块容器
+    "#baxia-dialog",     # 百隙安全弹窗
+    "[class*='baxia']",  # 百隙组件
+)
+
+
+def detect_embedded_slider(page) -> str | None:
+    """检测页面内嵌的滑块/验证组件（iframe URL + 滑块 DOM 容器）。
+
+    用于弥补 innerText 检测的盲区：滑块以 iframe 形式内嵌时，
+    页面正文（如联系方式）照常可见，但会话实际处于待验证状态，
+    此时应立即等待手动过证并更新 Cookie，而不是当作正常结果。
+    """
+    try:
+        for f in page.frames:
+            u = (f.url or "").lower()
+            for p in EMBEDDED_SLIDER_IFRAME_PATTERNS:
+                if p in u:
+                    return f"页面内嵌验证 iframe（{f.url[:120]}）"
+    except Exception:
+        pass
+    try:
+        for sel in EMBEDDED_SLIDER_SELECTORS:
+            el = page.query_selector(sel)
+            if el is not None and el.is_visible():
+                return f"页面内嵌滑块组件（选择器 {sel}）"
+    except Exception:
+        pass
+    return None
+
+
+def page_block_reason(page) -> str | None:
+    """综合判定当前页是否被风控/待验证：URL + 文本特征 + 内嵌滑块组件。
+
+    所有「是否被拦」「是否已过证」的判定统一走这里，避免各入口
+    检测口径不一致（例如纯文本判定会把内嵌滑块误判为已通过）。
+    """
+    try:
+        url = page.url
+    except Exception:
+        url = ""
+    text = ""
+    try:
+        text = page.evaluate(
+            "() => document.body ? document.body.innerText : ''") or ""
+    except Exception:
+        pass
+    return is_risk_blocked(url, text) or detect_embedded_slider(page)
 
 
 # ---------- 联系方式解析 ----------
@@ -753,7 +851,7 @@ def scrape_contact(page, shop_domain: str, referer: str = None) -> dict | None:
         info["_raw"] = text[:500]
         info["_source_url"] = page.url
         # 风控拦截检测：命中时返回原因字符串，调用方据此换 IP 重试
-        info["_blocked"] = is_risk_blocked(page.url, text)
+        info["_blocked"] = page_block_reason(page)
         return info
     except Exception as e:
         reason = str(e).splitlines()[0][:200]
