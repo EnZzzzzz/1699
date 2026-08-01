@@ -36,6 +36,13 @@ export function ChannelStatusBadge({ status }: { status: ChannelStatus }) {
 }
 
 export function TaskTypeLabel({ type }: { type: TaskType | string | null | undefined }) {
-  const label = type === 'shop_crawl' ? '店铺采集' : type === 'contact_fetch' ? '联系方式抓取' : (type ?? '-')
+  const label =
+    type === 'shop_crawl'
+      ? '店铺采集'
+      : type === 'contact_fetch'
+        ? '联系方式抓取'
+        : type === 'flow'
+          ? '流水线'
+          : (type ?? '-')
   return <span>{label}</span>
 }

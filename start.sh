@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# 1688 采集平台 - 一键启动后端三件套（redis + celery + uvicorn）
-# 前端开发服务器由 Kimi Work 预览托管，或手动: cd web && npm run dev
+# 1688 采集平台 - 一键启动（redis + celery + uvicorn + vite 前端）
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -49,10 +48,34 @@ else
   cd "$ROOT"
 fi
 
+# --- 4. 前端 (vite, 3000) ---
+WEB="$ROOT/web"
+if ! command -v npm >/dev/null 2>&1; then
+  echo "[start] 未找到 npm，跳过前端启动（可手动: cd web && npm run dev）"
+elif lsof -iTCP:3000 -sTCP:LISTEN -P -n >/dev/null 2>&1; then
+  echo "[start] vite 已在运行 (3000)"
+else
+  if [ ! -d "$WEB/node_modules" ]; then
+    echo "[start] 安装前端依赖 (npm install) ..."
+    (cd "$WEB" && npm install)
+  fi
+  echo "[start] 启动 vite (3000) ..."
+  cd "$WEB"
+  nohup npm run dev >> "$LOGS/vite.log" 2>&1 &
+  echo $! > "$PIDS/vite.pid"
+  cd "$ROOT"
+  for i in $(seq 1 30); do
+    lsof -iTCP:3000 -sTCP:LISTEN -P -n >/dev/null 2>&1 && break
+    sleep 0.5
+  done
+  lsof -iTCP:3000 -sTCP:LISTEN -P -n >/dev/null 2>&1 \
+    || echo "[start] vite 15s 内未监听 3000，详见 $LOGS/vite.log"
+fi
+
 sleep 2
 echo
 echo "[start] 完成。状态："
+echo "  - 前端:     http://localhost:3000"
 echo "  - API:      http://127.0.0.1:8765/api/stats/overview"
-echo "  - 日志:     $LOGS/{uvicorn,celery,redis}.log"
+echo "  - 日志:     $LOGS/{uvicorn,celery,redis,vite}.log"
 echo "  - 停止:     ./stop.sh"
-echo "  - 前端:     cd web && npm run dev （或用 Kimi Work 预览卡片）"

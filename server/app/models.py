@@ -71,7 +71,8 @@ class Task(Base):
     __tablename__ = "tasks"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    type = Column(Text, nullable=False)            # shop_crawl / contact_fetch
+    type = Column(Text, nullable=False)            # shop_crawl / contact_fetch / flow
+    flow_id = Column(Integer, nullable=True)       # type=flow 时引用 flows.id
     params_json = Column(Text, nullable=False)
     celery_id = Column(Text, nullable=True)
     status = Column(Text, nullable=False, default="pending")
@@ -84,7 +85,7 @@ class Task(Base):
 
     def to_dict(self) -> dict:
         return {
-            "id": self.id, "type": self.type,
+            "id": self.id, "type": self.type, "flow_id": self.flow_id,
             "params": json.loads(self.params_json),
             "celery_id": self.celery_id, "status": self.status,
             "progress": json.loads(self.progress_json) if self.progress_json else None,
@@ -92,6 +93,34 @@ class Task(Base):
             "created_at": self.created_at, "started_at": self.started_at,
             "finished_at": self.finished_at,
         }
+
+
+class Flow(Base):
+    """流水线模板（docs/flow-architecture.md §6）：DAG + 节点参数整体保存。"""
+
+    __tablename__ = "flows"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(Text, nullable=False)
+    description = Column(Text, nullable=True)
+    dag_json = Column(Text, nullable=False)
+    builtin = Column(Integer, nullable=False, default=0)  # 1=内置复刻模板（只读）
+    created_at = Column(Text, nullable=False)
+    updated_at = Column(Text, nullable=False)
+
+    @property
+    def dag(self) -> dict:
+        return json.loads(self.dag_json)
+
+    def to_dict(self, include_dag: bool = True) -> dict:
+        d = {
+            "id": self.id, "name": self.name, "description": self.description,
+            "builtin": bool(self.builtin),
+            "created_at": self.created_at, "updated_at": self.updated_at,
+        }
+        if include_dag:
+            d["dag"] = self.dag
+        return d
 
 
 class ProxyUsageEvent(Base):

@@ -1,17 +1,47 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-1688 联系方式抓取脚本（消费者，多 worker 并发版）
+1688 联系方式抓取脚本（消费者，多 worker 并发版 · 状态板显示）
 
 从 .cache/1688.db 中原子认领 status='pending' 的店铺，进入其
 「联系方式」页解析 联系人/性别(先生女士)/电话/手机/传真/地址。
 
-并发模型:
-    - --workers N 个线程，每个线程独立 CloakBrowser 实例 + 独立 ShopDB 连接；
-    - 走代理（--proxy）时每个 worker 从青果通道池各领一个通道
-      （独立出口 IP，Cookie 按各自出口 IP 隔离，互不串号）；
-    - 通道数用 --channels 配置（默认取 proxy_qingguo.CONFIG["channels"]）；
+并发模型（一 worker 一通道，IP + Cookie 配套）:
+    - --workers N 个线程（代理模式默认 = 通道数），每个线程独立
+      CloakBrowser 实例 + 独立 ShopDB 连接；
+    - worker i 从青果通道池独占通道 i（独立出口 IP），Cookie 按各自
+      出口 IP（identity）隔离存取，IP + Cookie 始终配套，互不串号；
     - 店铺认领走数据库事务（claim_pending_shops），不会重复抓同一家店。
+
+单个 worker 的完整生命周期:
+    1. 从通道池领到自己的通道，启动浏览器，按出口 IP 配好 Cookie；
+    2. 循环：认领店铺 → 抓取 → 样本之间随机间隔（3-7s）；
+    3. 每采满一批（-n 个）所有 worker 强制大休息 --batch-rest 秒
+       （默认 900 = 15 分钟，±10% 抖动），再自动开下一批；
+    4. 遇到风控不换 IP：先在当前 IP 上长时间休息
+       （--block-rest-min ~ --block-rest-max，默认 10-15 分钟）后重试；
+       仍被风控再修复 —— 重启浏览器拿新出口 IP（青果 IP 时效 30 分钟，
+       第二次休息时旧 IP 通常已过期轮换），按新 IP 重新配对 Cookie；
+       修复后仍失败才标记 failed 跳过该店。
+
+风控处理流程（单店）:
+    第 1 次被风控 → 保持当前 IP，休息 10-15 分钟 → 重试同一店铺
+    第 2 次被风控 → 修复：重启浏览器（旧 IP 已轮换）→ 新 IP + 新 Cookie
+                    → 重试同一店铺
+    第 3 次被风控 → 标记 failed，跳过该店继续下一家
+    连续失败达到 --max-consecutive-fail 次（默认 5）判定整体被风控，
+    立即中止整个任务，当前店铺留在 in_progress，下次运行自动放回 pending。
+
+网络/代理层错误（ERR_TUNNEL_CONNECTION_FAILED 等隧道断开、连接重置、
+DNS 失败）与风控区分处理：不计入风控连续失败计数，在原通道上重启
+浏览器并退避重试（--net-retry 次）。
+
+显示（状态板，不刷屏）:
+    终端内运行时屏幕底部固定 N 行（每 worker 一行），实时刷新：
+        [w0] 出口 123.45.67.89 | 批 3 | 采 12（✓9 ○2 ✗1）| abc.1688.com | 样本等待 4.2s
+    重要事件（风控、批次休息、修复换 IP、错误）以滚动日志形式打印在
+    状态板上方；常规细节（Cookie/代理信息、随机等待）只进状态行。
+    输出重定向到文件/管道时自动降级为普通日志。
 
 结果处理:
     - 座机或手机至少有一个 → 写入 contacts 表，店铺标记 done
@@ -29,37 +59,21 @@
     进度全部记录在 shops.status，随时 Ctrl+C 或重启脚本，
     下次运行自动把中断残留的 in_progress 重置回 pending 后继续。
 
-批次与防风控:
-    - 采满一批（-n 个）后所有 worker 强制休息 --batch-rest 秒
-      （默认 900 = 15 分钟，±10% 抖动），然后自动开下一批，
-      直到 pending 抓完或达到 --max-batches；
-    - 代理模式下每个 worker 每次抓取前检查出口 IP：
-      青果出口 IP 每 30 分钟轮换一次，发现 IP 已轮换或隧道失效时，
-      自动重启浏览器获取新 IP（--ip-retry 次重试，退避间隔），
-      新 IP 的 Cookie 按新 identity 重新绑定，避免会话错配；
-    - 抓取时检测风控拦截（跳转登录/安全中心/x5sec 滑块/页面空白等），
-      疑似被拦截时切换到池内其他通道（全新出口 IP）重试同一店铺
-      （--block-retry 次）；
-    - 网络/代理层错误（ERR_TUNNEL_CONNECTION_FAILED 等隧道断开、
-      连接重置、DNS 失败）与风控区分处理：不计入风控连续失败计数，
-      自动切换代理通道并退避重试（--net-retry 次）；
-      连续失败达到 --max-consecutive-fail 次（默认 5）判定被风控，
-      立即中止整个任务，当前店铺留在 in_progress，下次运行自动放回 pending。
-
 用法:
-    python3 contact_fetcher.py              # 每批 10 个，批间休息 15 分钟
-    python3 contact_fetcher.py -n 30 --batch-rest 600
-    python3 contact_fetcher.py --headed     # 有头模式
-    python3 contact_fetcher.py --proxy      # 走青果住宅代理（默认按通道数并发）
-    python3 contact_fetcher.py --proxy -n 100 --workers 3 --channels 5
-    python3 contact_fetcher.py --proxy -n 50 --max-batches 4  # 最多采 4 批
-    python3 contact_fetcher.py --retry-failed  # 先把 failed 重置回 pending 再抓
+    export CLOAKBROWSER_LICENSE_KEY=cb_xxx   # 或直接写进 .cache/config.json
+    python3 contact_fetcher.py --proxy              # 5 通道 5 worker 并发
+    python3 contact_fetcher.py --proxy -n 100       # 每批 100 个
+    python3 contact_fetcher.py --proxy -n 50 --max-batches 4   # 最多采 4 批
+    python3 contact_fetcher.py --proxy --headed     # 有头模式（首次过滑块）
+    python3 contact_fetcher.py --retry-failed       # 先把 failed 重置回 pending
 """
 
 from __future__ import annotations
 
 import argparse
 import random
+import re
+import shutil
 import sys
 import threading
 import time
@@ -68,12 +82,177 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 ROOT_DIR = BASE_DIR.parents[1]  # 项目根目录
 
-from common import (get_exit_ip, human_pause, launch_browser, save_cookies,
-                    scrape_contact)
+import common
+from common import (get_exit_ip, is_risk_blocked, launch_browser,
+                    save_cookies, scrape_contact)
 from database import ShopDB
 
 
-def relaunch_browser(tag: str, args, db: ShopDB, proxy_server: str | None,
+def fmt_dur(sec: float) -> str:
+    """秒 -> mm:ss（状态行倒计时用）。"""
+    m, s = divmod(max(0, int(sec)), 60)
+    return f"{m:02d}:{s:02d}"
+
+
+def _disp_width(s: str) -> int:
+    """字符串的终端显示宽度（CJK 全角字符占 2 列）。"""
+    import unicodedata
+    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+               for ch in s)
+
+
+def _truncate_disp(s: str, max_cols: int) -> str:
+    """按终端显示宽度截断（中文按 2 列算），防止超宽换行打乱固定行渲染。"""
+    import unicodedata
+    w, out = 0, []
+    for ch in s:
+        cw = 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+        if w + cw > max_cols:
+            break
+        out.append(ch)
+        w += cw
+    return "".join(out)
+
+
+# ---------- 状态板（固定 N 行，不刷屏） ----------
+
+class StatusBoard:
+    """终端底部固定 workers 行显示各 worker 实时状态。
+
+    - set() 更新某 worker 的状态字段并重绘整板（有最小重绘间隔节流）；
+    - log() 把重要事件以滚动日志打印在状态板上方；
+    - 非 TTY（重定向到文件/管道）时 set() 不重绘、log() 直接 print。
+    """
+
+    _FIELDS = ("ip", "batch", "n", "ok", "empty", "failed",
+               "shop", "state", "detail")
+
+    def __init__(self, n_workers: int):
+        self.n = n_workers
+        self.tty = sys.stdout.isatty()
+        self.lock = threading.Lock()
+        self.fields = [dict(zip(self._FIELDS,
+                                ("…", 1, 0, 0, 0, 0, "-", "初始化", "")))
+                       for _ in range(n_workers)]
+        self._started = False
+        self._last_render = 0.0
+
+    # ---- 渲染 ----
+
+    def _width(self) -> int:
+        return max(60, shutil.get_terminal_size((120, 24)).columns - 1)
+
+    def _compose(self, wid: int) -> str:
+        f = self.fields[wid]
+        line = (f"[w{wid}] 出口 {f['ip']} | 批 {f['batch']} | "
+                f"采 {f['n']}（✓{f['ok']} ○{f['empty']} ✗{f['failed']}）"
+                f" | {f['shop']} | {f['state']}")
+        if f["detail"]:
+            line += f" · {f['detail']}"
+        return _truncate_disp(line, self._width())
+
+    def _render_locked(self, force: bool = False):
+        if not self.tty or not self._started:
+            return
+        now = time.monotonic()
+        if not force and now - self._last_render < 0.2:
+            return
+        self._last_render = now
+        out = [f"\033[{self.n}A"]  # 光标回到状态板首行
+        for wid in range(self.n):
+            out.append("\033[2K\r" + self._compose(wid) + "\n")
+        sys.stdout.write("".join(out))
+        sys.stdout.flush()
+
+    # ---- 对外接口 ----
+
+    def start(self):
+        """预留状态板空间并首次绘制（启动日志打印完之后调用）。"""
+        if self.tty and not self._started:
+            sys.stdout.write("\n" * self.n)
+            sys.stdout.flush()
+            self._started = True
+            with self.lock:
+                self._render_locked(force=True)
+
+    def set(self, wid: int, force: bool = False, **kw):
+        """更新 worker 状态字段；未显式给 detail 时清空旧细节。"""
+        with self.lock:
+            f = self.fields[wid]
+            if ("state" in kw or "shop" in kw) and "detail" not in kw:
+                f["detail"] = ""
+            for k, v in kw.items():
+                if k in f:
+                    f[k] = v
+            self._render_locked(force=force)
+
+    def log(self, msg: str):
+        """重要事件：滚动打印在状态板上方（自动按终端宽度折行）。"""
+        with self.lock:
+            if not self.tty or not self._started:
+                print(msg, flush=True)
+                return
+            width = self._width()
+            # 先按显示宽度折行，保证每物理行触发一次滚动，状态板位置不错位
+            lines = []
+            for part in str(msg).splitlines() or [""]:
+                while _disp_width(part) > width:
+                    cut = _truncate_disp(part, width)
+                    lines.append(cut)
+                    part = part[len(cut):]
+                lines.append(part)
+            out = [f"\033[{self.n}A"]  # 光标回到状态板首行
+            for ln in lines:
+                out.append("\033[2K\r" + ln + "\n")  # 逐行下推，终端随之滚动
+            for wid in range(self.n):  # 在腾出的新位置重绘状态板
+                out.append("\033[2K\r" + self._compose(wid) + "\n")
+            sys.stdout.write("".join(out))
+            sys.stdout.flush()
+            self._last_render = time.monotonic()
+
+
+def wait_countdown(board: StatusBoard, wid: int, stop: threading.Event,
+                   seconds: float, state_prefix: str) -> bool:
+    """可中断等待，状态行每秒刷新倒计时。返回 True 表示被用户中断。"""
+    deadline = time.monotonic() + seconds
+    while True:
+        remain = deadline - time.monotonic()
+        if remain <= 0:
+            return False
+        board.set(wid, state=f"{state_prefix} 剩 {fmt_dur(remain)}")
+        if stop.wait(min(1.0, remain)):
+            return True
+
+
+def wait_manual_unblock(board: StatusBoard, wid: int, stop: threading.Event,
+                        page, seconds: float) -> bool:
+    """有头模式专用：等用户在浏览器窗口里手动过滑块/验证。
+
+    每 15s 检测一次当前页面是否已脱离拦截态（不发起新请求，只在
+    当前页面上读 innerText，不会加重风控）。检测到验证通过立即返回
+    True；超时、页面异常或浏览器死亡返回 False（调用方走原计划休息）。
+    """
+    deadline = time.monotonic() + seconds
+    while True:
+        remain = deadline - time.monotonic()
+        if remain <= 0:
+            return False
+        board.set(wid, state=f"等待手动过验证 剩 {fmt_dur(remain)}")
+        if stop.wait(min(15.0, remain)):
+            return False  # 用户中断，按未解决处理
+        try:
+            text = page.evaluate("() => document.body.innerText")
+            if not is_risk_blocked(page.url, text):
+                return True
+        except Exception:
+            if not common.browser_alive(page):
+                return False  # 浏览器已死，交给后续流程
+
+
+# ---------- 浏览器生命周期 ----------
+
+def relaunch_browser(board: StatusBoard, tag: str, wid: int, args,
+                     db: ShopDB, proxy_server: str | None,
                      old_browser, old_ctx, old_identity: str,
                      stop: threading.Event):
     """关闭旧浏览器（先回写 Cookie），重开新实例以绑定新出口 IP。
@@ -87,13 +266,14 @@ def relaunch_browser(tag: str, args, db: ShopDB, proxy_server: str | None,
         try:
             save_cookies(db, old_identity, old_ctx)
         except Exception as e:
-            print(f"{tag}   [!] 旧 Cookie 回写失败: {e}")
+            board.log(f"{tag}   [!] 旧 Cookie 回写失败: {e}")
     if old_browser is not None:
         try:
             old_browser.close()
         except Exception:
             pass
 
+    board.set(wid, state="重启浏览器获取新 IP…", force=True)
     last_err = None
     for attempt in range(1, args.ip_retry + 1):
         if stop.is_set():
@@ -101,19 +281,21 @@ def relaunch_browser(tag: str, args, db: ShopDB, proxy_server: str | None,
         try:
             browser, page, identity, req_proxies, _ = launch_browser(
                 headless=not args.headed, use_proxy=args.proxy, db=db,
-                proxy_server=proxy_server, pool_size=args.channels)
-            print(f"{tag} 浏览器已重启，新 identity={identity}")
+                proxy_server=proxy_server, pool_size=args.channels or None)
+            board.set(wid, ip=identity, state="浏览器已重启", force=True)
+            board.log(f"{tag} 浏览器已重启，新出口 IP={identity}")
             return browser, page, identity, req_proxies
         except (Exception, SystemExit) as e:
             last_err = e
             backoff = min(30 * attempt, 120)
-            print(f"{tag}   [!] 获取新 IP 第 {attempt}/{args.ip_retry} 次失败: "
-                  f"{e}，{backoff}s 后重试...")
-            stop.wait(backoff)
+            board.log(f"{tag}   [!] 获取新 IP 第 {attempt}/{args.ip_retry} "
+                      f"次失败: {e}，{backoff}s 后重试...")
+            if wait_countdown(board, wid, stop, backoff, "重启退避"):
+                raise RuntimeError("用户中断")
     raise RuntimeError(f"重试 {args.ip_retry} 次仍无法获取新 IP: {last_err}")
 
 
-def check_ip_fresh(tag: str, req_proxies: dict, identity: str) -> tuple:
+def check_ip_fresh(req_proxies: dict, identity: str) -> tuple:
     """检查当前出口 IP 是否仍有效，返回 (need_relaunch, cur_ip, reason)。
 
     青果出口 IP 每 30 分钟轮换一次：查询到的 IP 与 identity 不一致即
@@ -133,54 +315,56 @@ def check_ip_fresh(tag: str, req_proxies: dict, identity: str) -> tuple:
     return False, cur_ip, ""
 
 
-def switch_proxy_channel(tag: str, pool, current_server: str | None) -> str | None:
-    """隧道故障/风控时切换到通道池里另一条通道（全新出口 IP）。
+# ---------- worker ----------
 
-    优先从池内现有通道中选一条非当前通道；池内只有当前一条时
-    强制 refresh() 跳过缓存向青果后台重新校准；仍无备选则返回
-    原通道（调用方在原通道上退避重试）。直连模式（pool=None）原样返回。
+def worker(worker_id: int, args, proxy_server: str | None,
+           board: StatusBoard, state: dict, lock: threading.Lock,
+           stop: threading.Event):
+    """单个抓取 worker：独立浏览器 + 独立 DB 连接 + 独占代理通道。
+
+    生命周期：领通道 → 启动浏览器按出口 IP 配 Cookie → 认领/抓取循环
+    （样本间随机间隔，批次间大休息）→ 风控先休息当前 IP，再修复换 IP。
     """
-    if pool is None:
-        return current_server
-    try:
-        servers = pool.servers()
-    except Exception as e:
-        print(f"{tag}   [!] 查询通道池失败: {e}，仍在原通道上重试")
-        return current_server
-    others = [s for s in servers if s != current_server]
-    if not others:
-        try:
-            others = [s for s in pool.refresh() if s != current_server]
-        except Exception as e:
-            print(f"{tag}   [!] 强制刷新通道池失败: {e}")
-    if others:
-        new = random.choice(others)
-        print(f"{tag}   🔀 切换代理通道: {current_server} -> {new}")
-        return new
-    print(f"{tag}   [!] 池内没有其他可用通道，仍在原通道 {current_server} 上重试")
-    return current_server
-
-
-def worker(worker_id: int, args, proxy_server: str | None, pool,
-           state: dict, lock: threading.Lock, stop: threading.Event):
-    """单个抓取 worker：独立浏览器 + 独立 DB 连接，认领-抓取-标记循环。"""
     tag = f"[w{worker_id}]"
+    common.set_tag(tag)  # common 内部日志按本 worker 路由到状态板
     db = ShopDB()
     browser = None
     stats = {"ok": 0, "empty": 0, "failed": 0}
-    consecutive_fail = 0  # 连续失败计数（含换 IP 重试），超限中止整个任务
+    consecutive_fail = 0  # 连续风控失败计数，超限中止整个任务
     identity = "direct"
     ctx = None
     req_proxies = None
+
+    def set_status(**kw):
+        board.set(worker_id, **kw)
+
     try:
-        browser, page, identity, req_proxies, _ = launch_browser(
-            headless=not args.headed, use_proxy=args.proxy, db=db,
-            proxy_server=proxy_server, pool_size=args.channels)
+        set_status(state="启动浏览器…", force=True)
+        last_err = None
+        for attempt in range(1, args.ip_retry + 1):
+            if stop.is_set():
+                return
+            try:
+                browser, page, identity, req_proxies, _ = launch_browser(
+                    headless=not args.headed, use_proxy=args.proxy, db=db,
+                    proxy_server=proxy_server,
+                    pool_size=args.channels or None)
+                break
+            except (Exception, SystemExit) as e:
+                last_err = e
+                backoff = min(30 * attempt, 120)
+                board.log(f"{tag}   [!] 启动浏览器第 {attempt}/{args.ip_retry} "
+                          f"次失败: {e}，{backoff}s 后重试...")
+                if wait_countdown(board, worker_id, stop, backoff, "启动退避"):
+                    return  # 用户中断
+        else:
+            raise RuntimeError(f"启动浏览器重试 {args.ip_retry} "
+                               f"次仍失败: {last_err}")
         ctx = page.context
-        print(f"{tag} 浏览器就绪 (identity={identity})")
+        set_status(ip=identity, state="就绪", force=True)
 
         while not stop.is_set():
-            # ---- 批次配额：采满一批后强制休息，再自动开下一批 ----
+            # ---- 批次配额：采满一批后强制大休息，再自动开下一批 ----
             while True:
                 with lock:
                     if state["done"] < args.num:
@@ -199,87 +383,94 @@ def worker(worker_id: int, args, proxy_server: str | None, pool,
                                 args.batch_rest * 0.9, args.batch_rest * 1.1)
                         wait_for = state["rest_until"] - now
                         batch_no = state["batch"]
+                set_status(batch=batch_no)
                 if wait_for == 0.0:
                     break
                 if wait_for < 0:
-                    print(f"{tag} 第 {batch_no} 批采满，"
-                          f"已达批次上限或没有剩余店铺，收工")
+                    board.log(f"{tag} 第 {batch_no} 批采满，"
+                              f"已达批次上限或没有剩余店铺，收工")
+                    set_status(state="收工")
                     return  # finally 会保存 Cookie、关闭浏览器
-                print(f"{tag} ⏸ 第 {batch_no} 批已采满 {args.num} 个，"
-                      f"强制休息 {wait_for / 60:.1f} 分钟（防风控）...")
-                if stop.wait(wait_for):
+                board.log(f"{tag} ⏸ 第 {batch_no} 批已采满 {args.num} 个，"
+                          f"强制休息 {wait_for / 60:.1f} 分钟（防风控）...")
+                if wait_countdown(board, worker_id, stop, wait_for, "批次休息"):
                     return  # 用户中断
                 with lock:
                     if state["done"] >= args.num:  # 由第一个醒来的 worker 开新批次
                         state["done"] = 0
                         state["batch"] += 1
                     batch_no = state["batch"]
-                print(f"{tag} ▶ 休息结束，开始第 {batch_no} 批")
+                board.log(f"{tag} ▶ 休息结束，开始第 {batch_no} 批")
+                set_status(batch=batch_no, state="采集中")
 
             shops = db.claim_pending_shops(1)
             if not shops:
-                print(f"{tag} 没有待抓取的店铺了")
+                board.log(f"{tag} 没有待抓取的店铺了")
+                set_status(state="无待抓店铺，退出")
                 break
             shop = shops[0]
+            shop_label = shop["name"] or shop["domain"]
+            set_status(shop=shop_label, state="检查出口 IP…")
 
             # ---- 出口 IP 过期检查（青果每 30 分钟轮换一次出口）----
             if args.proxy:
                 need_relaunch, cur_ip, reason = check_ip_fresh(
-                    tag, req_proxies, identity)
+                    req_proxies, identity)
                 if need_relaunch:
-                    if cur_ip is None:
-                        # 隧道疑似失效：换一条通道，而不是在原死隧道上重启
-                        proxy_server = switch_proxy_channel(
-                            tag, pool, proxy_server)
-                    print(f"{tag} 🔄 {reason}，重启浏览器获取新 IP ...")
+                    board.log(f"{tag} 🔄 {reason}，重启浏览器绑定新 IP ...")
                     browser, page, identity, req_proxies = relaunch_browser(
-                        tag, args, db, proxy_server, browser, ctx, identity, stop)
+                        board, tag, worker_id, args, db, proxy_server,
+                        browser, ctx, identity, stop)
                     ctx = page.context
-                print(f"{tag} {shop['name'] or shop['domain']}  提取IP：{identity}")
-            else:
-                print(f"{tag} {shop['name'] or shop['domain']}  提取IP：{identity}")
 
-            # ---- 抓取（网络故障换通道重试，不计入风控计数；
-            #      疑似风控换通道重试；连续风控失败超限则中止任务）----
-            block_retried = 0
+            # ---- 抓取（网络故障原通道退避重试，不计入风控计数；
+            #      风控：先休息当前 IP → 再修复换 IP → 仍失败标 failed）----
+            block_stage = 0   # 0 未触发 / 1 已休息过一次 / 2 已修复换过 IP
             net_retried = 0
             while True:
+                set_status(state="采集中")
                 info = scrape_contact(page, shop["domain"], referer=shop["url"])
+                fatal_reason = info.pop("_fatal", None) if info else None
                 net_reason = info.pop("_net_error", None) if info else None
                 block_reason = info.pop("_blocked", None) if info else None
-                if info is not None and not net_reason and not block_reason:
+                if info is not None and not fatal_reason \
+                        and not net_reason and not block_reason:
                     consecutive_fail = 0  # 抓到了，连续失败清零
                     break
+
+                # ---- 浏览器进程死亡/被服务端关闭：与风控无关，
+                #      直接重启浏览器重试（走网络故障同一条退避路径）----
+                if fatal_reason:
+                    net_reason = f"浏览器会话终止（{fatal_reason}）"
 
                 # ---- 网络/代理层错误：与风控无关，不计入风控连续失败计数 ----
                 if net_reason:
                     net_retried += 1
                     if net_retried > args.net_retry:
-                        print(f"{tag}   [X] 网络故障重试 {args.net_retry} 次"
-                              f"仍失败，标记 failed 跳过（{net_reason}）")
+                        board.log(f"{tag}   [X] 网络故障重试 {args.net_retry} "
+                                  f"次仍失败，标记 failed 跳过（{net_reason}）")
                         db.mark_shop_failed(shop["domain"])
                         stats["failed"] += 1
                         info = None
                         break
                     backoff = min(30 * net_retried, 180)
-                    print(f"{tag} ⚠ 网络/代理故障（{net_reason}），"
-                          f"不计入风控计数，第 {net_retried}/{args.net_retry} "
-                          f"次重试（{backoff}s 后）...")
+                    board.log(f"{tag} ⚠ 网络/代理故障（{net_reason}），"
+                              f"不计入风控计数，第 {net_retried}/{args.net_retry} "
+                              f"次重试（{backoff}s 后）...")
                     if args.proxy:
-                        proxy_server = switch_proxy_channel(
-                            tag, pool, proxy_server)
                         try:
                             browser, page, identity, req_proxies = \
                                 relaunch_browser(
-                                    tag, args, db, proxy_server,
-                                    browser, ctx, identity, stop)
+                                    board, tag, worker_id, args, db,
+                                    proxy_server, browser, ctx, identity, stop)
                             ctx = page.context
                         except RuntimeError as e:
-                            print(f"{tag} [X] 换通道重启浏览器失败: {e}，"
-                                  f"中止整个任务")
+                            board.log(f"{tag} [X] 原通道重启浏览器失败: {e}，"
+                                      f"中止整个任务")
                             stop.set()
                             return
-                    if stop.wait(backoff):
+                    if wait_countdown(board, worker_id, stop, backoff,
+                                      "网络故障退避"):
                         return  # 用户中断
                     continue  # 重试同一店铺
 
@@ -287,42 +478,89 @@ def worker(worker_id: int, args, proxy_server: str | None, pool,
                 consecutive_fail += 1
                 reason = block_reason or "页面加载失败（疑似风控拦截）"
                 if consecutive_fail >= args.max_consecutive_fail:
-                    print(f"{tag} [X] 已连续失败 {consecutive_fail} 次"
-                          f"（最近一次: {reason}），判定被风控，中止整个任务")
-                    print(f"{tag}     店铺 {shop['domain']} 留在 in_progress，"
-                          f"下次运行自动放回 pending")
+                    board.log(f"{tag} [X] 已连续失败 {consecutive_fail} 次"
+                              f"（最近一次: {reason}），判定被风控，中止整个任务")
+                    board.log(f"{tag}     店铺 {shop['domain']} 留在 "
+                              f"in_progress，下次运行自动放回 pending")
                     stop.set()
                     return  # finally 会保存 Cookie、关闭浏览器
 
-                if block_retried < args.block_retry:
-                    block_retried += 1
-                    print(f"{tag} ⚠ {reason}（连续失败 "
-                          f"{consecutive_fail}/{args.max_consecutive_fail}），"
-                          f"第 {block_retried}/{args.block_retry} 次换 IP 重试...")
-                    if args.proxy:
-                        # 当前出口 IP 已被风控，直接换一条通道拿全新 IP
-                        proxy_server = switch_proxy_channel(
-                            tag, pool, proxy_server)
+                if block_stage == 0:
+                    # 第一次被风控：不换 IP，当前 IP 上长时间休息后再试
+                    block_stage = 1
+                    rest = random.uniform(args.block_rest_min,
+                                          args.block_rest_max)
+                    board.log(f"{tag} ⚠ {reason}（连续失败 "
+                              f"{consecutive_fail}/{args.max_consecutive_fail}）"
+                              f" → 保持当前 IP {identity}，"
+                              f"休息 {rest / 60:.1f} 分钟后重试")
+                    if args.headed:
+                        # 有头模式：优先等用户手动过滑块，过了立即继续，
+                        # 并把新下发的 x5sec 等 Cookie 写回该出口 IP 名下
+                        board.log(f"{tag}   👉 请在 {identity} 的浏览器窗口里"
+                                  f"手动完成验证，脚本每 15s 自动检测"
+                                  f"（最长 {rest / 60:.1f} 分钟）...")
+                        if wait_manual_unblock(board, worker_id, stop,
+                                               page, rest):
+                            board.log(f"{tag} ✓ 检测到验证已通过，"
+                                      f"Cookie 写回 {identity}，立即继续采集")
+                            try:
+                                save_cookies(db, identity, ctx)
+                            except Exception as e:
+                                board.log(f"{tag}   [!] Cookie 回写失败: {e}")
+                            continue  # 同一 IP 重试同一店铺
+                        if stop.is_set():
+                            return
+                        board.log(f"{tag}   未检测到手动验证通过，"
+                                  f"按原计划休息后重试")
+                    if wait_countdown(board, worker_id, stop, rest,
+                                      f"风控休息(1)"):
+                        return  # 用户中断
+                    continue  # 同一 IP 重试同一店铺
+
+                if block_stage == 1:
+                    # 休息后仍被风控 → 修复：重启浏览器拿新出口 IP。
+                    # 青果 IP 时效 30 分钟，此时旧 IP 通常已过期轮换，
+                    # launch_browser 会按新 IP 重新配对 Cookie。
+                    block_stage = 2
+                    board.log(f"{tag} ⚠ 休息后仍被风控（{reason}）"
+                              f" → 修复：重启浏览器获取新出口 IP 并重新配对 Cookie")
+                    old_identity = identity
+                    try:
+                        browser, page, identity, req_proxies = \
+                            relaunch_browser(
+                                board, tag, worker_id, args, db,
+                                proxy_server, browser, ctx, identity, stop)
+                        ctx = page.context
+                    except RuntimeError as e:
+                        board.log(f"{tag} [X] 修复换 IP 失败: {e}，中止整个任务")
+                        stop.set()
+                        return
+                    if args.proxy and identity == old_identity:
+                        # 出口还没轮换（休息不足 30 分钟）：再等一轮让青果轮换
+                        rest = random.uniform(args.block_rest_min,
+                                              args.block_rest_max)
+                        board.log(f"{tag}   [!] 出口 IP 尚未轮换（青果 30 分钟时效），"
+                                  f"再休息 {rest / 60:.1f} 分钟等其过期后重试")
+                        if wait_countdown(board, worker_id, stop, rest,
+                                          "等 IP 轮换"):
+                            return
                         try:
                             browser, page, identity, req_proxies = \
                                 relaunch_browser(
-                                    tag, args, db, proxy_server,
-                                    browser, ctx, identity, stop)
+                                    board, tag, worker_id, args, db,
+                                    proxy_server, browser, ctx, identity, stop)
                             ctx = page.context
                         except RuntimeError as e:
-                            print(f"{tag} [X] 换 IP 失败: {e}，中止整个任务")
+                            board.log(f"{tag} [X] 二次修复仍失败: {e}，"
+                                      f"中止整个任务")
                             stop.set()
                             return
-                    else:
-                        # 直连模式无法换 IP，退避等待后重试
-                        backoff = min(60 * block_retried, 300)
-                        print(f"{tag}   直连模式无法换 IP，退避 {backoff}s 后重试...")
-                        stop.wait(backoff)
-                    continue  # 重试同一店铺
+                    continue  # 新 IP + 新 Cookie 重试同一店铺
 
-                # 换 IP 重试仍失败：标记 failed，放过这家继续下一家
-                print(f"{tag}   [X] 换 IP 重试 {args.block_retry} 次仍失败，"
-                      f"标记 failed 跳过（{reason}）")
+                # 修复换 IP 后仍失败：标记 failed，放过这家继续下一家
+                board.log(f"{tag}   [X] 休息与修复后仍失败，"
+                          f"标记 failed 跳过（{reason}）")
                 db.mark_shop_failed(shop["domain"])
                 stats["failed"] += 1
                 info = None
@@ -340,46 +578,58 @@ def worker(worker_id: int, args, proxy_server: str | None, pool,
                                 source_url=src, raw_text=raw)
                 db.mark_shop_no_contact(shop["domain"], bump_attempts=False)
                 stats["empty"] += 1
-                print(f"{tag}   - 无有效电话（座机/手机均空），已记录条目并标记 no_contact")
+                set_status(state="无有效电话，标记 no_contact")
             else:
                 raw = info.pop("_raw", None)
                 src = info.pop("_source_url", None)
                 db.save_contact(shop["domain"], info,
                                 source_url=src, raw_text=raw)
                 stats["ok"] += 1
-                print(f"{tag}   ✓ 联系人={info['contact_person']}"
-                      f"({info['gender']}) 电话={info['phone']} "
-                      f"手机={info['mobile']} 地址={info['address']}")
+                set_status(state=f"✓ {info['contact_person'] or '-'}"
+                                 f"({info['gender'] or '-'}) "
+                                 f"电话={info['phone'] or '-'} "
+                                 f"手机={info['mobile'] or '-'}")
 
-            human_pause(3, 7)  # 控制节奏，降低风控概率
+            n_local = sum(stats.values())
+            set_status(n=n_local, ok=stats["ok"], empty=stats["empty"],
+                       failed=stats["failed"])
+
+            # 样本之间的随机间隔（防风控）
+            t = random.uniform(args.sample_min, args.sample_max)
+            set_status(state=f"样本间隔 {t:.1f}s")
+            if stop.wait(t):
+                return
             # 每隔一定轮次随机长休息一次，模拟真人连续浏览后的停顿
-            done_local = sum(stats.values())
-            if (args.rest_every > 0 and done_local % args.rest_every == 0
+            if (args.rest_every > 0 and n_local % args.rest_every == 0
                     and not stop.is_set()):
                 t = random.uniform(args.rest_min, args.rest_max)
-                print(f"{tag}   ☕ 已连续抓取 {done_local} 个，随机长休息 {t:.0f}s ...")
-                stop.wait(t)  # 可被 Ctrl+C 提前唤醒
+                board.log(f"{tag} ☕ 已连续抓取 {n_local} 个，"
+                          f"随机长休息 {t / 60:.1f} 分钟 ...")
+                if wait_countdown(board, worker_id, stop, t, "长休息"):
+                    return  # 用户中断
     except Exception as e:
-        print(f"{tag} [X] worker 异常退出: {e}")
+        board.log(f"{tag} [X] worker 异常退出: {e}")
     finally:
         # 退出前把浏览器里的最新 Cookie（含新 x5sec）写回该出口 IP 名下
         if ctx is not None:
             try:
                 save_cookies(db, identity, ctx)
             except Exception as e:
-                print(f"{tag}   [!] Cookie 回写失败: {e}")
+                board.log(f"{tag}   [!] Cookie 回写失败: {e}")
         if browser is not None:
             try:
                 browser.close()
             except Exception:
                 pass
+        set_status(state="已退出", force=True)
         with lock:
             state["stats"][worker_id] = stats
         db.close()
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="1688 店铺联系方式抓取（多 worker 并发，断点续爬）")
+    ap = argparse.ArgumentParser(
+        description="1688 店铺联系方式抓取（多 worker 并发，状态板显示，断点续爬）")
     ap.add_argument("-n", "--num", type=int, default=10,
                     help="每批抓取的店铺数量（默认 10）；采满一批后强制休息再开下一批")
     ap.add_argument("--batch-rest", type=float, default=900,
@@ -387,9 +637,11 @@ def main() -> int:
     ap.add_argument("--max-batches", type=int, default=0,
                     help="最多采集多少批（默认 0=不限，抓完 pending 为止）")
     ap.add_argument("--ip-retry", type=int, default=3,
-                    help="代理出口 IP 过期后重启浏览器获取新 IP 的重试次数（默认 3）")
-    ap.add_argument("--block-retry", type=int, default=2,
-                    help="单店疑似被风控拦截时换 IP 重试的次数（默认 2）")
+                    help="重启浏览器获取新出口 IP 的重试次数（默认 3）")
+    ap.add_argument("--block-rest-min", type=float, default=600,
+                    help="风控后保持当前 IP 的休息时长下限秒数（默认 600=10 分钟）")
+    ap.add_argument("--block-rest-max", type=float, default=900,
+                    help="风控后保持当前 IP 的休息时长上限秒数（默认 900=15 分钟）")
     ap.add_argument("--net-retry", type=int, default=5,
                     help="单店遇到网络/代理层错误（隧道断开等，非风控）时的"
                          "重试次数（默认 5，不计入风控连续失败计数）")
@@ -401,6 +653,10 @@ def main() -> int:
                     help="先把 failed 店铺重置为 pending 再开始抓取")
     ap.add_argument("--rest-every", type=int, default=20,
                     help="每个 worker 每抓取多少个店铺后长休息一次（默认 20，0 关闭）")
+    ap.add_argument("--sample-min", type=float, default=3.0,
+                    help="样本之间随机间隔的下限秒数（默认 3）")
+    ap.add_argument("--sample-max", type=float, default=7.0,
+                    help="样本之间随机间隔的上限秒数（默认 7）")
     ap.add_argument("--rest-min", type=float, default=60,
                     help="长休息随机时长的下限秒数（默认 60）")
     ap.add_argument("--rest-max", type=float, default=180,
@@ -409,9 +665,9 @@ def main() -> int:
                     help="走 util/proxy_qingguo.py 的青果住宅代理；"
                          "Cookie 按出口 IP 存 SQLite（记录过期时间），"
                          "退出时自动把最新 Cookie 写回该 IP 名下")
-    ap.add_argument("--channels", type=int, default=1,
+    ap.add_argument("--channels", type=int, default=0,
                     help="青果通道池大小（默认取 proxy_qingguo.CONFIG['channels']）")
-    ap.add_argument("--workers", type=int, default=1,
+    ap.add_argument("--workers", type=int, default=0,
                     help="并发 worker 数；代理模式默认=通道数，直连模式默认 1")
     args = ap.parse_args()
 
@@ -422,7 +678,7 @@ def main() -> int:
     # 上次中断残留的 in_progress 全部放回 pending
     n = db.reset_in_progress()
     if n:
-        print(f"[0] 已把 {n} 个中端残留的 in_progress 店铺重置回 pending")
+        print(f"[0] 已把 {n} 个中断残留的 in_progress 店铺重置回 pending")
 
     total_pending = db.count_pending()
     if total_pending == 0:
@@ -436,18 +692,17 @@ def main() -> int:
     print(f"[1] 待抓取 {total_pending} 个，每批 {args.num} 个"
           f"（约 {est_batches} 批），批间强制休息 {args.batch_rest / 60:.0f} 分钟")
 
-    # ---- 并发度与通道分配 ----
-    pool = None
+    # ---- 并发度与通道分配（一 worker 一通道，IP + Cookie 配套）----
     proxy_servers: list = [None]
     if args.proxy:
         sys.path.insert(0, str(ROOT_DIR / "util"))
         import proxy_qingguo
-        pool = proxy_qingguo.get_pool(args.channels)
+        pool = proxy_qingguo.get_pool(args.channels or None)
         n_channels = len(pool.servers())
         workers = args.workers or n_channels
         if workers > n_channels:
             print(f"[!] workers({workers}) > 通道数({n_channels})，"
-                  f"部分 worker 将共用通道（共享出口 IP）")
+                  f"部分 worker 将共用通道（共享出口 IP），不建议")
         # 轮询取通道：workers <= 通道数时每个 worker 独占一个通道
         proxy_servers = [pool.acquire() for _ in range(workers)]
     else:
@@ -459,39 +714,70 @@ def main() -> int:
 
     print(f"[2] 启动 {workers} 个 worker"
           f"（{'代理通道: ' + ', '.join(proxy_servers) if args.proxy else '直连'}）")
-    if workers > 1:
-        print(f"[!] 注意：CloakBrowser Free  license 仅允许 1 个并发会话，"
-              f"超出部分的浏览器会被服务端强制关闭；"
-              f"多 worker 需要 Pro license（https://cloakbrowser.dev）")
+
+    # ---- 状态板：common 内部日志按线程标签路由进来 ----
+    board = StatusBoard(workers)
+
+    def _sink(tag: str, msg: str):
+        """common 内部日志路由：错误/警告进滚动日志，常规细节进状态行。"""
+        text = (msg or "").strip()
+        if not text:
+            return
+        m = re.match(r"\[w(\d+)\]", tag or "")
+        if "[X]" in text or "[!]" in text or "[license]" in text:
+            board.log(f"{tag} {text}" if tag else text)
+        elif m and int(m.group(1)) < workers:
+            board.set(int(m.group(1)), detail=text[:80])
+        else:
+            board.log(f"{tag} {text}" if tag else text)
+
+    common.set_log_sink(_sink)
+    board.start()
 
     state = {"done": 0, "batch": 1, "rest_until": 0.0, "stats": {}}
     lock = threading.Lock()
     stop = threading.Event()
+
+    # 直接关终端窗口(SIGHUP)或被 kill(SIGTERM)时也走正常清理流程：
+    # 各 worker 关闭浏览器，服务端会话租约立即释放，
+    # 否则残留租约要等 ~10 分钟才过期，会堵住下次启动的席位
+    import signal
+
+    def _graceful_exit(signum, frame):
+        board.log(f"[!] 收到信号 {signum}，通知各 worker 清理后退出...")
+        stop.set()
+
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        try:
+            signal.signal(sig, _graceful_exit)
+        except (OSError, ValueError):
+            pass  # 平台不支持该信号时跳过
+
     threads = [
         threading.Thread(target=worker,
-                         args=(i, args, proxy_servers[i], pool,
+                         args=(i, args, proxy_servers[i], board,
                                state, lock, stop),
                          name=f"fetcher-{i}", daemon=True)
         for i in range(workers)
     ]
     for t in threads:
         t.start()
-        time.sleep(1.0)  # 错开浏览器启动，避免资源争抢
+        time.sleep(2.0)  # 错开浏览器启动，避免资源争抢
 
     try:
         for t in threads:
             t.join()
     except KeyboardInterrupt:
-        print("\n[!] 用户中断，等待各 worker 完成当前店铺后退出...")
+        board.log("[!] 用户中断，等待各 worker 完成当前店铺后退出...")
         stop.set()
         for t in threads:
             t.join(timeout=90)
-        print("[!] 进度已保存在数据库，下次运行自动续爬")
+        board.log("[!] 进度已保存在数据库，下次运行自动续爬")
 
     ok = sum(s["ok"] for s in state["stats"].values())
     empty = sum(s["empty"] for s in state["stats"].values())
     failed = sum(s["failed"] for s in state["stats"].values())
-    print(f"[OK] 本批完成: 有联系方式 {ok}, 无联系方式 {empty}, 失败 {failed}")
+    print(f"[OK] 本次完成: 有联系方式 {ok}, 无联系方式 {empty}, 失败 {failed}")
     print(f"    数据库统计: {db.stats()}")
     db.close()
     return 0

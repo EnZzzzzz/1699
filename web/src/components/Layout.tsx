@@ -1,11 +1,12 @@
 import { NavLink, Outlet } from 'react-router-dom'
-import { LayoutDashboard, ListTodo, Network, Settings2, Database, Server } from 'lucide-react'
+import { LayoutDashboard, ListTodo, Network, Settings2, Database, Server, Workflow } from 'lucide-react'
 import { Toaster } from '@/components/ui/sonner'
 import { cn } from '@/lib/utils'
 
 const NAV = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
   { to: '/tasks', label: '任务', icon: ListTodo },
+  { to: '/flows', label: '流水线', icon: Workflow },
   { to: '/pool', label: 'IP 池', icon: Network },
   { to: '/workers', label: 'Worker', icon: Server },
   { to: '/providers', label: '厂商配置', icon: Settings2 },

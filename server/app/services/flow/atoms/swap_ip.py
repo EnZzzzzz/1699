@@ -72,6 +72,23 @@ class SwapIpAtom(Atom):
         if pool_client is None or channel is None:
             return AtomResult(outcome=OUTCOME_NET_ERROR,
                               detail="ctx.resources 缺少 pool_client 或 channel")
+
+        # ---- 直连模式：出口即本机 IP，换通道无意义。退化为停止感知退避
+        #      后重试（对齐 contact_fetch.py L319-323：block_retried 次退避
+        #      min(60*attempt, 300)）；attempt 由引擎策略拦截器经
+        #      params["_attempt"] 注入（缺省 1）。直连判定与
+        #      PoolClient.channel_proxy L121 一致 ----
+        if channel.get("is_direct") or not channel.get("tunnel"):
+            attempt = max(1, int(params.get("_attempt") or 1))
+            backoff = min(60 * attempt, 300)
+            ctx.emit("warning", f"直连模式无法换 IP，退避 {backoff}s 后重试",
+                     {"worker": ctx.worker_id, "seconds": backoff,
+                      "attempt": attempt})
+            if ctx.wait(backoff):
+                return AtomResult(outcome=OUTCOME_STOPPED,
+                                  detail="任务已停止")
+            return AtomResult(data={"direct": True, "backoff": backoff})
+
         ip_retry = max(1, int(params.get("ip_retry") or 3))
         note = params.get("note") or ""
         headed = bool(params.get("headed", False))

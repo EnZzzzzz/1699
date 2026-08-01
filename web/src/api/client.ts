@@ -1,4 +1,5 @@
 import axios, { AxiosError } from 'axios'
+import type { AtomSpec, Dag, DagValidation, Flow, FlowDetail, Task } from './types'
 
 // 后端 FastAPI 基址由 vite dev proxy 转发：/api -> http://localhost:8765
 export const api = axios.create({
@@ -50,4 +51,58 @@ export function asPaged<T>(data: unknown, fallbackPage = 1): { items: T[]; total
     return { items, total, page }
   }
   return { items: [], total: 0, page: fallbackPage }
+}
+
+// ---------- 流水线（flows / atoms，docs/flow-architecture.md §7） ----------
+
+export const flowApi = {
+  /** 模板列表（不含 dag 大字段） */
+  list: async (): Promise<Flow[]> => (await api.get('/flows')).data as Flow[],
+  /** 模板详情（含 dag） */
+  get: async (id: number): Promise<FlowDetail> => (await api.get(`/flows/${id}`)).data as FlowDetail,
+  /** 新建模板（后端先校验 DAG，errors 非空 400） */
+  create: async (payload: { name: string; description?: string; dag: Dag }): Promise<FlowDetail> =>
+    (await api.post('/flows', payload)).data as FlowDetail,
+  /** 独立 DAG 校验（保存前调用） */
+  validate: async (dag: unknown): Promise<DagValidation> =>
+    (await api.post('/flows/validate', { dag })).data as DagValidation,
+  /** 更新模板（builtin=1 后端拒绝；dag 变更后端重新校验） */
+  update: async (id: number, payload: { name?: string; description?: string; dag?: Dag }): Promise<FlowDetail> =>
+    (await api.put(`/flows/${id}`, payload)).data as FlowDetail,
+  /** 复制出新版本（name 加「（副本）」，builtin=0） */
+  duplicate: async (id: number): Promise<FlowDetail> =>
+    (await api.post(`/flows/${id}/duplicate`)).data as FlowDetail,
+  /** 删除模板（builtin / 被任务引用时后端拒绝） */
+  remove: async (id: number): Promise<void> => {
+    await api.delete(`/flows/${id}`)
+  },
+}
+
+/** 原子目录（带会话级缓存；失败时清空缓存以便下次重试） */
+let atomCatalogPromise: Promise<AtomSpec[]> | null = null
+export function getAtomCatalog(): Promise<AtomSpec[]> {
+  if (!atomCatalogPromise) {
+    atomCatalogPromise = (api.get('/atoms').then((r) => r.data) as Promise<AtomSpec[]>).catch((e) => {
+      atomCatalogPromise = null
+      throw e
+    })
+  }
+  return atomCatalogPromise
+}
+
+/** 原子名 → 显示名映射（FlowGraph 卡片标题用；目录不可用时退回原名） */
+export async function getAtomTitles(): Promise<Record<string, string>> {
+  const catalog = await getAtomCatalog()
+  const map: Record<string, string> = {}
+  for (const a of catalog) map[a.name] = a.title
+  return map
+}
+
+/** 创建 flow 任务：params 即 dag.run_inputs 的实参；响应含 dispatched/warning */
+export async function createFlowTask(
+  flowId: number,
+  runInputs: Record<string, unknown>,
+): Promise<Task & { dispatched?: boolean; warning?: string }> {
+  const res = await api.post('/tasks', { type: 'flow', flow_id: flowId, params: runInputs })
+  return res.data as Task & { dispatched?: boolean; warning?: string }
 }

@@ -19,6 +19,7 @@ from .logging_setup import setup_logging
 from .api import pool as pool_api
 from .api import providers as providers_api
 from .api import export as export_api
+from .api import flows as flows_api
 from .api import shops as shops_api
 from .api import stats as stats_api
 from .api import tasks as tasks_api
@@ -117,6 +118,7 @@ app.include_router(providers_api.router)
 app.include_router(pool_api.router)
 app.include_router(stats_api.router)
 app.include_router(tasks_api.router)
+app.include_router(flows_api.router)
 app.include_router(workers_api.router)
 app.include_router(shops_api.router)
 app.include_router(export_api.router)

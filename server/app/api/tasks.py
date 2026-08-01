@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from .. import config as app_config
 from ..db import get_db
-from ..models import Task, TaskEvent
+from ..models import Flow, Task, TaskEvent
 from ..services.board import build_board
 from ..services.pool_client import set_confirmation
 
@@ -19,6 +19,7 @@ router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 TASK_TYPES = {
     "shop_crawl": "crawl.shop_crawl",
     "contact_fetch": "crawl.contact_fetch",
+    "flow": "crawl.flow_run",          # DAG 流水线通用入口（P1 引擎实现）
 }
 
 # 各类型允许的 params 字段及类型（宽松校验：未知字段拒绝，缺省用默认）
@@ -156,6 +157,7 @@ ACTIVE_STATUSES = ("pending", "waiting_channel", "running", "stopping")
 class TaskCreate(BaseModel):
     type: str
     params: dict = {}
+    flow_id: int | None = None           # type=flow 时必填（流水线模板 id）
 
 
 def _validate_params(task_type: str, params: dict) -> dict:
@@ -180,14 +182,68 @@ def _validate_params(task_type: str, params: dict) -> dict:
     return out
 
 
+# dag.run_inputs 声明类型 → python 类型（宽松校验，bool 先于 int 判）
+_RUN_INPUT_TYPES = {
+    "int": int, "integer": int, "float": (int, float), "number": (int, float),
+    "str": str, "string": str, "bool": bool, "boolean": bool,
+}
+
+
+def _validate_run_inputs(spec: dict, params: dict) -> dict:
+    """按 dag.run_inputs 校验执行实参：未知键拒绝、类型校验、缺省填 default。"""
+    out = {}
+    for k, v in (params or {}).items():
+        if k not in spec:
+            raise HTTPException(
+                status_code=400,
+                detail=f"run_inputs 不支持参数 {k!r}，允许: {sorted(spec)}")
+        types = _RUN_INPUT_TYPES.get((spec[k] or {}).get("type"))
+        if types is bool and not isinstance(v, bool):
+            raise HTTPException(status_code=400,
+                                detail=f"run_inputs.{k} 必须是布尔值")
+        if types is int and (isinstance(v, bool) or not isinstance(v, int)):
+            raise HTTPException(status_code=400,
+                                detail=f"run_inputs.{k} 必须是整数")
+        if isinstance(types, tuple) and (isinstance(v, bool)
+                                         or not isinstance(v, types)):
+            raise HTTPException(status_code=400,
+                                detail=f"run_inputs.{k} 必须是数值")
+        if types is str and not isinstance(v, str):
+            raise HTTPException(status_code=400,
+                                detail=f"run_inputs.{k} 必须是字符串")
+        out[k] = v
+    for k, s in spec.items():
+        if k not in out and isinstance(s, dict) and "default" in s:
+            out[k] = s["default"]
+    return out
+
+
 @router.post("", status_code=201)
 def create_task(body: TaskCreate, db: Session = Depends(get_db)):
     if body.type not in TASK_TYPES:
         raise HTTPException(
             status_code=400,
             detail=f"未知任务类型 {body.type!r}，支持: {sorted(TASK_TYPES)}")
-    params = _validate_params(body.type, body.params)
-    task = Task(type=body.type,
+    flow_id = None
+    if body.type == "flow":
+        # 流水线任务：模板存在性校验 → run_inputs 校验 → DAG 快照入库
+        # （快照防模板后改影响历史任务，docs/flow-architecture.md §6）
+        if body.flow_id is None:
+            raise HTTPException(status_code=400,
+                                detail="type=flow 必须传 flow_id（流水线模板 id）")
+        flow = db.get(Flow, body.flow_id)
+        if flow is None:
+            raise HTTPException(status_code=404,
+                                detail=f"流水线模板 {body.flow_id} 不存在")
+        dag = flow.dag
+        run_inputs = _validate_run_inputs(dag.get("run_inputs") or {},
+                                          body.params)
+        params = {"flow_id": flow.id, "run_inputs": run_inputs,
+                  "_dag_snapshot": dag}
+        flow_id = flow.id
+    else:
+        params = _validate_params(body.type, body.params)
+    task = Task(type=body.type, flow_id=flow_id,
                 params_json=json.dumps(params, ensure_ascii=False),
                 status="pending",
                 progress_json=json.dumps(

@@ -39,6 +39,7 @@ from ..registry import register
 class ForEachShopAtom(Atom):
     name = "for_each_shop"
     title = "店铺循环（容器）"
+    is_container = True  # 带 body 子图（dag.py 校验 / 引擎执行依赖此标记）
     inputs = {"vars": "body 子节点读写共享"}
     outputs = {"vars.loop_stats": "dict（ok/empty/failed/batches/fetched）"}
     param_spec = {

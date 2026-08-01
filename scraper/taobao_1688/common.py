@@ -25,9 +25,11 @@
 from __future__ import annotations  # 兼容 Python < 3.10 的 X | None 注解
 
 import json
+import os
 import random
 import re
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -42,9 +44,40 @@ UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
       "Chrome/150.0.0.0 Safari/537.36")
 
 
+# ---------- 日志出口（多 worker 时可把内部消息路由到状态板，避免刷屏） ----------
+
+_LOG_SINK = None          # callable(tag, msg)；None 时退回普通 print
+_tls = threading.local()  # 每线程的 worker 标签（contact_fetcher 用 set_tag 设置）
+
+
+def set_log_sink(fn):
+    """设置内部日志出口 fn(tag, msg)；传 None 恢复直接 print。"""
+    global _LOG_SINK
+    _LOG_SINK = fn
+
+
+def set_tag(tag: str):
+    """给当前线程打标（如 '[w0]'），内部日志按 worker 归属路由。"""
+    _tls.tag = tag
+
+
+def _log(msg: str):
+    tag = getattr(_tls, "tag", "")
+    if _LOG_SINK is not None:
+        _LOG_SINK(tag, msg)
+    elif tag:
+        print(f"{tag} {msg}")
+    else:
+        print(msg)
+
+
 # ---------- 配置加载 ----------
 
 def load_license_key() -> str | None:
+    # 环境变量优先（export CLOAKBROWSER_LICENSE_KEY=...），config.json 兜底
+    key = os.environ.get("CLOAKBROWSER_LICENSE_KEY")
+    if key:
+        return key
     if CONFIG_JSON.exists():
         try:
             return json.loads(CONFIG_JSON.read_text())["CLOAKBROWSER_LICENSE_KEY"]
@@ -53,17 +86,25 @@ def load_license_key() -> str | None:
     return None
 
 
+# 各套餐的并发会话席位上限（服务端强制，超限的 launch 会以退出码 76
+# 拒绝；此处仅用于启动前主动等待，上限未知的套餐不阻塞直接放行）
+PLAN_SEATS = {"free": 1, "solo": 5}
+
+
 def wait_for_license_seat(tag: str = "", timeout: float = 600.0,
-                          interval: float = 20.0) -> bool:
-    """启动浏览器前检查 CloakBrowser 会话席位（free 套餐仅 1 个）。
+                          interval: float = 20.0,
+                          max_seats: int | None = None) -> bool:
+    """启动浏览器前检查 CloakBrowser 会话席位是否还有空余。
 
     背景：会话席位由 Pro 二进制向服务端租约。上次运行异常退出
-    （Ctrl+C / 崩溃）时租约不会立即释放，残留期间新启动的二进制
-    会在 launch 成功后自行退出，表现为不透明的 TargetClosedError。
-    这里启动前主动轮询，等残留租约过期释放后再放行。
+    （Ctrl+C / 崩溃 / 进程被杀）时租约不会立即释放，残留期间新启动
+    的二进制会被服务端拒绝（退出码 76）或 launch 后自行退出，表现为
+    不透明的 TargetClosedError。这里启动前主动轮询，等残留租约过期
+    释放后再放行。
 
-    返回 True 表示可以启动；False 表示超时仍被占用。
-    查询失败（无 key / 网络问题 / 非 free 套餐上限未知）不阻塞，直接放行。
+    席位上限取 PLAN_SEATS（free=1 / solo=5），可用 max_seats 覆盖；
+    上限未知的套餐不阻塞。返回 True 表示可以启动；False 表示超时仍满员。
+    查询失败（无 key / 网络问题）不阻塞，直接放行。
     """
     key = load_license_key()
     if not key:
@@ -74,19 +115,20 @@ def wait_for_license_seat(tag: str = "", timeout: float = 600.0,
         info = validate_license(key)
     except Exception:
         return True
-    if not info or info.plan != "free":
-        return True  # 仅 free 套餐席位上限已知为 1
+    seats = max_seats or (PLAN_SEATS.get(info.plan) if info else None)
+    if not seats:
+        return True  # 套餐席位上限未知，不阻塞
     deadline = time.time() + timeout
     while True:
         n = get_active_session_count(key)
-        if n is None or n < 1:
+        if n is None or n < seats:
             return True
         remaining = deadline - time.time()
         if remaining <= 0:
             return False
         wait = min(interval, remaining)
-        print(f"{tag}[license] 服务端仍有 {n} 个活跃会话未释放"
-              f"（free 套餐仅 1 个席位，多为上次异常退出的残留租约），"
+        _log(f"{tag}[license] 服务端 {n}/{seats} 个会话席位被占用"
+              f"（多为上次异常退出的残留租约，等其过期释放），"
               f"{wait:.0f}s 后重查...")
         time.sleep(wait)
 
@@ -114,11 +156,37 @@ def load_cookies_pw(cookie_path: Path = COOKIE_JSON) -> list[dict]:
     return cookies
 
 
+# 阿里系风控安全 Cookie：由站点按「IP + 设备 + 会话」现场签发，
+# 不能跨 IP 复制 —— 把 A 地签发的 x5sec/sgcookie/isg 带到 B 地出口，
+# 等于主动告诉风控系统「同一客户端在 IP 池里跳」，是账号被标记的
+# 最强信号。新 identity 播种时必须剔除，让站点为当前出口重新签发。
+SECURITY_COOKIE_NAMES = frozenset({
+    "x5sec", "x5secdata", "x5sectag", "sgcookie", "sg", "isg",
+})
+
+
 def seed_cookies_from_json(db, identity: str,
                            cookie_path: Path = COOKIE_JSON) -> int:
-    """把 CDP 导出的 JSON Cookie 作为种子导入数据库（保留过期时间）。"""
+    """把 CDP 导出的 JSON Cookie 作为种子导入数据库（保留过期时间）。
+
+    代理模式（identity 为出口 IP）播种时剔除风控安全 Cookie
+    （x5sec/sgcookie/isg 等）：它们由站点按 IP+会话签发，跨 IP 复制
+    会触发风控；剔除后首次访问由站点为当前出口重新签发，之后
+    save_cookies 写回的才是与该 IP 配套的安全 Cookie。
+    直连模式（identity='direct'）Cookie 本来就是本机 IP 下签发的，全量保留。
+    """
     raw = json.loads(cookie_path.read_text(encoding="utf-8"))
     seeds = [c for c in raw if "1688.com" in c.get("domain", "")]
+    if identity != "direct":
+        stripped = [c for c in seeds
+                    if c.get("name") in SECURITY_COOKIE_NAMES]
+        if stripped:
+            seeds = [c for c in seeds
+                     if c.get("name") not in SECURITY_COOKIE_NAMES]
+            _log(f"    [cookie] 播种 identity={identity} 时已剔除 "
+                 f"{len(stripped)} 个跨 IP 风控 Cookie"
+                 f"（{', '.join(sorted(c['name'] for c in stripped))}），"
+                 f"将由站点为当前出口重新签发")
     return db.save_cookies(identity, seeds)
 
 
@@ -204,9 +272,22 @@ def launch_browser(headless: bool = True, use_proxy: bool = False, db=None,
         req_proxies_url = (f"http://{proxy_conf['username']}"
                            f":{proxy_conf['password']}@{host}")
         req_proxies = {"http": req_proxies_url, "https": req_proxies_url}
+        # 出口 IP 是 Cookie 隔离的 identity 基准，查不到就不能继续 ——
+        # 用 qingguo:host 之类的伪 identity 会让 Cookie 绑错对象，
+        # 且该 IP 的真实 Cookie 永远无法沉淀。短重试后仍失败直接抛错，
+        # 交给调用方（relaunch_browser）退避重试。
         exit_ip = get_exit_ip(req_proxies)
-        identity = exit_ip or f"qingguo:{host}"
-        print(f"    [proxy] 青果住宅代理: {host}，出口 IP: {exit_ip or '查询失败'}")
+        if exit_ip is None:
+            for _ in range(3):
+                time.sleep(5)
+                exit_ip = get_exit_ip(req_proxies)
+                if exit_ip:
+                    break
+        if exit_ip is None:
+            raise RuntimeError(f"经通道 {host} 查询出口 IP 失败，"
+                               f"隧道疑似不可用，无法绑定 Cookie identity")
+        identity = exit_ip
+        _log(f"    [proxy] 青果住宅代理: {host}，出口 IP: {exit_ip}")
 
     # ---- Cookie：库优先，JSON 种子兜底 ----
     cookies = db.load_cookies(identity) if db else []
@@ -217,19 +298,25 @@ def launch_browser(headless: bool = True, use_proxy: bool = False, db=None,
         n = seed_cookies_from_json(db, identity, COOKIE_JSON)
         seeded_from_local = True
         cookies = db.load_cookies(identity)
-        print(f"    [cookie] 已从 {COOKIE_JSON.name} 导入 {n} 个 Cookie "
-              f"到 identity={identity}")
+        _log(f"    [cookie] 已从 {COOKIE_JSON.name} 导入 {n} 个 Cookie "
+             f"到 identity={identity}")
     info = db.cookie_info(identity)
-    print(f"    [cookie] identity={identity}，可用 {len(cookies)} 个"
-          f"（库内共 {info['total']}，已过期剔除 {info['expired']}，"
-          f"最近过期: {info['earliest_expiry'] or '未知'}）")
+    _log(f"    [cookie] identity={identity}，可用 {len(cookies)} 个"
+         f"（库内共 {info['total']}，已过期剔除 {info['expired']}，"
+         f"最近过期: {info['earliest_expiry'] or '未知'}）")
     if use_proxy and seeded_from_local:
-        print(f"    [!] 该出口 IP 的 Cookie 来自本机种子 —— "
-              f"Cookie 与代理出口 IP 错配，可能触发 x5sec 风控；"
-              f"建议跑 --proxy --headed 在代理下登录/过滑块，"
-              f"退出时会自动把新 Cookie 写回该 IP 名下")
+        _log(f"    [cookie] 该出口 IP 的 Cookie 来自本机种子（已剔除跨 IP"
+             f" 风控 Cookie），预热时将由站点为当前出口重新签发")
     if not cookies:
         sys.exit(f"[X] identity={identity} 下没有可用 Cookie（可能全部过期）")
+
+    # 启动前等服务端有空余会话席位（上次异常退出的残留租约未释放时，
+    # 直接 launch 会被服务端拒绝/启动后被关闭，表现为 TargetClosedError）
+    tag = getattr(_tls, "tag", "")
+    if not wait_for_license_seat(tag=f"{tag} " if tag else "",
+                                 timeout=600.0):
+        raise RuntimeError("等待 600s 后 CloakBrowser 会话席位仍满员，"
+                           "请检查是否有残留会话未释放")
 
     browser = launch(
         headless=headless,
@@ -241,7 +328,47 @@ def launch_browser(headless: bool = True, use_proxy: bool = False, db=None,
     )
     ctx = browser.new_context(user_agent=UA, locale="zh-CN")
     ctx.add_cookies(cookies)
-    return browser, ctx.new_page(), identity, req_proxies, proxy_server
+    page = ctx.new_page()
+    if use_proxy:
+        # 新 IP / 新会话预热：访问首页让站点为当前出口现场签发独立
+        # Cookie（sgcookie/isg/cna 等），立即回写该 IP 名下 ——
+        # 每个 IP 的 Cookie 从此在值层面也是独立的，不再跨 IP 复制
+        warmup_cookies(db, identity, page, ctx)
+    return browser, page, identity, req_proxies, proxy_server
+
+
+def warmup_cookies(db, identity: str, page, ctx) -> bool:
+    """新 IP 的 Cookie 自动更新：访问 1688 首页触发站点现场签发。
+
+    播种只能提供登录态（cookie2/_tb_token_），风控与会话 Cookie 必须由
+    站点按「当前出口 IP + 当前会话」签发才算配套。首页是低风险页面，
+    预热一次即完成绑定，顺带让首个店铺请求带上真实的站内浏览轨迹
+    （直接深链 contactinfo.htm 而无首页访问记录本身也是爬虫特征）。
+
+    返回 True 表示预热顺利；首页即命中风控或预热失败返回 False
+    （不阻断启动，后续抓取重试/手动过证流程会处理）。
+    """
+    try:
+        page.goto(HOMEPAGE, wait_until="domcontentloaded", timeout=60000)
+        time.sleep(random.uniform(2.0, 4.0))
+        text = ""
+        try:
+            text = page.evaluate("() => document.body.innerText") or ""
+        except Exception:
+            pass
+        blocked = is_risk_blocked(page.url, text)
+        n = save_cookies(db, identity, ctx)
+        if blocked:
+            _log(f"    [warmup] 首页即命中风控（{blocked}），已回写 {n} 个"
+                 f" Cookie；headed 模式可在窗口手动过证后自动继续")
+            return False
+        _log(f"    [warmup] 首页预热完成，{n} 个 Cookie 已与出口 "
+             f"{identity} 绑定（站点现场签发）")
+        return True
+    except Exception as e:
+        _log(f"    [!] 首页预热失败（不阻断启动，后续抓取重试处理）: "
+             f"{str(e).splitlines()[0][:150]}")
+        return False
 
 
 def save_cookies(db, identity: str, ctx) -> int:
@@ -254,13 +381,13 @@ def save_cookies(db, identity: str, ctx) -> int:
     if not cookies:
         return 0
     n = db.save_cookies(identity, cookies)
-    print(f"    [cookie] 已把 {n} 个 Cookie 写回数据库 (identity={identity})")
+    _log(f"    [cookie] 已把 {n} 个 Cookie 写回数据库 (identity={identity})")
     return n
 
 
 def human_pause(lo: float = 2.0, hi: float = 5.0):
     t = random.uniform(lo, hi)
-    print(f"    ...随机等待 {t:.1f}s")
+    _log(f"    ...随机等待 {t:.1f}s")
     time.sleep(t)
 
 
@@ -290,6 +417,36 @@ def is_network_error(err) -> bool:
     """判断异常是否属于网络/代理层错误（与目标站风控无关）。"""
     s = str(err or "")
     return any(m in s for m in NETWORK_ERR_MARKERS)
+
+
+# 浏览器进程级致命错误特征（与目标站风控完全无关）。
+# 典型场景：CloakBrowser 会话被服务端关闭（席位超限/租约被顶掉）、
+# 浏览器进程崩溃、上下文被销毁。表现为 Playwright 的 TargetClosedError，
+# 若误当风控处理会在一台死浏览器上空等/重试，必须识别出来让调用方
+# 直接重启浏览器。
+FATAL_ERR_MARKERS = (
+    "Target closed",
+    "TargetClosedError",
+    "has been closed",   # "Target page, context or browser has been closed"
+    "Target crashed",
+    "Browser closed",
+    "Connection closed",
+)
+
+
+def is_fatal_browser_error(err) -> bool:
+    """判断异常是否属于浏览器进程死亡/被关闭（应重启浏览器，非风控）。"""
+    s = str(err or "")
+    return any(m in s for m in FATAL_ERR_MARKERS)
+
+
+def browser_alive(page) -> bool:
+    """探测浏览器/页面是否还活着（goto 超时后鉴别死浏览器 vs 页面挂起）。"""
+    try:
+        b = page.context.browser
+        return bool(b and b.is_connected()) and not page.is_closed()
+    except Exception:
+        return False
 
 
 # 风控拦截页的 URL 特征（1688 常见拦截跳转）
@@ -372,6 +529,9 @@ def scrape_contact(page, shop_domain: str, referer: str = None) -> dict | None:
 
     返回值约定（调用方按优先级判断）：
         - 正常解析：dict，含联系方式字段 + _raw/_source_url/_blocked
+        - 浏览器进程死亡/被服务端关闭（TargetClosed、崩溃等，非风控）：
+          返回 {"_fatal": <原因>} 标记 dict，调用方应直接重启浏览器重试，
+          不应计入风控连续失败计数，更不该在死浏览器上空等
         - 网络/代理层错误（隧道断、连接重置等，与风控无关）：
           返回 {"_net_error": <原因>} 标记 dict，调用方应换通道/退避重试，
           不应计入风控连续失败计数
@@ -390,10 +550,27 @@ def scrape_contact(page, shop_domain: str, referer: str = None) -> dict | None:
         info["_blocked"] = is_risk_blocked(page.url, text)
         return info
     except Exception as e:
+        reason = str(e).splitlines()[0][:200]
+        # 1) 浏览器进程级致命错误（会话被服务端关闭、崩溃等），优先识别
+        if is_fatal_browser_error(e):
+            _log(f"    [X] {shop_domain} 浏览器已关闭/崩溃（非风控，"
+                 f"可能是会话被服务端终止）: {reason}")
+            return {"_fatal": reason}
+        # 2) 网络/代理层错误
         if is_network_error(e):
-            reason = str(e).splitlines()[0][:200]
-            print(f"    [X] {shop_domain} 联系方式抓取失败"
-                  f"（网络/代理层错误，非风控）: {e}")
+            _log(f"    [X] {shop_domain} 联系方式抓取失败"
+                 f"（网络/代理层错误，非风控）: {e}")
             return {"_net_error": reason}
-        print(f"    [X] {shop_domain} 联系方式抓取失败: {e}")
+        # 3) 其他异常（多为 goto 超时）：先鉴别浏览器是不是已经死了
+        if not browser_alive(page):
+            _log(f"    [X] {shop_domain} 抓取失败且浏览器连接已断开"
+                 f"（非风控，会话疑似被终止）: {reason}")
+            return {"_fatal": f"浏览器连接断开: {reason}"}
+        # 浏览器还活着：记录当前停留 URL 辅助鉴别（拦截页挂起 vs 真风控）
+        try:
+            cur_url = page.url
+        except Exception:
+            cur_url = ""
+        _log(f"    [X] {shop_domain} 联系方式抓取失败"
+             f"（当前停留 URL: {cur_url or '未知'}）: {e}")
         return None

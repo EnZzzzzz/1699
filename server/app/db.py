@@ -104,6 +104,17 @@ CREATE TABLE IF NOT EXISTS task_events (
 );
 CREATE INDEX IF NOT EXISTS idx_task_events_task ON task_events(task_id, id);
 
+-- 流水线模板（DAG + 节点参数整体保存，docs/flow-architecture.md §6）
+CREATE TABLE IF NOT EXISTS flows (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL,
+    description TEXT,
+    dag_json    TEXT NOT NULL,
+    builtin     INTEGER NOT NULL DEFAULT 0,  -- 1=内置复刻模板（只读防误改）
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_channels_provider ON proxy_channels(provider_id);
 CREATE INDEX IF NOT EXISTS idx_channels_status ON proxy_channels(status);
 CREATE INDEX IF NOT EXISTS idx_channels_task ON proxy_channels(used_by_task);
@@ -125,12 +136,17 @@ _QINGGUO_SEED = {
 
 
 def migrate() -> None:
-    """创建新增 4 表及索引（幂等）。不触碰现有表。"""
+    """创建新增表及索引（幂等）。不触碰现有 5 表。"""
     with engine.begin() as conn:
         for stmt in NEW_SCHEMA.split(";"):
             stmt = stmt.strip()
             if stmt:
                 conn.execute(text(stmt))
+        # tasks 加列迁移：生产库已存在 tasks，CREATE IF NOT EXISTS 不会补列
+        cols = {row[1] for row in conn.execute(text("PRAGMA table_info(tasks)"))}
+        if "flow_id" not in cols:
+            conn.execute(text(
+                "ALTER TABLE tasks ADD COLUMN flow_id INTEGER REFERENCES flows(id)"))
 
 
 def seed_providers() -> bool:
@@ -160,3 +176,11 @@ def seed_providers() -> bool:
 def init_db() -> None:
     migrate()
     seed_providers()
+    # 内置流水线模板 seed（延迟导入避免 models/db 循环）
+    from .services.flow.builtin import seed_builtin_flows
+
+    db = SessionLocal()
+    try:
+        seed_builtin_flows(db)
+    finally:
+        db.close()

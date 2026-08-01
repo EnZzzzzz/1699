@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 1688 采集平台 - 停止后端服务
+# 1688 采集平台 - 停止前后端服务
 # 策略：优先用 pid 文件精准停止；pid 文件缺失或失效时，按进程特征查找并 kill
 # （先 TERM 优雅退出，超时后 KILL）
 set -uo pipefail
@@ -58,6 +58,7 @@ stop_one() { # $1=名字  $2=进程特征 pattern
   echo "[stop] $name 已停止"
 }
 
+stop_one "vite"    "node_modules/.bin/vite"
 stop_one "celery"  "celery -A app.workers.celery_app"
 stop_one "uvicorn" "uvicorn app.main:app"
 

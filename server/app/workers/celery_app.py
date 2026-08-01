@@ -8,6 +8,7 @@ worker 启动：
 任务（M4）：
     crawl.shop_crawl     店铺采集（app/workers/shop_crawl.py）
     crawl.contact_fetch  联系方式抓取（app/workers/contact_fetch.py）
+    crawl.flow_run       DAG 流水线通用入口（app/workers/flow_run.py，P1）
 
 通道统一经 POST /api/pool/acquire|release 申请归还，使用事件经
 POST /api/pool/events 上报，停止走 tasks.stop_requested 协作式检查。
@@ -25,7 +26,8 @@ celery_app = Celery(
     "server1688",
     broker=config.REDIS_URL,
     backend=config.REDIS_URL,
-    include=["app.workers.shop_crawl", "app.workers.contact_fetch"],
+    include=["app.workers.shop_crawl", "app.workers.contact_fetch",
+             "app.workers.flow_run"],
 )
 
 celery_app.conf.update(

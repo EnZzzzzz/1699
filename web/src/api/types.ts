@@ -1,6 +1,6 @@
 // API 契约类型定义（依据 docs/service-architecture.md §4/§8 + 后端真实返回核对）
 
-export type TaskType = 'shop_crawl' | 'contact_fetch'
+export type TaskType = 'shop_crawl' | 'contact_fetch' | 'flow'
 
 export type TaskStatus =
   | 'pending'
@@ -17,13 +17,16 @@ export interface TaskProgress {
   per_minute?: number
   total?: number
   phase?: string // worker 上报的阶段；'waiting_confirm' = 等待人工确认开始采集
+  /** flow 任务的节点级状态看板（docs/flow-architecture.md §5.4/§7） */
+  nodes?: Record<string, NodeState>
   // [待后端确认] 其余 progress_json 内的键
-  [key: string]: number | string | undefined
+  [key: string]: number | string | Record<string, NodeState> | undefined
 }
 
 export interface Task {
   id: number
   type: TaskType
+  flow_id?: number | null // type=flow 时关联的流水线模板 id
   params: TaskParams
   celery_id?: string | null
   status: TaskStatus
@@ -92,7 +95,96 @@ export interface ContactFetchBoard extends BoardBase {
   task_failed: number
 }
 
-export type Board = ShopCrawlBoard | ContactFetchBoard
+export type Board = ShopCrawlBoard | ContactFetchBoard | FlowBoard
+
+/** flow 任务的通用看板：后端 build_board 对未知类型只填公共字段 + collected */
+export interface FlowBoard extends BoardBase {
+  type: 'flow'
+}
+
+// ---------- 流水线（原子能力 + DAG，docs/flow-architecture.md §4/§7） ----------
+
+/** 节点运行状态（executor._set_node_state） */
+export type NodeStatus = 'pending' | 'running' | 'ok' | 'failed' | 'aborted' | 'stopped'
+
+/** progress.nodes 的单节点状态；key 为 节点id / 容器id/子id / 容器id/子id#w0 */
+export interface NodeState {
+  status: NodeStatus
+  started_at?: string | null
+  elapsed?: number | null // 秒（终态后回填）；running 时为 null
+  progress?: Record<string, unknown> // 原子自定义进度：sleep 报 {total, elapsed}；fetch 报 {retry, exit_ip}
+  detail?: string | null // 失败/中止原因
+}
+
+/** dag.run_inputs 的运行时变量定义（执行时补实参） */
+export interface DagRunInput {
+  type: 'int' | 'bool' | 'str'
+  default: unknown
+  label?: string
+}
+
+/** 节点策略配置：on_<outcome> = 结果分类补救；circuit_breaker = 节点级熔断 */
+export interface DagNodePolicy {
+  do: string // 补救原子名，如 swap_ip
+  retry?: number
+  params?: Record<string, unknown>
+}
+
+export interface DagCircuitBreaker {
+  consecutive_fail: number
+  action: string // v1 仅 abort_task
+}
+
+export interface DagNode {
+  id: string
+  atom: string // 原子注册名
+  params?: Record<string, unknown>
+  body?: DagNode[] // 容器节点（for_each_shop）的子图
+  on_blocked?: DagNodePolicy
+  on_net_error?: DagNodePolicy
+  circuit_breaker?: DagCircuitBreaker
+  [key: `on_${string}`]: unknown // 其余 on_<outcome> 策略键（预留）
+}
+
+export interface Dag {
+  version?: number
+  resources?: string[] // 引擎统一 acquire/release 的资源声明
+  run_inputs?: Record<string, DagRunInput>
+  nodes: DagNode[]
+  edges?: [string, string][] // 顶层节点间依赖（v1 线性，缺省按数组序）
+}
+
+/** GET /api/flows 列表项（不含 dag） */
+export interface Flow {
+  id: number
+  name: string
+  description: string | null
+  builtin: boolean
+  created_at: string
+  updated_at: string
+}
+
+/** GET /api/flows/{id} 详情（含 dag；新建/更新响应会附加 warnings） */
+export interface FlowDetail extends Flow {
+  dag: Dag
+  warnings?: string[]
+}
+
+/** GET /api/atoms 原子目录项 */
+export interface AtomSpec {
+  name: string // 注册名，如 swap_ip
+  title: string // 显示名，如 更换出口 IP
+  inputs?: Record<string, string>
+  outputs?: Record<string, string>
+  param_spec?: Record<string, unknown>
+}
+
+/** POST /api/flows/validate 响应 */
+export interface DagValidation {
+  ok: boolean
+  errors: string[]
+  warnings: string[]
+}
 
 // ---------- 任务创建 ----------
 
@@ -135,11 +227,16 @@ export interface TaskParams {
   block_retry?: number
   net_retry?: number
   max_consecutive_fail?: number
+  // ---- flow 任务（type=flow）：params 为 run_inputs 实参 + DAG 快照（docs §6） ----
+  flow_id?: number // 模板 id（params 内冗余一份，与顶层 flow_id 一致）
+  run_inputs?: Record<string, unknown>
+  _dag_snapshot?: Dag // 创建时从模板快照，防模板后改影响历史任务可追溯
 }
 
 export interface CreateTaskPayload {
   type: TaskType
   params: TaskParams
+  flow_id?: number // type=flow 时必填（流水线模板 id）
 }
 
 // ---------- IP 池 ----------

@@ -10,9 +10,21 @@ validate_dag(dag) -> (errors, warnings)：
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from . import registry
+
+# 节点 params 值的 run_inputs 引用语法："${name}"（与 executor 执行时解析对应）
+_PARAM_REF_RE = re.compile(r"^\$\{([A-Za-z_]\w*)\}$")
+
+# run_inputs.type / param_spec.type 归一（int/integer 等价；int 是 number 子集）
+_CANON_TYPE = {
+    "int": "int", "integer": "int",
+    "float": "num", "number": "num",
+    "str": "str", "string": "str",
+    "bool": "bool", "boolean": "bool",
+}
 
 # 策略键允许的目标 outcome（与 base.py 常量对应）
 _VALID_OUTCOMES = {"ok", "blocked", "net_error", "empty", "stopped", "timeout"}
@@ -37,8 +49,14 @@ class DagValidationError(ValueError):
         super().__init__("; ".join(errors))
 
 
-def _check_params(atom_name: str, spec: dict, params: dict, path: str) -> list[str]:
-    """按 atom.param_spec 宽松校验 params：未知字段拒绝、required 补齐、类型匹配。"""
+def _check_params(atom_name: str, spec: dict, params: dict, path: str,
+                  run_inputs: dict, warnings: list[str]) -> list[str]:
+    """按 atom.param_spec 宽松校验 params：未知字段拒绝、required 补齐、类型匹配。
+
+    字符串值匹配 "${name}" 引用语法时：name 未在 dag.run_inputs 声明 → error；
+    已声明 → 跳过类型校验（运行时才代入实值），run_inputs 声明类型与
+    param_spec 类型不一致 → warning（int 是 number 子集不算不一致）。
+    """
     errors = []
     props = (spec or {}).get("properties", {})
     required = (spec or {}).get("required", [])
@@ -52,6 +70,23 @@ def _check_params(atom_name: str, spec: dict, params: dict, path: str) -> list[s
                           f"（允许: {sorted(props)}）")
             continue
         ptype = props[k].get("type")
+        ref = _PARAM_REF_RE.match(v) if isinstance(v, str) else None
+        if ref is not None:
+            name = ref.group(1)
+            if name not in (run_inputs or {}):
+                errors.append(f"{path}: 参数 {k} 引用了未声明的 run_inputs "
+                              f"变量 '${{{name}}}'")
+                continue
+            want = _CANON_TYPE.get(
+                ((run_inputs or {}).get(name) or {}).get("type"))
+            got = _CANON_TYPE.get(ptype)
+            if (want and got and want != got
+                    and not (got == "num" and want == "int")):
+                warnings.append(
+                    f"{path}: 参数 {k} 引用 '${{{name}}}'（run_inputs 类型 "
+                    f"{(run_inputs[name] or {}).get('type')}）与原子 {atom_name} "
+                    f"param_spec 声明类型 {ptype} 不一致，运行时可能类型错误")
+            continue
         py_types = _TYPE_MAP.get(ptype)
         if py_types is None:
             continue  # 未知 schema 类型不校验
@@ -69,7 +104,7 @@ def _check_params(atom_name: str, spec: dict, params: dict, path: str) -> list[s
 
 
 def _validate_node(node: dict, path: str, errors: list[str],
-                   warnings: list[str]) -> str | None:
+                   warnings: list[str], run_inputs: dict) -> str | None:
     """校验单个节点（递归容器 body），返回节点 id（无 id 返回 None）。"""
     if not isinstance(node, dict):
         errors.append(f"{path}: 节点必须是对象")
@@ -91,9 +126,10 @@ def _validate_node(node: dict, path: str, errors: list[str],
                       f"（可用: {registry.names()}）")
         return nid
 
-    # 参数校验
+    # 参数校验（含 ${name} 引用语法）
     errors.extend(_check_params(atom_name, atom_cls.param_spec,
-                                node.get("params"), f"{path}({nid})"))
+                                node.get("params"), f"{path}({nid})",
+                                run_inputs, warnings))
 
     # 策略键校验：on_<outcome>: {"do": <atom>, "retry": N}
     for key, val in node.items():
@@ -140,7 +176,7 @@ def _validate_node(node: dict, path: str, errors: list[str],
             child_ids = set()
             for i, child in enumerate(body):
                 cid = _validate_node(child, f"{path}({nid}).body[{i}]",
-                                     errors, warnings)
+                                     errors, warnings, run_inputs)
                 if cid:
                     if cid in child_ids:
                         errors.append(f"{path}({nid}): body 内节点 id 重复: {cid!r}")
@@ -217,7 +253,8 @@ def validate_dag(dag: dict) -> tuple[list[str], list[str]]:
 
     node_ids: set[str] = set()
     for i, node in enumerate(nodes):
-        nid = _validate_node(node, f"nodes[{i}]", errors, warnings)
+        nid = _validate_node(node, f"nodes[{i}]", errors, warnings,
+                             run_inputs)
         if nid:
             if nid in node_ids:
                 errors.append(f"nodes[{i}]: 节点 id 重复: {nid!r}")

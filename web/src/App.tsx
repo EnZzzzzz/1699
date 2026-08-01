@@ -3,6 +3,7 @@ import Layout from '@/components/Layout'
 import Dashboard from '@/pages/Dashboard'
 import Tasks from '@/pages/Tasks'
 import TaskDetail from '@/pages/TaskDetail'
+import Flows from '@/pages/Flows'
 import Pool from '@/pages/Pool'
 import Workers from '@/pages/Workers'
 import Providers from '@/pages/Providers'
@@ -15,6 +16,7 @@ export default function App() {
         <Route path="/" element={<Dashboard />} />
         <Route path="/tasks" element={<Tasks />} />
         <Route path="/tasks/:id" element={<TaskDetail />} />
+        <Route path="/flows" element={<Flows />} />
         <Route path="/pool" element={<Pool />} />
         <Route path="/workers" element={<Workers />} />
         <Route path="/providers" element={<Providers />} />

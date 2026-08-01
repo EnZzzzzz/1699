@@ -266,6 +266,44 @@ class TestSwapIp(unittest.TestCase):
         self.assertEqual(r.outcome, OUTCOME_NET_ERROR)
         self.assertIn("换通道失败", r.detail)
 
+    # ---- 直连通道：退化为停止感知退避（对齐 contact_fetch.py L319-323）----
+
+    def test_direct_channel_degrades_to_backoff(self):
+        """直连通道（is_direct）：不换通道/不动浏览器，按 _attempt 退避。"""
+        pool = FakePoolClient()
+        ctx = make_ctx(**swap_resources(
+            channel={"id": 9, "is_direct": True}))
+        with mock.patch.object(Context, "wait", return_value=False) as wait, \
+             mock.patch.object(browser_mod, "save_cookies") as save, \
+             mock.patch.object(browser_mod, "launch_browser") as launch:
+            r = SwapIpAtom().run(ctx, {"_attempt": 2})
+        self.assertEqual(r.outcome, OUTCOME_OK)
+        wait.assert_called_once_with(120)        # min(60*2, 300)
+        self.assertEqual(pool.swap_calls, [])    # 不换通道
+        save.assert_not_called()                 # 不回写 Cookie
+        launch.assert_not_called()               # 不重启浏览器
+        self.assertTrue(r.data["direct"])
+        self.assertEqual(r.data["backoff"], 120)
+
+    def test_direct_channel_backoff_cap_and_default_attempt(self):
+        """无 tunnel 的通道同样算直连；退避 300s 封顶；_attempt 缺省 1。"""
+        ctx = make_ctx(**swap_resources(channel={"id": 9}))  # 无 tunnel
+        with mock.patch.object(Context, "wait", return_value=False) as wait:
+            r = SwapIpAtom().run(ctx, {"_attempt": 10})
+        self.assertEqual(r.outcome, OUTCOME_OK)
+        wait.assert_called_once_with(300)        # min(600, 300) 封顶
+        ctx2 = make_ctx(**swap_resources(channel={"id": 9}))
+        with mock.patch.object(Context, "wait", return_value=False) as wait2:
+            SwapIpAtom().run(ctx2, {})
+        wait2.assert_called_once_with(60)        # 缺省 attempt=1
+
+    def test_direct_channel_stopped_during_backoff(self):
+        """退避期间收到停止 → OUTCOME_STOPPED。"""
+        ctx = make_ctx(**swap_resources(channel={"id": 9, "is_direct": True}))
+        with mock.patch.object(Context, "wait", return_value=True):
+            r = SwapIpAtom().run(ctx, {})
+        self.assertEqual(r.outcome, OUTCOME_STOPPED)
+
 
 # ------------------------------------------------------- ensure_fresh_ip
 

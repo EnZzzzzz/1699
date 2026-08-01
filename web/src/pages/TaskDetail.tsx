@@ -6,11 +6,12 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Progress } from '@/components/ui/progress'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { api, errorMessage, isNotImplemented } from '@/api/client'
+import { api, errorMessage, getAtomTitles, isNotImplemented } from '@/api/client'
 import { getParamSpecs, paramLabel } from '@/api/paramSpecs'
-import type { Board, ContactFetchStatusCounts, ParamSpecs, TaskDetail, WsMessage } from '@/api/types'
+import type { Board, ContactFetchStatusCounts, NodeState, ParamSpecs, TaskDetail, WsMessage } from '@/api/types'
 import { TaskStatusBadge, TaskTypeLabel, ChannelStatusBadge } from '@/components/StatusBadge'
 import { EmptyState, NotImplementedState } from '@/components/EmptyState'
+import { FlowGraph } from '@/components/FlowGraph'
 import { useRealtime } from '@/hooks/useRealtime'
 import { useTaskActions, canStop, needsConfirm } from '@/hooks/useTaskActions'
 import { TaskEventsCard } from '@/components/TaskEventsCard'
@@ -149,12 +150,58 @@ export default function TaskDetailPage() {
         </Card>
       )}
 
+      {task.type === 'flow' && <FlowSection task={task} />}
+
       <TaskEventsCard taskId={task.id} status={task.status} />
 
-      {board && (board.type === 'shop_crawl' ? <ShopCrawlSection board={board} /> : <ContactFetchSection board={board} />)}
+      {board?.type === 'shop_crawl' && <ShopCrawlSection board={board} />}
+      {board?.type === 'contact_fetch' && <ContactFetchSection board={board} />}
 
       <ParamsSection task={task} />
     </div>
+  )
+}
+
+/** flow 任务的流水线执行图：dag 取 params._dag_snapshot，状态取 progress.nodes（随现有 WS/轮询刷新） */
+function FlowSection({ task }: { task: TaskDetail }) {
+  const [atomTitles, setAtomTitles] = useState<Record<string, string> | undefined>(undefined)
+
+  useEffect(() => {
+    let cancelled = false
+    getAtomTitles()
+      .then((t) => !cancelled && setAtomTitles(t))
+      .catch(() => undefined) // 原子目录不可用时退回注册名
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const dag = task.params._dag_snapshot
+  if (!dag || !Array.isArray(dag.nodes)) {
+    return (
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">流水线执行图</CardTitle>
+        </CardHeader>
+        <CardContent className="py-2 text-sm text-muted-foreground">
+          任务参数中缺少 DAG 快照（_dag_snapshot），无法渲染流程图。
+        </CardContent>
+      </Card>
+    )
+  }
+  const nodes = (task.progress?.nodes ?? undefined) as Record<string, NodeState> | undefined
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base">
+          流水线执行图
+          {task.flow_id != null && <span className="ml-2 font-mono text-xs font-normal text-muted-foreground">模板 #{task.flow_id}</span>}
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <FlowGraph dag={dag} nodes={nodes} atomTitles={atomTitles} />
+      </CardContent>
+    </Card>
   )
 }
 
@@ -370,7 +417,6 @@ function ContactFetchSection({ board }: { board: Extract<Board, { type: 'contact
 
 /** 参数卡（键中文化：优先 param-specs 的 label，取不到用内置映射兜底） */
 function ParamsSection({ task }: { task: TaskDetail }) {
-  const entries = Object.entries(task.params ?? {})
   const [specs, setSpecs] = useState<ParamSpecs | null>(null)
 
   useEffect(() => {
@@ -383,19 +429,35 @@ function ParamsSection({ task }: { task: TaskDetail }) {
     }
   }, [])
 
+  // flow 任务：params = {flow_id, run_inputs, _dag_snapshot}；
+  // 展开 run_inputs（label 取 DAG 快照里的声明），_dag_snapshot 不直接展示
+  const isFlow = task.type === 'flow'
+  const runInputLabels = task.params._dag_snapshot?.run_inputs ?? {}
+  const entries: [string, unknown][] = isFlow
+    ? Object.entries(task.params.run_inputs ?? {})
+    : Object.entries(task.params ?? {})
+  const labelOf = (k: string) =>
+    isFlow ? (runInputLabels[k]?.label ?? k) : paramLabel(k, specs)
+
   return (
     <Card>
       <CardHeader className="pb-3">
         <CardTitle className="text-base">任务参数</CardTitle>
       </CardHeader>
       <CardContent>
+        {isFlow && (
+          <div className="mb-3 flex justify-between gap-4 border-b pb-2 text-sm">
+            <span className="text-muted-foreground">流水线模板</span>
+            <span className="font-medium font-mono">#{task.params.flow_id ?? task.flow_id ?? '-'}</span>
+          </div>
+        )}
         {entries.length === 0 ? (
           <p className="text-sm text-muted-foreground">无参数</p>
         ) : (
           <dl className="grid gap-x-8 gap-y-2 sm:grid-cols-2 lg:grid-cols-3">
             {entries.map(([k, v]) => (
               <div key={k} className="flex justify-between gap-4 text-sm">
-                <dt className="text-muted-foreground">{paramLabel(k, specs)}</dt>
+                <dt className="text-muted-foreground">{labelOf(k)}</dt>
                 <dd className="font-medium">
                   {typeof v === 'boolean' ? (v ? '是' : '否') : String(v)}
                 </dd>
