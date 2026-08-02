@@ -132,12 +132,15 @@ def scrape_contact(page, shop_domain: str, referer: str = None) -> dict | None:
         page.goto(url, wait_until="domcontentloaded", timeout=60000,
                   referer=referer or f"https://{shop_domain}/")
         time.sleep(random.uniform(2.0, 4.0))
-        # 滑块兜底：命中风控/待验证时先尝试自动过证（真人轨迹回放 +
-        # 失败重试 + 点击重置 + 多层滑块扫描），过证后继续解析本页；
-        # 过不了则照常走下面的 _blocked 检测，由引擎换 IP 重试
+        # 滑块兜底：命中风控/待验证时先尝试自动过证。
+        # 重试策略（solve_with_retry，max_attempts=5）：
+        #   第 1 次回放不过 → 点击"验证失败"框体重置，换条轨迹原地再试；
+        #   还不过 → 刷新页面重新等滑块、重新量距，再换轨迹试，
+        #   如此"点击重试 → 刷新 → 再试"最多重复 5 次（含约 2 轮刷新）。
+        # 过证后继续解析本页；过不了则照常走下面的 _blocked 检测，由引擎换 IP 重试
         if solve_all_sliders is not None and page_block_reason(page):
             try:
-                if solve_all_sliders(page):
+                if solve_all_sliders(page, max_attempts=5):
                     time.sleep(random.uniform(1.5, 2.5))  # 等真实内容渲染
             except Exception:
                 pass  # 过证异常不阻断，交给 _blocked 判定兜底

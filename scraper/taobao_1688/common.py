@@ -223,8 +223,13 @@ def load_cookies_pw(cookie_path: Path = COOKIE_JSON) -> list[dict]:
 # 跨 IP 复制（不登录站点也会用它们识别「同一个访客」）。因此代理模式
 # 的新出口 IP 已改为完全不播种（见 launch_browser），本集合仅作
 # 直连模式之外的历史参考保留。
+# 登录态 Cookie（unb/lid/cookie1/tracknick/dnk/_nk_）同样绝不跨 IP
+# 复制：登录账号出现在多个代理出口 = 账号被盗/共享特征，触发的是
+# 账号级风控（短信+证件验证），比滑块严重得多。2026-08-02 账号
+# t********7 被强制身份验证即由此引发（种子池混入登录态 local.json）。
 SECURITY_COOKIE_NAMES = frozenset({
     "x5sec", "x5secdata", "x5sectag", "sgcookie", "sg", "isg",
+    "unb", "lid", "cookie1", "tracknick", "dnk", "_nk_",
 })
 
 
@@ -524,11 +529,17 @@ def launch_browser(headless: bool = True, use_proxy: bool = False, db=None,
     return browser, page, identity, req_proxies, proxy_server
 
 
-def _wait_manual_pass(page, stop, seconds: float, interval: float = 5.0) -> bool:
+def _wait_manual_pass(page, stop, seconds: float, interval: float = 5.0,
+                      auto_solve=None, auto_interval: float = 90.0) -> bool:
     """轮询当前页面是否已脱离拦截态（不发起新请求，只在当前页读
     innerText，不会加重风控）。检测到验证通过返回 True；超时、
-    页面/浏览器异常或收到停止信号返回 False。"""
+    页面/浏览器异常或收到停止信号返回 False。
+
+    auto_solve 不为空时，等待期间每隔 auto_interval 秒自己尝试
+    一轮自动过证（轨迹回放滑块），与人工操作互不排斥，谁先通过
+    算谁；自动尝试异常静默忽略，不打断等待。"""
     deadline = time.monotonic() + seconds
+    last_auto = time.monotonic()
     while time.monotonic() < deadline:
         if stop is not None and stop.is_set():
             return False
@@ -538,6 +549,14 @@ def _wait_manual_pass(page, stop, seconds: float, interval: float = 5.0) -> bool
                 return True
         except Exception:
             return False  # 页面/浏览器异常，交给调用方后续流程
+        if auto_solve is not None \
+                and time.monotonic() - last_auto >= auto_interval:
+            last_auto = time.monotonic()
+            try:
+                if auto_solve() and page_block_reason(page) is None:
+                    return True
+            except Exception:
+                pass  # 自动过证异常不打断等待
         if stop is not None:
             stop.wait(interval)
         else:
@@ -567,12 +586,30 @@ def warmup_cookies(db, identity: str, page, ctx, headed: bool = False,
         time.sleep(random.uniform(2.0, 4.0))
         blocked = page_block_reason(page)
         if blocked and headed:
-            # 有头模式：等用户手动拖滑块，过了立即保存 x5sec 并继续
+            # 有头模式：先自己尝试自动过证，不过再等用户手动拖滑块
+            # （等待期间每 90s 自动重试），过了立即保存 x5sec 并继续
             _log(f"    [warmup] 首页命中风控（{blocked}）")
+            if _solve_all_sliders is not None:
+                try:
+                    _log(f"    [warmup] 先尝试自动过证（轨迹回放滑块）…")
+                    if _solve_all_sliders(page) \
+                            and page_block_reason(page) is None:
+                        n = save_cookies(db, identity, ctx)
+                        _log(f"    [warmup] ✓ 自动过证成功，{n} 个 Cookie"
+                             f"（含新 x5sec）已写回 {identity} 名下")
+                        return True
+                except Exception as e:
+                    _log(f"    [warmup] [!] 自动过证异常"
+                         f"（{type(e).__name__}: {e}），转等手动")
             _log(f"    [warmup] 👉 请在 {identity} 的浏览器窗口里手动"
                  f"拖动滑块，脚本每 5s 自动检测"
-                 f"（最长 {max_wait / 60:.0f} 分钟）...")
-            if _wait_manual_pass(page, stop, max_wait):
+                 f"（最长 {max_wait / 60:.0f} 分钟"
+                 f"{'，期间每 90s 自动重试滑块' if _solve_all_sliders is not None else ''}）...")
+            if _wait_manual_pass(
+                    page, stop, max_wait,
+                    auto_solve=(
+                        (lambda: _solve_all_sliders(page))
+                        if _solve_all_sliders is not None else None)):
                 n = save_cookies(db, identity, ctx)
                 _log(f"    [warmup] ✓ 检测到验证已通过，{n} 个 Cookie"
                      f"（含新 x5sec）已写回 {identity} 名下")
@@ -765,14 +802,23 @@ def wait_countdown(board: StatusBoard, wid: int, stop: threading.Event,
 def wait_manual_unblock(board: StatusBoard, wid: int, stop: threading.Event,
                         page, seconds: float,
                         state_key: str = "state",
-                        interval: float = 30.0) -> bool:
+                        interval: float = 30.0,
+                        auto_solve=None,
+                        auto_interval: float = 90.0) -> bool:
     """有头模式专用：等用户在浏览器窗口里手动过滑块/验证/登录。
 
     每 30s 检测一次当前页面是否已脱离拦截态（不发起新请求，只在
     当前页面上读 innerText，不会加重风控）。检测到验证通过立即返回
     True；超时、页面异常或浏览器死亡返回 False（调用方走原计划休息）。
+
+    auto_solve 不为空时，等待期间每隔 auto_interval 秒顺带自己尝试
+    一次自动过证（轨迹回放滑块）：首次自动过证失败后才进入等待，
+    等待期间滑块仍停在页面上，周期重试有机会在无人值守时自己过证；
+    与人工操作互不排斥，谁先通过算谁。自动尝试异常只记日志，不打断
+    等待。
     """
     deadline = time.monotonic() + seconds
+    last_auto = time.monotonic()  # 进等待前刚尝试过一轮，从 now 起计时
     while True:
         remain = deadline - time.monotonic()
         if remain <= 0:
@@ -788,6 +834,19 @@ def wait_manual_unblock(board: StatusBoard, wid: int, stop: threading.Event,
         except Exception:
             if not browser_alive(page):
                 return False  # 浏览器已死，交给后续流程
+            continue
+        # 仍在拦截态：距上次自动过证满 auto_interval 秒就再试一轮
+        if auto_solve is not None \
+                and time.monotonic() - last_auto >= auto_interval:
+            last_auto = time.monotonic()
+            try:
+                board.log(f"[w{wid}]   等待期间自动过证重试…")
+                if auto_solve() and page_block_reason(page) is None:
+                    board.log(f"[w{wid}] ✓ 等待期间自动过证成功")
+                    return True
+            except Exception as e:
+                board.log(f"[w{wid}]   [!] 自动过证重试异常"
+                          f"（{type(e).__name__}: {e}），继续等待")
 
 
 # 阿里系登录态 Cookie 标记：登录成功后站点才会签发（匿名会话没有），
@@ -1427,12 +1486,19 @@ def _engine_worker(worker_id: int, args, task: FetchTask,
                                       f"（{type(e).__name__}: {e}），转入原流程")
                     if args.headed:
                         # 有头模式：优先等用户手动过滑块/登录，过了立即继续，
-                        # 并把新下发的 x5sec/登录态 Cookie 写回该出口 IP 名下
+                        # 并把新下发的 x5sec/登录态 Cookie 写回该出口 IP 名下。
+                        # 等待期间每隔 90s 顺带自动重试滑块（登录墙除外），
+                        # 无人值守时也有机会自己过证，谁先通过算谁
                         board.log(f"{tag}   👉 请在 {identity} 的浏览器窗口里"
                                   f"手动完成验证/登录，脚本每 30s 自动检测"
-                                  f"（最长 {rest / 60:.1f} 分钟）...")
-                        if wait_manual_unblock(board, worker_id, stop,
-                                               page, rest):
+                                  f"（最长 {rest / 60:.1f} 分钟）"
+                                  f"{'；等待期间每 90s 自动重试滑块' if _solve_all_sliders is not None and not login_wall else ''}...")
+                        if wait_manual_unblock(
+                                board, worker_id, stop, page, rest,
+                                auto_solve=(
+                                    (lambda: _solve_all_sliders(page))
+                                    if _solve_all_sliders is not None
+                                    and not login_wall else None)):
                             board.log(f"{tag} ✓ 检测到验证已通过，"
                                       f"Cookie 写回 {identity}，立即继续采集")
                             try:
