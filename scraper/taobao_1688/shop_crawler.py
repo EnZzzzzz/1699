@@ -65,11 +65,53 @@ except Exception:
 SEARCH_URL_TPL = ("https://s.1688.com/selloffer/offer_search.htm"
                   "?charset=utf8&keywords={keyword}&beginPage={page}")
 
+# 搜索域落地页（低敏）：用于 mtop 握手，不直接碰 offer_search 深链
+SEARCH_HOME = "https://s.1688.com/"
+
 
 def build_search_url(keyword: str, page_no: int = 1) -> str:
     """构造类目搜索页 URL（1688 首页类目本质就是关键词搜索页）。"""
     from urllib.parse import quote
     return SEARCH_URL_TPL.format(keyword=quote(keyword), page=page_no)
+
+
+# ---------- mtop 握手（搜索域入场券） ----------
+#
+# 实测（2026-08-03）：offer_search 的数据走 mtop API（h5api.m.1688.com），
+# 会话必须持有 _m_h5_tk 令牌才放行；无令牌的匿名会话直接踢登录墙
+# （marketSigninJump），凌晨严格时段首请求即踢，连滑块都不给。
+# 今晚数据：健康会话全部持有 _m_h5_tk；被秒踢的新会话全部没有。
+# 因此：正式翻页前先在低敏落地页完成握手拿令牌，拿不到就不碰搜索。
+
+
+def _has_mtop_token(page) -> bool:
+    try:
+        return any(c["name"] == "_m_h5_tk"
+                   for c in page.context.cookies()
+                   if "1688.com" in c.get("domain", ""))
+    except Exception:
+        return False
+
+
+def ensure_mtop_token(page, log=None, attempts: int = 2) -> bool:
+    """确保会话持有 _m_h5_tk：没有就访问搜索域落地页触发 mtop 令牌
+    签发（最多 attempts 次）。拿到返回 True；拿不到返回 False，
+    调用方应放弃本次搜索采集（无令牌裸奔 = 白烧 IP）。"""
+    if _has_mtop_token(page):
+        return True
+    for i in range(attempts):
+        try:
+            page.goto(SEARCH_HOME, wait_until="domcontentloaded",
+                      timeout=60000, referer=HOMEPAGE)
+            time.sleep(random.uniform(2.5, 4.5))
+        except Exception:
+            pass
+        if _has_mtop_token(page):
+            if log:
+                log(f"mtop 握手完成（第 {i + 1} 次尝试），"
+                    f"会话已持有 _m_h5_tk")
+            return True
+    return False
 
 
 # 从首页提取类目入口：首页的「类目」链接全部指向
@@ -164,8 +206,17 @@ def scrape_category(page, keyword: str, page_no: int = 1,
     """
     url = build_search_url(keyword, page_no)
     try:
+        # 无 mtop 令牌不碰搜索：先尝试补握手，仍无令牌则按风控交引擎
+        # 换 IP（无令牌裸奔搜索 = 首请求即踢登录墙，白烧 IP）
+        if not _has_mtop_token(page) and not ensure_mtop_token(page):
+            return {"_blocked": "会话缺少 mtop 令牌（_m_h5_tk），"
+                                "搜索域入场券未获取，未触碰搜索"}
+        # referer 链条：第 1 页来自首页，第 N 页来自第 N-1 页搜索页
+        # （真人翻页的 referer 是上一页搜索页，永远挂首页是机器特征）
+        referer = (HOMEPAGE if page_no <= 1
+                   else build_search_url(keyword, page_no - 1))
         page.goto(url, wait_until="domcontentloaded", timeout=60000,
-                  referer=HOMEPAGE)
+                  referer=referer)
         time.sleep(random.uniform(1.0, 2.0))
         # 滑块兜底：命中风控/待验证时先尝试自动过证（与 contact_fetcher
         # 同策略：点击重置 → 刷新 → 换轨迹再试，最多 5 次），过证后
@@ -312,6 +363,9 @@ class ShopTask(FetchTask):
     batch_unit = "店铺"
     # 冷启动要先逛首页提取类目填满类目池，必须在 acquire（选类目）之前
     cold_start_before_acquire = True
+    # 搜索页匿名配额墙实测阈值 18~26 页（2026-08-03）：每出口 IP 采满
+    # 12 个搜索页请求即主动换 IP，把「被配额墙踢掉」变成「主动全身而退」
+    ip_request_budget = 12
 
     def __init__(self):
         self.cat_pool: CategoryPool | None = None
@@ -375,6 +429,11 @@ class ShopTask(FetchTask):
             log(f"类目池新增 {n} 个类目"
                 f"（可采 {self.cat_pool.available()}，"
                 f"跳过已采完 {len(self.cat_pool.exhausted)}）")
+        # mtop 握手：搜索页数据走 mtop API，会话须持有 _m_h5_tk 再碰
+        # offer_search；拿不到就记日志，scrape 会拒绝无令牌裸奔
+        if not ensure_mtop_token(page, log=log) and log:
+            log("[!] mtop 握手未拿到 _m_h5_tk，本会话搜索采集将被搁置"
+                "（scrape 逐页重试握手，仍无令牌则交引擎换 IP）")
 
     def acquire(self, db, wctx: dict):
         picked = self.cat_pool.pick()

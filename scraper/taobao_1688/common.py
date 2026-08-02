@@ -1167,6 +1167,10 @@ class FetchTask:
     batch_unit = ""        # 批次日志里的计量名词（"" / "店铺"）
     cold_start_before_acquire = False  # True: 冷启动在 acquire 之前执行
                                        # （如类目池需要先逛首页填池）
+    ip_request_budget = None  # 每出口 IP 的请求预算（int 或 None）：
+                              # 该 IP 成功采满 N 个请求后引擎主动换 IP，
+                              # 用于有平台级匿名配额的端点（如搜索页
+                              # 18~26 页配额墙），把「被踢」变「主动退」
 
     # ---- main 阶段 ----
     def prepare(self, args) -> bool:
@@ -1269,6 +1273,8 @@ def _engine_worker(worker_id: int, args, task: FetchTask,
     # 而非 IP —— 判定种子烧毁，停止播种，退回白板会话
     kit = seed_kit
     kit_burn_ips: set = set()
+    budget_stuck: set = set()  # 已达请求预算但 IP 未轮换的出口
+                               # （避免反复重启浏览器空转）
 
     def set_status(**kw):
         board.set(worker_id, **kw)
@@ -1644,6 +1650,35 @@ def _engine_worker(worker_id: int, args, task: FetchTask,
 
             # 当前任务项处理完毕（含放弃），任务层收尾（如释放类目占用）
             task.after_item(item, wctx)
+
+            # 每 IP 请求预算（任务层声明，如搜索页匿名配额墙）：
+            # 该出口成功采满预算后主动换 IP，把「被配额墙踢掉」变成
+            # 「主动全身而退」；IP 未轮换（青果 30 分钟时效）则放行
+            # 不再反复重启，等其自然轮换
+            budget = getattr(task, "ip_request_budget", None)
+            if (budget and args.proxy and info is not None
+                    and ip_req.get(identity, {}).get("n", 0) >= budget
+                    and identity not in budget_stuck):
+                old_identity = identity
+                board.log(f"{tag} 📦 出口 {identity} 已达请求预算 "
+                          f"（{ip_req[identity]['n']}/{budget} 次），"
+                          f"主动换 IP 规避配额墙")
+                try:
+                    browser, page, identity, req_proxies = \
+                        relaunch_browser(
+                            board, tag, worker_id, args, db,
+                            proxy_server, browser, ctx, identity,
+                            stop, seed_kit=kit)
+                    ctx = page.context
+                    warm = True  # 新会话重新冷启动软着陆
+                    if identity == old_identity:
+                        budget_stuck.add(identity)
+                        board.log(f"{tag}   [!] 出口 IP 尚未轮换，"
+                                  f"本次预算放行（等青果自然轮换）")
+                except RuntimeError as e:
+                    board.log(f"{tag} [X] 预算换 IP 失败: {e}，中止整个任务")
+                    stop.set()
+                    return
 
             # 样本之间的随机间隔（防风控）；各 worker 按编号递增基准
             # 间隔，避免多 worker 同频齐步请求形成集群特征
