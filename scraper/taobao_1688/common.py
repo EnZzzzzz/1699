@@ -200,6 +200,10 @@ def load_cookies_pw(cookie_path: Path = COOKIE_JSON) -> list[dict]:
 # 等于主动告诉风控系统「同一客户端在 IP 池里跳」，是账号被标记的
 # 最强信号。新 identity 播种时必须剔除，让站点为当前出口重新签发。
 #
+# TODO(遗留事项): 实验「种子保留 x5sec/x5secdata」——种子一对一独占后
+# 不存在并发重放，若 x5sec 实际绑设备而非严格绑 IP，保留它可能免滑块。
+# 见 风控拦截分析_20260802.md 第八节（实验设计：--seed-x5sec 开关 + A/B）。
+#
 # 同理，cookie2 / t / cna / _tb_token_ 等匿名身份与设备标识也不能
 # 跨 IP 复制（不登录站点也会用它们识别「同一个访客」）。因此代理模式
 # 的新出口 IP 已改为完全不播种（见 launch_browser），本集合仅作
