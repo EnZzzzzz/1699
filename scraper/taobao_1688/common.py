@@ -553,6 +553,12 @@ def _wait_manual_pass(page, stop, seconds: float, interval: float = 5.0,
                 and time.monotonic() - last_auto >= auto_interval:
             last_auto = time.monotonic()
             try:
+                # 先刷新拿新鲜滑块（陈旧滑块原地回放永远不过）
+                page.reload(wait_until="domcontentloaded", timeout=30000)
+                time.sleep(random.uniform(1.5, 3.0))
+            except Exception:
+                pass  # 刷新失败不阻断，原地试
+            try:
                 if auto_solve() and page_block_reason(page) is None:
                     return True
             except Exception:
@@ -804,7 +810,8 @@ def wait_manual_unblock(board: StatusBoard, wid: int, stop: threading.Event,
                         state_key: str = "state",
                         interval: float = 30.0,
                         auto_solve=None,
-                        auto_interval: float = 90.0) -> bool:
+                        auto_interval: float = 90.0,
+                        auto_giveup: float = 300.0) -> bool:
     """有头模式专用：等用户在浏览器窗口里手动过滑块/验证/登录。
 
     每 30s 检测一次当前页面是否已脱离拦截态（不发起新请求，只在
@@ -816,12 +823,27 @@ def wait_manual_unblock(board: StatusBoard, wid: int, stop: threading.Event,
     等待期间滑块仍停在页面上，周期重试有机会在无人值守时自己过证；
     与人工操作互不排斥，谁先通过算谁。自动尝试异常只记日志，不打断
     等待。
+
+    不干等原则（auto_solve 激活时）：
+    - 每次自动重试前先刷新页面拿一个新鲜滑块（陈旧/卡死的滑块
+      原地回放永远不过；刷新对风控的影响与人工 F5 相当）；
+    - 自动过证连续 auto_giveup 秒仍未通过则提前结束等待，返回
+      False 交给调用方休息/换 IP/重试 —— 重试会重新进目标页，
+      拿到全新滑块再过一轮，比原地空等整个 rest 周期更有效。
     """
     deadline = time.monotonic() + seconds
-    last_auto = time.monotonic()  # 进等待前刚尝试过一轮，从 now 起计时
+    start = time.monotonic()
+    last_auto = start  # 进等待前刚尝试过一轮，从 now 起计时
     while True:
         remain = deadline - time.monotonic()
         if remain <= 0:
+            return False
+        # 有自动过证时不干等：连续几分钟不过就转休息/重试流程
+        if auto_solve is not None \
+                and time.monotonic() - start >= auto_giveup:
+            board.log(f"[w{wid}]   等待+自动过证 {auto_giveup / 60:.0f} 分钟"
+                      f"仍未通过，不干等，转入休息/重试流程"
+                      f"（重试会拿全新滑块再自动过）")
             return False
         board.set(wid, **{state_key: f"等待手动过验证 剩 {fmt_dur(remain)}"})
         if stop.wait(min(interval, remain)):
@@ -840,7 +862,13 @@ def wait_manual_unblock(board: StatusBoard, wid: int, stop: threading.Event,
                 and time.monotonic() - last_auto >= auto_interval:
             last_auto = time.monotonic()
             try:
-                board.log(f"[w{wid}]   等待期间自动过证重试…")
+                # 先刷新拿新鲜滑块（陈旧滑块原地回放永远不过）
+                page.reload(wait_until="domcontentloaded", timeout=30000)
+                time.sleep(random.uniform(1.5, 3.0))
+            except Exception:
+                pass  # 刷新失败不阻断，原地试
+            try:
+                board.log(f"[w{wid}]   等待期间自动过证重试（已刷新页面）…")
                 if auto_solve() and page_block_reason(page) is None:
                     board.log(f"[w{wid}] ✓ 等待期间自动过证成功")
                     return True
