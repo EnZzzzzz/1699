@@ -125,10 +125,23 @@ CREATE TABLE IF NOT EXISTS ip_events (
     identity   TEXT NOT NULL,      -- 出口 IP；直连记 'direct'
     event      TEXT NOT NULL,      -- launch / block_slider / block_login / block_other
     detail     TEXT,               -- 通道入口、风控原因等
+    req_since_block INTEGER,       -- 仅 block_* 事件：本次触发时距该 IP
+                                   -- 上次触发已爬多少个页面请求（触发阈值样本）
     created_at TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_ip_events_identity ON ip_events(identity);
+
+-- 每个出口 IP 的抓取计数与风控触发统计（tmd 率 = blocks / requests），
+-- 回答「一个 IP 爬多少个会触发反爬、多少以内算安全」
+CREATE TABLE IF NOT EXISTS ip_stats (
+    identity      TEXT PRIMARY KEY,              -- 出口 IP；直连记 'direct'
+    requests      INTEGER NOT NULL DEFAULT 0,    -- 累计页面请求数（含被拦的尝试）
+    ok            INTEGER NOT NULL DEFAULT 0,    -- 成功解析次数
+    blocks        INTEGER NOT NULL DEFAULT 0,    -- 风控触发次数（滑块/登录墙/其他）
+    last_block_at TEXT,                          -- 最近一次触发时间
+    updated_at    TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS category_progress (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -186,6 +199,12 @@ class ShopDB:
                    SELECT shop_id FROM contacts
                    WHERE contact_person IS NULL AND phone IS NULL
                      AND mobile IS NULL AND fax IS NULL AND address IS NULL)""")
+        # ip_events 补 req_since_block 列（tmd 触发阈值样本：
+        # 本次触发时距该 IP 上次触发已爬多少个页面请求）
+        evt_cols = {r[1] for r in self.conn.execute("PRAGMA table_info(ip_events)")}
+        if "req_since_block" not in evt_cols:
+            self.conn.execute(
+                "ALTER TABLE ip_events ADD COLUMN req_since_block INTEGER")
 
     # ---------- crawl_runs ----------
     def start_run(self, category_name: str = None,
@@ -333,6 +352,12 @@ class ShopDB:
             "SELECT next_page FROM category_progress WHERE keyword=?",
             (keyword,)).fetchone()[0]
 
+    def get_exhausted_keywords(self) -> set:
+        """返回所有已采到末页的类目关键词（shop_crawler 选类目时跳过）。"""
+        rows = self.conn.execute(
+            "SELECT keyword FROM category_progress WHERE exhausted=1").fetchall()
+        return {r[0] for r in rows}
+
     def mark_category_exhausted(self, keyword: str, name: str = None):
         """标记类目已采到末页（页码不前进，之后采集跳过该类目）。"""
         self.conn.execute(
@@ -436,13 +461,19 @@ class ShopDB:
     # ---------- IP 事件流水 ----------
 
     def record_ip_event(self, identity: str, event: str,
-                        detail: str = "") -> None:
-        """记录一条出口 IP 事件（launch / block_slider / block_login 等）。"""
+                        detail: str = "",
+                        req_since_block: int | None = None) -> None:
+        """记录一条出口 IP 事件（launch / block_slider / block_login 等）。
+
+        req_since_block — 仅 block_* 事件使用：本次触发时，距该 IP 上次
+        触发已爬多少个页面请求（触发阈值样本，评估「爬多少个会触发」用）。
+        """
         try:
             self.conn.execute(
-                "INSERT INTO ip_events (identity, event, detail, created_at)"
-                " VALUES (?, ?, ?, ?)",
-                (identity, event, detail[:300] if detail else "", _now()))
+                "INSERT INTO ip_events (identity, event, detail,"
+                " req_since_block, created_at) VALUES (?, ?, ?, ?, ?)",
+                (identity, event, detail[:300] if detail else "",
+                 req_since_block, _now()))
             self.conn.commit()
         except Exception:
             pass  # 事件流水不影响主流程
@@ -458,6 +489,112 @@ class ShopDB:
                FROM ip_events WHERE identity != 'direct'
                GROUP BY identity ORDER BY last_seen DESC""").fetchall()
         return [dict(r) for r in rows]
+
+    # ---------- tmd（反爬验证）触发统计 ----------
+
+    def ip_stat_request(self, identity: str, ok: bool = False) -> None:
+        """累计该出口 IP 的一次页面请求（ok=True 表示成功解析）。
+
+        每次 scrape 调用 = 一次页面请求；网络/代理层错误（请求没到目标站）
+        由调用方跳过不计。tmd 率 = blocks / requests。
+        """
+        try:
+            self.conn.execute(
+                """INSERT INTO ip_stats (identity, requests, ok, updated_at)
+                   VALUES (?, 1, ?, ?)
+                   ON CONFLICT(identity) DO UPDATE SET
+                       requests = requests + 1,
+                       ok = ok + ?,
+                       updated_at = ?""",
+                (identity, 1 if ok else 0, _now(), 1 if ok else 0, _now()))
+            self.conn.commit()
+        except Exception:
+            pass  # 统计不影响主流程
+
+    def ip_stat_block(self, identity: str) -> None:
+        """累计该出口 IP 的一次风控触发（滑块/登录墙/其他拦截）。"""
+        try:
+            self.conn.execute(
+                """INSERT INTO ip_stats (identity, blocks, last_block_at,
+                                         updated_at)
+                   VALUES (?, 1, ?, ?)
+                   ON CONFLICT(identity) DO UPDATE SET
+                       blocks = blocks + 1,
+                       last_block_at = ?,
+                       updated_at = ?""",
+                (identity, _now(), _now(), _now(), _now()))
+            self.conn.commit()
+        except Exception:
+            pass
+
+    def tmd_report(self) -> dict:
+        """tmd（反爬验证）触发统计：每 IP 的请求/触发计数与触发间隔分布。
+
+        返回 {"rows": [...], "gaps": [...]}:
+            rows — 每 IP 一行：requests/ok/blocks/last_block_at +
+                   avg_gap/min_gap/max_gap（历史每次触发时「距上次触发
+                   已爬多少个页面请求」的分布，即触发阈值的经验值）
+            gaps — 全部触发间隔原始值（算整体经验值用）
+        """
+        rows = self.conn.execute(
+            """SELECT s.identity, s.requests, s.ok, s.blocks, s.last_block_at,
+                      AVG(e.req_since_block) AS avg_gap,
+                      MIN(e.req_since_block) AS min_gap,
+                      MAX(e.req_since_block) AS max_gap
+               FROM ip_stats s
+               LEFT JOIN ip_events e
+                   ON e.identity = s.identity
+                  AND e.event LIKE 'block\\_%' ESCAPE '\\'
+                  AND e.req_since_block IS NOT NULL
+               GROUP BY s.identity
+               ORDER BY s.requests DESC""").fetchall()
+        gaps = [r[0] for r in self.conn.execute(
+            """SELECT req_since_block FROM ip_events
+               WHERE event LIKE 'block\\_%' ESCAPE '\\'
+                 AND req_since_block IS NOT NULL""").fetchall()]
+        return {"rows": [dict(r) for r in rows], "gaps": gaps}
+
+    def format_tmd_report(self) -> str:
+        """把 tmd 触发统计渲染成可读报告（summary / --tmd-report 共用）。
+
+        回答三个问题：
+            - tmd 率是多少：触发次数 / 页面请求数
+            - 每爬多少个会触发一次反爬：触发间隔的平均/最少/最多
+            - 一个 IP 爬多少个以内算安全：最少触发间隔 × 0.8
+        """
+        rep = self.tmd_report()
+        rows, gaps = rep["rows"], rep["gaps"]
+        if not rows:
+            return "暂无 tmd 统计（还没有带统计的抓取记录）"
+        lines = ["tmd（反爬验证）触发统计 —— 每个出口 IP 的安全性:",
+                 f"    {'出口IP':<17}{'请求':>6}{'成功':>6}{'触发':>5}"
+                 f"{'tmd率':>8}{'平均间隔':>9}{'最少':>6}{'最多':>6}  最近触发"]
+        for r in rows:
+            rate = (f"{r['blocks'] / r['requests'] * 100:.1f}%"
+                    if r["requests"] else "—")
+            fmt = lambda v: f"{v:.0f}" if v is not None else "—"
+            lines.append(
+                f"    {r['identity']:<17}{r['requests']:>6}{r['ok']:>6}"
+                f"{r['blocks']:>5}{rate:>8}{fmt(r['avg_gap']):>9}"
+                f"{fmt(r['min_gap']):>6}{fmt(r['max_gap']):>6}  "
+                f"{r['last_block_at'] or '—'}")
+        tot_req = sum(r["requests"] for r in rows)
+        tot_blk = sum(r["blocks"] for r in rows)
+        if tot_req:
+            lines.append(f"    整体: {tot_req} 次页面请求，触发 {tot_blk} 次，"
+                         f"tmd率 {tot_blk / tot_req * 100:.2f}%")
+        if gaps:
+            avg = sum(gaps) / len(gaps)
+            safe = max(1, int(min(gaps) * 0.8))
+            lines.append(
+                f"    经验值: 平均爬 ~{avg:.0f} 个页面触发一次反爬；"
+                f"历史最少 {min(gaps)} 个、最多 {max(gaps)} 个即触发")
+            lines.append(
+                f"    安全线: 单 IP 连续抓取 ≤ {safe} 个（最少触发间隔 × 0.8）"
+                f"相对安全，超过 {min(gaps)} 个后触发风险显著上升")
+        else:
+            lines.append("    尚无触发记录，样本不足，继续跑一段时间后再看经验值")
+        return "\n".join(lines)
 
     # ---------- 查询 ----------
     def stats(self) -> dict:

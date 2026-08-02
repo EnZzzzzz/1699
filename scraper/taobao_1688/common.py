@@ -1,12 +1,23 @@
 # -*- coding: utf-8 -*-
 """
-1688 采集共享模块
+1688 采集网络层（共享模块）
+
+原子化拆分后的两层架构:
+    网络层（本模块）—— 管「怎么连」，不关心采什么:
+        - Cookie / License 加载，Cookie 按出口 IP 隔离存取
+        - 青果住宅代理接入、出口 IP 查询与轮换检测
+        - CloakBrowser 启动/预热/重启（会话链路一致: Cookie / UA /
+          指纹 / 出口 IP 不错配）
+        - 风控检测（URL/文本/内嵌滑块）与错误分级（网络层/浏览器致命/
+          风控拦截）
+        - 多 worker 并发引擎（FetchTask 协议 + run_workers）：一 worker
+          一通道，批次休息、样本间隔、风控状态机（原地休息 → 修复换
+          IP → 放弃）、状态板显示
+    任务层（contact_fetcher.py / shop_crawler.py）—— 管「采什么」:
+        页面解析、数据入库、任务队列（pending 店铺 / 类目池），
+        实现 FetchTask 协议挂到网络层引擎上运行。
 
 被 shop_crawler.py（店铺采集）和 contact_fetcher.py（联系方式抓取）共用:
-    - Cookie / License 加载
-    - CloakBrowser 启动（会话链路一致: Cookie / UA / 出口 IP 不错配）
-    - 青果住宅代理接入（可选，util/proxy_qingguo.py）
-    - 联系方式页解析（联系人/性别/电话/手机/传真/地址）
 
 代理模式会话链路说明（按 scraper/README.md 经验）:
     - 直连模式: Cookie 是本机浏览器种下的，出口 IP = 本机 IP，链路一致
@@ -17,12 +28,16 @@
     - 首次 --proxy --headed 运行，在代理出口下登录/过滑块，脚本退出时
       自动把浏览器最新 Cookie（含新 x5sec）写回该 IP 名下的记录，
       之后同一出口 IP 都复用它，保持 Cookie / x5sec / UA / 出口 IP 一致。
-    - 代理模式的新出口 IP 不从 .cache/cookies_1688.json 播种：种子里的
-      cookie2 / t / cna 等匿名身份标识一旦跨 IP 复制，就是「同一访客
-      同时从多个 IP 出现」的 Cookie 重放特征（多 worker 并发时成倍放大）。
-      新 IP 以空会话启动，由 warmup 时站点为当前出口现场签发全新身份。
+    - 身份来源两级：默认新出口 IP 以白板会话启动（warmup 时站点为当前
+      出口现场签发全新身份，信任分从零，敏感端点容易弹滑块）；
+      若 --seeds 目录（默认 .cache/seeds/）配置了种子身份池，每个
+      worker 独占认领一份熟身份 —— 只种 cna/cookie2/t 等设备绑定
+      Cookie（IP 绑定的 x5sec/sgcookie/isg 绝不跨 IP 复制），一对一
+      绑定避免「同一身份多 IP 并发」的 Cookie 重放特征，指纹也按种子
+      固定（cna 按设备签发，指纹必须与身份配套）。种子在多个新鲜 IP
+      上首请求即被拦时判定烧毁，自动退回白板会话。
       （青果隧道出口 IP 每 30 分钟自动轮换一次，属产品特性；
-       换 IP 后库里没有该 IP 的 Cookie，需重新过一次验证。）
+       换 IP 后该 worker 重新播种自己的种子，warmup 补 IP 绑定 Cookie。）
 """
 
 from __future__ import annotations  # 兼容 Python < 3.10 的 X | None 注解
@@ -194,6 +209,64 @@ SECURITY_COOKIE_NAMES = frozenset({
 })
 
 
+# ---------- 种子身份池（.cache/seeds/*.json） ----------
+#
+# 背景：多 worker 化后新出口 IP 一律白板会话启动（防 Cookie 重放），
+# 但白板身份信任分从零，凌晨严格时段首访敏感端点必弹滑块
+# （2026-08-02 凌晨 30 个新 IP 全部 gap=1 被秒拦）。
+#
+# 解法：种子身份池 —— seeds_dir 下每份 json 是一个「熟身份」
+# （真实浏览器长期养出的 Cookie，cna/cookie2/t 等设备绑定标识）。
+# 每个 worker 独占认领一份，一对一绑定：
+#   - 同一身份同时出现在多个 IP = Cookie 重放强信号（旧版单种子
+#     多 worker 共用的问题），一对一独占后不存在；
+#   - 一个身份顺序地随 IP 轮换迁移 = 真人换网络的弱信号，可接受。
+# 只种设备绑定 Cookie；IP 绑定的安全 Cookie（SECURITY_COOKIE_NAMES）
+# 在加载时剔除，绝不跨 IP 复制。指纹按种子固定（cna 按设备签发，
+# 指纹必须与身份配套，否则是"身份被篡改"信号）。
+
+
+def load_seed_kits(seeds_dir) -> list[dict]:
+    """加载种子身份池：seeds_dir 下每个 .json 是一份 CDP 导出的熟身份 Cookie。
+
+    返回 [{"name": 文件名（去扩展名）, "cookies": [Playwright 格式]}...]，
+    只保留 1688 域且非 IP 绑定的设备身份 Cookie。不含 cna/cookie2 的
+    文件视为「不熟」（和白板没区别），跳过并打日志。
+    """
+    kits = []
+    seeds_dir = Path(seeds_dir)
+    if not seeds_dir.exists():
+        return kits
+    for f in sorted(seeds_dir.glob("*.json")):
+        try:
+            raw = json.loads(f.read_text(encoding="utf-8"))
+        except Exception as e:
+            _log(f"    [seed] 种子 {f.name} 解析失败，跳过: {e}")
+            continue
+        cookies, names = [], set()
+        for c in raw:
+            if "1688.com" not in c.get("domain", ""):
+                continue
+            if c["name"] in SECURITY_COOKIE_NAMES:
+                continue  # IP 绑定的安全 Cookie 绝不跨 IP 复制
+            names.add(c["name"])
+            cookies.append({
+                "name": c["name"],
+                "value": c["value"],
+                "domain": c.get("domain", ""),
+                "path": c.get("path", "/") if not c.get("path", "").startswith("//") else "/",
+                "secure": bool(c.get("secure", False)),
+                "httpOnly": bool(c.get("httpOnly", False)),
+            })
+        if not ({"cna", "cookie2"} & names):
+            _log(f"    [seed] 种子 {f.name} 不含 cna/cookie2"
+                 f"（身份不够熟，和白板没区别），跳过")
+            continue
+        kits.append({"name": f.stem, "cookies": cookies})
+    return kits
+
+
+
 def seed_cookies_from_json(db, identity: str,
                            cookie_path: Path = COOKIE_JSON) -> int:
     """把 CDP 导出的 JSON Cookie 作为种子导入数据库（保留过期时间）。
@@ -249,7 +322,7 @@ def get_exit_ip(proxies: dict = None, timeout: int = 10) -> str | None:
 
 def launch_browser(headless: bool = True, use_proxy: bool = False, db=None,
                    proxy_server: str = None, pool_size: int = None,
-                   stop=None):
+                   stop=None, seed_kit: dict = None):
     """
     启动 CloakBrowser 并注入 1688 Cookie，返回
     (browser, page, identity, req_proxies, proxy_server)。
@@ -279,6 +352,13 @@ def launch_browser(headless: bool = True, use_proxy: bool = False, db=None,
     新建自己的 Playwright 实例，线程间互不共享）。
     """
     from cloakbrowser import launch
+
+    # cloakbrowser 的 GeoIP 探测（经代理向 ipify/ifconfig.me 等 3 个海外
+    # echo 服务查出口 IP）默认总预算只有 5s，青果住宅隧道 RTT 高，经常
+    # 全部超时打出 "Failed to discover exit IP through proxy"（只是
+    # warning，但本次会话会缺失 GeoIP 定位）。放宽到 20s；可用
+    # CLOAKBROWSER_GEOIP_TIMEOUT_SECONDS 环境变量自行覆盖。
+    os.environ.setdefault("CLOAKBROWSER_GEOIP_TIMEOUT_SECONDS", "20")
 
     proxy_conf = None
     identity = "direct"
@@ -322,12 +402,20 @@ def launch_browser(headless: bool = True, use_proxy: bool = False, db=None,
     _log(f"    [cookie] identity={identity}，可用 {len(cookies)} 个"
          f"（库内共 {info['total']}，已过期剔除 {info['expired']}，"
          f"最近过期: {info['earliest_expiry'] or '未知'}）")
-    if use_proxy and not cookies:
-        # 新出口 IP 不播种旧会话：种子里的 cookie2 / t / cna 等匿名身份
-        # 标识跨 IP 复制 = 「同一访客多 IP 并发」的 Cookie 重放特征
-        # （多 worker 并发时成倍放大）。空会话启动，由 warmup 让站点
-        # 为当前出口现场签发一套全新的匿名身份。
-        _log(f"    [cookie] 新出口 IP 不播种旧会话身份，"
+    if use_proxy and not cookies and seed_kit:
+        # 种子身份池：本 worker 独占的熟身份（仅设备绑定 Cookie，
+        # IP 绑定的安全 Cookie 加载时已剔除）。一对一绑定 worker，
+        # 不存在同一身份多 IP 并发的重放特征；指纹也按种子固定。
+        # 写入该出口 IP 名下，让会话链路在此 IP 上沉淀。
+        cookies = [dict(c) for c in seed_kit["cookies"]]
+        if db:
+            db.save_cookies(identity, cookies)
+        _log(f"    [cookie] 新出口 IP 播种独占种子身份"
+             f"「{seed_kit['name']}」（{len(cookies)} 个设备绑定 Cookie）")
+    elif use_proxy and not cookies:
+        # 无种子可用：空会话白板启动，由 warmup 让站点为当前出口
+        # 现场签发一套全新的匿名身份（信任分从零，敏感端点容易弹滑块）
+        _log(f"    [cookie] 无种子身份，新出口 IP 空会话白板启动，"
              f"warmup 时由站点为 {identity} 现场签发全新匿名身份")
     if not cookies and not use_proxy:
         sys.exit(f"[X] identity={identity} 下没有可用 Cookie（可能全部过期）")
@@ -335,24 +423,50 @@ def launch_browser(headless: bool = True, use_proxy: bool = False, db=None,
     # 启动前等服务端有空余会话席位（上次异常退出的残留租约未释放时，
     # 直接 launch 会被服务端拒绝/启动后被关闭，表现为 TargetClosedError）
     tag = getattr(_tls, "tag", "")
+    _log(f"    [launch] 检查 CloakBrowser 会话席位…")
     if not wait_for_license_seat(tag=f"{tag} " if tag else "",
                                  timeout=600.0):
         raise RuntimeError("等待 600s 后 CloakBrowser 会话席位仍满员，"
                            "请检查是否有残留会话未释放")
 
-    browser = launch(
-        headless=headless,
-        license_key=load_license_key(),
-        humanize=True,
-        locale="zh-CN",
-        timezone="Asia/Shanghai",
-        # 指纹按 identity 稳定生成（同 IP 重启指纹不变，与 Cookie 配套），
-        # 替代库默认的每次随机种子；不硬编码 UA，由二进制指纹自报，
-        # 避免 UA 与 UA-CH 版本错配
-        stealth_args=False,
-        args=_fingerprint_args(identity),
-        **({"proxy": proxy_conf, "geoip": True} if proxy_conf else {}),
-    )
+    # launch() 必须在「将要使用浏览器的同一个线程」里调用 ——
+    # Playwright 同步 API 绑死创建线程（greenlet 调度），跨线程使用
+    # 会抛 "cannot switch to a different thread"。因此不能为了加
+    # 超时把 launch 放进临时线程（已踩过坑），看门狗只做纯观察：
+    # 不触碰 playwright 对象，长时间未返回时打警告定位卡死环节。
+    _log(f"    [launch] 启动 CloakBrowser 二进制（含 GeoIP 探测）…")
+    _launch_done = threading.Event()
+
+    def _launch_watchdog():
+        if not _launch_done.wait(240):
+            _log(f"    [X] launch() 已超过 240s 未返回，疑似库内部卡死"
+                 f"（GeoIP 探测/二进制校验/代理配置解析）；"
+                 f"无法安全跨线程中止，请人工观察处理")
+
+    threading.Thread(target=_launch_watchdog, daemon=True,
+                     name=f"launch-watchdog-{identity}").start()
+    try:
+        browser = launch(
+            headless=headless,
+            license_key=load_license_key(),
+            humanize=True,
+            locale="zh-CN",
+            timezone="Asia/Shanghai",
+            # 指纹：有种子身份时按种子固定（cna 等设备标识按设备签发，
+            # 指纹必须与身份配套，否则是"身份被篡改"信号）；无种子按
+            # 出口 IP 固定（同 IP 重启指纹不变，与库中 Cookie 配套）；
+            # 不硬编码 UA，由二进制指纹自报，避免 UA 与 UA-CH 版本错配
+            stealth_args=False,
+            args=_fingerprint_args(
+                f"seed:{seed_kit['name']}" if seed_kit else identity),
+            **({"proxy": proxy_conf, "geoip": True} if proxy_conf else {}),
+        )
+    except SystemExit as e:
+        raise RuntimeError(f"CloakBrowser 二进制退出（code={e.code}，"
+                           f"多为会话席位被占或 License 校验失败）")
+    finally:
+        _launch_done.set()
+    _log(f"    [launch] 浏览器进程已启动，创建上下文并注入 Cookie…")
     ctx = browser.new_context(locale="zh-CN")
     ctx.add_cookies(cookies)
     page = ctx.new_page()
@@ -608,10 +722,11 @@ def wait_countdown(board: StatusBoard, wid: int, stop: threading.Event,
 
 def wait_manual_unblock(board: StatusBoard, wid: int, stop: threading.Event,
                         page, seconds: float,
-                        state_key: str = "state") -> bool:
-    """有头模式专用：等用户在浏览器窗口里手动过滑块/验证。
+                        state_key: str = "state",
+                        interval: float = 30.0) -> bool:
+    """有头模式专用：等用户在浏览器窗口里手动过滑块/验证/登录。
 
-    每 15s 检测一次当前页面是否已脱离拦截态（不发起新请求，只在
+    每 30s 检测一次当前页面是否已脱离拦截态（不发起新请求，只在
     当前页面上读 innerText，不会加重风控）。检测到验证通过立即返回
     True；超时、页面异常或浏览器死亡返回 False（调用方走原计划休息）。
     """
@@ -621,7 +736,7 @@ def wait_manual_unblock(board: StatusBoard, wid: int, stop: threading.Event,
         if remain <= 0:
             return False
         board.set(wid, **{state_key: f"等待手动过验证 剩 {fmt_dur(remain)}"})
-        if stop.wait(min(15.0, remain)):
+        if stop.wait(min(interval, remain)):
             return False  # 用户中断，按未解决处理
         try:
             # 综合判定（含内嵌滑块）：滑块与内容同屏时纯文本判定会
@@ -631,6 +746,46 @@ def wait_manual_unblock(board: StatusBoard, wid: int, stop: threading.Event,
         except Exception:
             if not browser_alive(page):
                 return False  # 浏览器已死，交给后续流程
+
+
+# 阿里系登录态 Cookie 标记：登录成功后站点才会签发（匿名会话没有），
+# 用于检测「用户已在窗口里手动登录」
+LOGIN_COOKIE_MARKERS = ("unb", "lid", "cookie1", "_nk_", "tracknick", "dnk")
+
+
+def wait_manual_login(board: StatusBoard, wid: int, stop: threading.Event,
+                      ctx, seconds: float, interval: float = 30.0) -> bool:
+    """等 IP 轮换期间（有头模式专用）：轮询用户是否在当前窗口手动登录。
+
+    与 wait_manual_unblock 的区别：此时浏览器刚重启过、页面停在新会话
+    首页（不在拦截页上），页面状态判定会误判为「已通过」，改为对比
+    Cookie 增量 —— 登录后站点会签发 unb / lid / cookie1 等登录态
+    Cookie（匿名会话没有），出现即视为已登录；个别未知标记兜底：
+    相比基线新增 >= 3 个 Cookie 名也视为发生了手动登录。
+    检测到返回 True；超时、浏览器异常或收到停止信号返回 False。
+    """
+    try:
+        baseline = {c["name"] for c in ctx.cookies()
+                    if "1688.com" in c.get("domain", "")}
+    except Exception:
+        return False
+    deadline = time.monotonic() + seconds
+    while True:
+        remain = deadline - time.monotonic()
+        if remain <= 0:
+            return False
+        board.set(wid, state=f"等 IP 轮换（可手动登录）剩 {fmt_dur(remain)}")
+        if stop.wait(min(interval, remain)):
+            return False  # 用户中断，按未解决处理
+        try:
+            names = {c["name"] for c in ctx.cookies()
+                     if "1688.com" in c.get("domain", "")}
+        except Exception:
+            return False  # 浏览器已死，交给后续流程
+        if any(m in names for m in LOGIN_COOKIE_MARKERS):
+            return True
+        if len(names - baseline) >= 3:
+            return True
 
 
 # ---------- 风控拦截检测 ----------
@@ -789,92 +944,741 @@ def page_block_reason(page) -> str | None:
     return is_risk_blocked(url, text) or detect_embedded_slider(page)
 
 
-# ---------- 联系方式解析 ----------
 
-def parse_contact_text(text: str) -> dict:
+
+# ==========================================================================
+# 多 worker 并发引擎（网络层执行框架）
+#
+# 任务层实现 FetchTask 协议（采什么 / 怎么入库），引擎管「怎么连」：
+# 一 worker 一通道（独立出口 IP）、IP + Cookie 配套、批次休息、样本
+# 间隔、风控状态机（原地休息 → 修复换 IP → 放弃）、状态板显示。
+# contact_fetcher.py 与 shop_crawler.py 共用这一套，不允许各自另起
+# 网络层逻辑。
+# ==========================================================================
+
+
+def relaunch_browser(board: StatusBoard, tag: str, wid: int, args,
+                     db, proxy_server: str | None,
+                     old_browser, old_ctx, old_identity: str,
+                     stop: threading.Event, seed_kit: dict = None):
+    """关闭旧浏览器（先回写 Cookie），重开新实例以绑定新出口 IP。
+
+    青果出口 IP 每 30 分钟轮换一次，轮换后旧 identity 的 Cookie 与新
+    出口 IP 错配，必须重启浏览器让 launch_browser 重新查询出口 IP 并
+    按新 identity 加载/绑定 Cookie。最多重试 args.ip_retry 次（线性
+    退避），全部失败抛 RuntimeError。
     """
-    从联系方式页 innerText 解析字段。页面格式稳定:
-
-        电话：86-757-xxxx   （可能只有区号/暂无）
-        手机：138xxxxxxxx  （或 暂无）
-        传真：暂无
-        地址：广东xxx
-        张三女士/先生        （联系人，性别由后缀推断）
-    """
-
-    def grab(label: str) -> str | None:
-        m = re.search(rf"{label}[：:]\s*([^\n]*)", text)
-        if not m:
-            return None
-        v = m.group(1).strip()
-        if not v or v == "暂无" or v == "86":
-            return None
-        return v
-
-    # 联系人：地址行之后、以 先生/女士 结尾的独立行
-    contact_person, gender = None, None
-    m = re.search(r"地址[：:][^\n]*\n\s*([^\n]{1,20}?)(先生|女士)\s*\n", text)
-    if m:
-        contact_person = m.group(1).strip() or None
-        gender = {"先生": "男", "女士": "女"}.get(m.group(2))
-
-    return {
-        "phone": grab("电话"),
-        "mobile": grab("手机"),
-        "fax": grab("传真"),
-        "address": grab("地址"),
-        "contact_person": contact_person,
-        "gender": gender,
-    }
-
-
-def scrape_contact(page, shop_domain: str, referer: str = None) -> dict | None:
-    """进入店铺「联系方式」页并解析字段。
-
-    返回值约定（调用方按优先级判断）：
-        - 正常解析：dict，含联系方式字段 + _raw/_source_url/_blocked
-        - 浏览器进程死亡/被服务端关闭（TargetClosed、崩溃等，非风控）：
-          返回 {"_fatal": <原因>} 标记 dict，调用方应直接重启浏览器重试，
-          不应计入风控连续失败计数，更不该在死浏览器上空等
-        - 网络/代理层错误（隧道断、连接重置等，与风控无关）：
-          返回 {"_net_error": <原因>} 标记 dict，调用方应换通道/退避重试，
-          不应计入风控连续失败计数
-        - 其他异常（超时、解析失败等）：返回 None
-    """
-    url = f"https://{shop_domain}/page/contactinfo.htm"
-    try:
-        page.goto(url, wait_until="domcontentloaded", timeout=60000,
-                  referer=referer or f"https://{shop_domain}/")
-        time.sleep(random.uniform(2.0, 4.0))
-        text = page.evaluate("() => document.body.innerText")
-        info = parse_contact_text(text)
-        info["_raw"] = text[:500]
-        info["_source_url"] = page.url
-        # 风控拦截检测：命中时返回原因字符串，调用方据此换 IP 重试
-        info["_blocked"] = page_block_reason(page)
-        return info
-    except Exception as e:
-        reason = str(e).splitlines()[0][:200]
-        # 1) 浏览器进程级致命错误（会话被服务端关闭、崩溃等），优先识别
-        if is_fatal_browser_error(e):
-            _log(f"    [X] {shop_domain} 浏览器已关闭/崩溃（非风控，"
-                 f"可能是会话被服务端终止）: {reason}")
-            return {"_fatal": reason}
-        # 2) 网络/代理层错误
-        if is_network_error(e):
-            _log(f"    [X] {shop_domain} 联系方式抓取失败"
-                 f"（网络/代理层错误，非风控）: {e}")
-            return {"_net_error": reason}
-        # 3) 其他异常（多为 goto 超时）：先鉴别浏览器是不是已经死了
-        if not browser_alive(page):
-            _log(f"    [X] {shop_domain} 抓取失败且浏览器连接已断开"
-                 f"（非风控，会话疑似被终止）: {reason}")
-            return {"_fatal": f"浏览器连接断开: {reason}"}
-        # 浏览器还活着：记录当前停留 URL 辅助鉴别（拦截页挂起 vs 真风控）
+    if old_ctx is not None:
         try:
-            cur_url = page.url
+            save_cookies(db, old_identity, old_ctx)
+        except Exception as e:
+            board.log(f"{tag}   [!] 旧 Cookie 回写失败: {e}")
+    if old_browser is not None:
+        try:
+            old_browser.close()
         except Exception:
-            cur_url = ""
-        _log(f"    [X] {shop_domain} 联系方式抓取失败"
-             f"（当前停留 URL: {cur_url or '未知'}）: {e}")
-        return None
+            pass
+
+    board.set(wid, state="重启浏览器获取新 IP…", force=True)
+    last_err = None
+    for attempt in range(1, args.ip_retry + 1):
+        if stop.is_set():
+            raise RuntimeError("用户中断")
+        try:
+            browser, page, identity, req_proxies, _ = launch_browser(
+                headless=not args.headed, use_proxy=args.proxy, db=db,
+                proxy_server=proxy_server, pool_size=args.channels or None,
+                stop=stop, seed_kit=seed_kit)
+            board.set(wid, ip=identity, state="浏览器已重启", force=True)
+            board.log(f"{tag} 浏览器已重启，新出口 IP={identity}")
+            return browser, page, identity, req_proxies
+        except (Exception, SystemExit) as e:
+            last_err = e
+            backoff = min(30 * attempt, 120)
+            board.log(f"{tag}   [!] 获取新 IP 第 {attempt}/{args.ip_retry} "
+                      f"次失败: {e}，{backoff}s 后重试...")
+            if wait_countdown(board, wid, stop, backoff, "重启退避"):
+                raise RuntimeError("用户中断")
+    raise RuntimeError(f"重试 {args.ip_retry} 次仍无法获取新 IP: {last_err}")
+
+
+def check_ip_fresh(req_proxies: dict, identity: str) -> tuple:
+    """检查当前出口 IP 是否仍有效，返回 (need_relaunch, cur_ip, reason)。
+
+    青果出口 IP 每 30 分钟轮换一次：查询到的 IP 与 identity 不一致即
+    视为已过期；查询失败先短重试 3 次确认隧道是否真的失效。
+    """
+    cur_ip = get_exit_ip(req_proxies)
+    if cur_ip is None:
+        for _ in range(3):
+            time.sleep(5)
+            cur_ip = get_exit_ip(req_proxies)
+            if cur_ip:
+                break
+    if cur_ip is None:
+        return True, None, "出口 IP 查询失败，隧道疑似失效"
+    if cur_ip != identity:
+        return True, cur_ip, f"出口 IP 已轮换（{identity} -> {cur_ip}）"
+    return False, cur_ip, ""
+
+
+class FetchTask:
+    """任务层协议：网络层引擎按此接口驱动一个采集任务。
+
+    子类只需实现「采什么」：从哪取任务项、怎么抓、抓到怎么入库。
+    scrape() 返回值约定（引擎按优先级判断，与历史脚本一致）：
+        - 正常：dict（可含 _blocked 之外的业务字段）
+        - {"_fatal": 原因}   浏览器进程死亡/被关闭（非风控，重启浏览器重试）
+        - {"_net_error": 原因} 网络/代理层错误（非风控，原通道退避重试）
+        - dict 含 "_blocked"  疑似风控拦截（进风控状态机）
+        - None               其他异常（按风控处理）
+    """
+
+    unit = "样本"          # 状态行里的间隔单位名（"样本" / "页"）
+    batch_unit = ""        # 批次日志里的计量名词（"" / "店铺"）
+    cold_start_before_acquire = False  # True: 冷启动在 acquire 之前执行
+                                       # （如类目池需要先逛首页填池）
+
+    # ---- main 阶段 ----
+    def prepare(self, args) -> bool:
+        """启动前的准备（重置状态/打印计划）；返回 False 直接退出。"""
+        return True
+
+    def summary(self, all_stats: dict) -> str:
+        """全部 worker 结束后的汇总行。"""
+        return str(all_stats)
+
+    # ---- 状态板 ----
+    def compose(self, wid: int, f: dict) -> str:
+        """状态行格式（StatusBoard compose 回调）。"""
+        raise NotImplementedError
+
+    def make_stats(self) -> dict:
+        """每个 worker 的统计字典（结构任务自定）。"""
+        return {}
+
+    def rest_counter(self, stats: dict) -> int:
+        """长休息计数基准（--rest-every 按此值取模）。"""
+        return 0
+
+    # ---- worker 循环 ----
+    def acquire(self, db, wctx: dict):
+        """认领一个任务项；没有可做的返回 None（worker 退出）。"""
+        raise NotImplementedError
+
+    def label(self, item) -> str:
+        """状态行上显示的任务项名称。"""
+        return str(item)
+
+    def cold_start(self, page, item, log=None) -> None:
+        """新会话冷启动软着陆（留下真实浏览轨迹）。
+
+        cold_start_before_acquire=False 时在 acquire 之后调用（item 为
+        当前任务项）；True 时在 acquire 之前调用（item 为 None）。
+        """
+
+    def empty_message(self) -> str:
+        """任务队列耗尽时的一行滚动日志。"""
+        return "没有待做的任务了"
+
+    def scrape(self, page, item) -> dict | None:
+        """抓取当前任务项（返回值约定见类 docstring）。"""
+        raise NotImplementedError
+
+    def on_success(self, db, item, info: dict, wctx: dict,
+                   set_status, log) -> int:
+        """抓取成功：入库/更新统计/状态行；返回计入批次配额的数量。"""
+        return 1
+
+    def on_giveup(self, db, item, reason: str, kind: str, wctx: dict,
+                  set_status, log) -> str:
+        """放弃当前任务项（kind: "net" 网络故障 / "block" 风控）；
+        返回一句短语让引擎拼进日志（如 "标记 failed 跳过"）。"""
+        return "跳过"
+
+    def on_abort(self, item) -> str:
+        """连续失败触发整体中止时的一行补充说明。"""
+        return ""
+
+    def giveup_cost(self, item) -> int:
+        """放弃的任务项计入批次配额的数量（联系人按店铺计 1；
+        类目页放弃时不计，页码本来就没前进）。"""
+        return 0
+
+    def after_item(self, item, wctx: dict) -> None:
+        """当前任务项处理完毕（含放弃）后的收尾（如释放类目占用）。"""
+
+
+# ---------- 引擎：worker 主循环 ----------
+
+def _engine_worker(worker_id: int, args, task: FetchTask,
+                   proxy_server: str | None, seed_kit: dict | None,
+                   board: StatusBoard,
+                   state: dict, lock: threading.Lock, stop: threading.Event):
+    """单个 worker：独立浏览器 + 独立 DB 连接 + 独占代理通道。
+
+    生命周期：领通道 → 启动浏览器按出口 IP 配 Cookie → 认领/抓取循环
+    （样本间随机间隔，批次间大休息）→ 风控先休息当前 IP，再修复换 IP。
+    """
+    from database import ShopDB  # 延迟导入，保持 common 可独立加载
+
+    tag = f"[w{worker_id}]"
+    set_tag(tag)  # common 内部日志按本 worker 路由到状态板
+    db = ShopDB()
+    browser = None
+    stats = task.make_stats()
+    consecutive_fail = 0  # 连续风控失败计数，超限中止整个任务
+    identity = "direct"
+    ctx = None
+    req_proxies = None
+    wctx: dict = {"stats": stats}  # 任务层可用的 per-worker 暂存
+    # tmd 统计：按出口 IP 计页面请求数与「距上次触发」计数
+    # （identity 作 key，换 IP 后自然分开累计，无需手动清零）
+    ip_req: dict = {}
+    # 种子身份池：本 worker 独占的熟身份（None 则白板会话）。
+    # 若它在多个新鲜 IP 上都首请求即被拦，说明被标记的是身份本身
+    # 而非 IP —— 判定种子烧毁，停止播种，退回白板会话
+    kit = seed_kit
+    kit_burn_ips: set = set()
+
+    def set_status(**kw):
+        board.set(worker_id, **kw)
+
+    def log(msg: str):
+        board.log(msg)
+
+    try:
+        set_status(state="启动浏览器…", force=True)
+        last_err = None
+        for attempt in range(1, args.ip_retry + 1):
+            if stop.is_set():
+                return
+            try:
+                browser, page, identity, req_proxies, _ = launch_browser(
+                    headless=not args.headed, use_proxy=args.proxy, db=db,
+                    proxy_server=proxy_server,
+                    pool_size=args.channels or None,
+                    stop=stop, seed_kit=kit)
+                break
+            except (Exception, SystemExit) as e:
+                last_err = e
+                backoff = min(30 * attempt, 120)
+                board.log(f"{tag}   [!] 启动浏览器第 {attempt}/{args.ip_retry} "
+                          f"次失败: {e}，{backoff}s 后重试...")
+                if wait_countdown(board, worker_id, stop, backoff, "启动退避"):
+                    return  # 用户中断
+        else:
+            raise RuntimeError(f"启动浏览器重试 {args.ip_retry} "
+                               f"次仍失败: {last_err}")
+        # 出口 IP 一确定就持久打印（状态行的 detail 是瞬时的，
+        # 且重定向到日志文件时会丢失）
+        board.log(f"{tag} 浏览器就绪，出口 IP={identity}"
+                  f"（{'通道 ' + proxy_server if proxy_server else '直连'}）")
+        ctx = page.context
+        batch_no = 1
+        done_in_batch = 0  # 本 worker 当前批次已采数量（-n 按 worker 各自计）
+        warm = True        # 新会话冷启动软着陆（首个任务前先留浏览轨迹）
+        set_status(ip=identity, batch=batch_no, state="就绪", force=True)
+
+        while not stop.is_set():
+            # ---- 批次配额（每个 worker 各自计数）：本 worker 采满 -n 个后
+            #      各自强制大休息（±10% 抖动），再自动开下一批；
+            #      各 worker 批次互不同步，避免集体停工 ----
+            if done_in_batch >= args.num:
+                if args.max_batches and batch_no >= args.max_batches:
+                    board.log(f"{tag} 第 {batch_no} 批采满，"
+                              f"已达批次上限（--max-batches），收工")
+                    set_status(state="收工")
+                    return  # finally 会保存 Cookie、关闭浏览器
+                rest = random.uniform(args.batch_rest * 0.9,
+                                      args.batch_rest * 1.1)
+                board.log(f"{tag} ⏸ 第 {batch_no} 批已采满 "
+                          f"{args.num} 个{task.batch_unit}，"
+                          f"强制休息 {rest / 60:.1f} 分钟（防风控）...")
+                if wait_countdown(board, worker_id, stop, rest, "批次休息"):
+                    return  # 用户中断
+                batch_no += 1
+                done_in_batch = 0
+                board.log(f"{tag} ▶ 休息结束，开始第 {batch_no} 批")
+                set_status(batch=batch_no, state="采集中")
+
+            # ---- 会话冷启动软着陆（acquire 前执行的任务，如先逛首页
+            #      提取类目填池）：新会话一上来就深链是明显的爬虫特征 ----
+            if warm and task.cold_start_before_acquire:
+                set_status(state="冷启动软着陆…")
+                task.cold_start(page, None, log=log)
+                warm = False
+
+            # ---- 认领任务项 ----
+            item = task.acquire(db, wctx)
+            if item is None:
+                board.log(f"{tag} {task.empty_message()}")
+                set_status(state="无待做任务，退出")
+                break
+            set_status(shop=task.label(item), state="检查出口 IP…")
+
+            # ---- 出口 IP 过期检查（青果每 30 分钟轮换一次出口）----
+            if args.proxy:
+                need_relaunch, cur_ip, reason = check_ip_fresh(
+                    req_proxies, identity)
+                if need_relaunch:
+                    board.log(f"{tag} 🔄 {reason}，重启浏览器绑定新 IP ...")
+                    browser, page, identity, req_proxies = relaunch_browser(
+                        board, tag, worker_id, args, db, proxy_server,
+                        browser, ctx, identity, stop, seed_kit=kit)
+                    ctx = page.context
+                    warm = True  # 新会话重新冷启动软着陆
+
+            # ---- 会话冷启动软着陆（acquire 后执行的任务，如先逛店铺
+            #      首页再进深链页面）----
+            if warm:
+                set_status(state="冷启动软着陆…")
+                task.cold_start(page, item, log=log)
+                warm = False
+
+            # ---- 抓取（网络故障原通道退避重试，不计入风控计数；
+            #      风控：先休息当前 IP → 再修复换 IP → 仍失败放弃）----
+            block_stage = 0   # 0 未触发 / 1 已休息过一次 / 2 已修复换过 IP
+            net_retried = 0
+            while True:
+                set_status(state="采集中")
+                info = task.scrape(page, item)
+                fatal_reason = info.pop("_fatal", None) if info else None
+                net_reason = info.pop("_net_error", None) if info else None
+                block_reason = info.pop("_blocked", None) if info else None
+                # ---- tmd 统计：按出口 IP 累计页面请求数（网络/代理层
+                #      错误和浏览器死亡说明请求没到目标站，不消耗该 IP
+                #      的风控预算，不计数）----
+                if not fatal_reason and not net_reason:
+                    ctr = ip_req.setdefault(identity, {"n": 0, "since": 0})
+                    ctr["n"] += 1
+                    ctr["since"] += 1
+                    db.ip_stat_request(identity, ok=bool(
+                        info is not None and not block_reason))
+                    set_status(ip_n=ctr["n"])
+                if info is not None and not fatal_reason \
+                        and not net_reason and not block_reason:
+                    consecutive_fail = 0  # 抓到了，连续失败清零
+                    break
+
+                # ---- 浏览器进程死亡/被服务端关闭：与风控无关，
+                #      直接重启浏览器重试（走网络故障同一条退避路径）----
+                if fatal_reason:
+                    net_reason = f"浏览器会话终止（{fatal_reason}）"
+
+                # ---- 网络/代理层错误：与风控无关，不计入风控连续失败计数 ----
+                if net_reason:
+                    net_retried += 1
+                    if net_retried > args.net_retry:
+                        phrase = task.on_giveup(
+                            db, item, net_reason, "net", wctx,
+                            set_status, log)
+                        board.log(f"{tag}   [X] 网络故障重试 "
+                                  f"{args.net_retry} 次仍失败，{phrase}"
+                                  f"（{net_reason}）")
+                        info = None
+                        break
+                    backoff = min(30 * net_retried, 180)
+                    board.log(f"{tag} ⚠ 网络/代理故障（{net_reason}），"
+                              f"不计入风控计数，第 {net_retried}/{args.net_retry} "
+                              f"次重试（{backoff}s 后）...")
+                    if args.proxy:
+                        try:
+                            browser, page, identity, req_proxies = \
+                                relaunch_browser(
+                                    board, tag, worker_id, args, db,
+                                    proxy_server, browser, ctx, identity,
+                                    stop, seed_kit=kit)
+                            ctx = page.context
+                            warm = True  # 新会话重新冷启动软着陆
+                        except RuntimeError as e:
+                            board.log(f"{tag} [X] 原通道重启浏览器失败: {e}，"
+                                      f"中止整个任务")
+                            stop.set()
+                            return
+                    if wait_countdown(board, worker_id, stop, backoff,
+                                      "网络故障退避"):
+                        return  # 用户中断
+                    continue  # 重试同一任务项
+
+                # ---- 抓取失败或疑似被风控拦截 ----
+                consecutive_fail += 1
+                reason = block_reason or "页面加载失败（疑似风控拦截）"
+                # 记录该出口 IP 的风控遭遇（评估代理 IP 质量用）；
+                # 登录墙是更高一级的风控（会话被要求强制登录）：
+                # 无头模式下原地休息/手动滑块都无意义，直接进修复换 IP
+                # 阶段；有头模式下给用户手动登录消除风险的机会
+                # （走 block_stage==0 的等待手动验证分支，页面仍停在
+                # 登录页，wait_manual_unblock 每 30s 轮询页面状态，
+                # 登录成功跳回目标页即检测到）
+                login_wall = "login.1688.com" in reason
+                ctr = ip_req.setdefault(identity, {"n": 0, "since": 0})
+                since = ctr["since"]  # 距上次触发已爬多少个请求（触发阈值样本）
+                db.record_ip_event(
+                    identity,
+                    "block_login" if login_wall else
+                    ("block_slider" if block_reason else "block_other"),
+                    reason, req_since_block=since)
+                db.ip_stat_block(identity)
+                ctr["since"] = 0  # 重新累计「距上次触发」的安全请求数
+                board.log(f"{tag}   [tmd] 出口 {identity} 在 {since} 次请求后"
+                          f"触发反爬（本 IP 累计 {ctr['n']} 次请求）")
+                if kit and since <= 2:
+                    # 首请求即被拦：记到种子头上。同一熟身份在多个新鲜
+                    # IP 上都被秒拦，说明被标记的是身份而非 IP ——
+                    # 判定种子烧毁，停止播种，退回白板会话
+                    kit_burn_ips.add(identity)
+                    if len(kit_burn_ips) >= 2:
+                        board.log(f"{tag}   [!] 种子身份「{kit['name']}」已在 "
+                                  f"{len(kit_burn_ips)} 个新鲜 IP 上首请求即被拦，"
+                                  f"疑似已被风控标记，本 worker 停止播种，"
+                                  f"后续按白板会话处理（换种子文件可恢复）")
+                        kit = None
+                if login_wall and block_stage == 0:
+                    if args.headed:
+                        board.log(f"{tag} ⚠ 触发登录墙（{reason}）"
+                                  f" → 有头模式，可在 {identity} 的窗口里"
+                                  f"手动登录消除风险（登录态 Cookie 会写回"
+                                  f"该 IP 名下，本 IP 有效期内复用）")
+                    else:
+                        block_stage = 1
+                        board.log(f"{tag} ⚠ 触发登录墙（{reason}），出口 "
+                                  f"{identity} 已被高风险标记，"
+                                  f"不原地休息，直接修复换 IP")
+                if consecutive_fail >= args.max_consecutive_fail:
+                    board.log(f"{tag} [X] 已连续失败 {consecutive_fail} 次"
+                              f"（最近一次: {reason}），判定被风控，中止整个任务")
+                    extra = task.on_abort(item)
+                    if extra:
+                        board.log(f"{tag}     {extra}")
+                    stop.set()
+                    return  # finally 会保存 Cookie、关闭浏览器
+
+                if block_stage == 0:
+                    # 第一次被风控：不换 IP，当前 IP 上长时间休息后再试
+                    block_stage = 1
+                    rest = random.uniform(args.block_rest_min,
+                                          args.block_rest_max)
+                    board.log(f"{tag} ⚠ {reason}（连续失败 "
+                              f"{consecutive_fail}/{args.max_consecutive_fail}）"
+                              f" → 保持当前 IP {identity}，"
+                              f"休息 {rest / 60:.1f} 分钟后重试")
+                    if args.headed:
+                        # 有头模式：优先等用户手动过滑块/登录，过了立即继续，
+                        # 并把新下发的 x5sec/登录态 Cookie 写回该出口 IP 名下
+                        board.log(f"{tag}   👉 请在 {identity} 的浏览器窗口里"
+                                  f"手动完成验证/登录，脚本每 30s 自动检测"
+                                  f"（最长 {rest / 60:.1f} 分钟）...")
+                        if wait_manual_unblock(board, worker_id, stop,
+                                               page, rest):
+                            board.log(f"{tag} ✓ 检测到验证已通过，"
+                                      f"Cookie 写回 {identity}，立即继续采集")
+                            try:
+                                save_cookies(db, identity, ctx)
+                            except Exception as e:
+                                board.log(f"{tag}   [!] Cookie 回写失败: {e}")
+                            continue  # 同一 IP 重试同一任务项
+                        if stop.is_set():
+                            return
+                        board.log(f"{tag}   未检测到手动验证通过，"
+                                  f"按原计划休息后重试")
+                    if wait_countdown(board, worker_id, stop, rest,
+                                      f"风控休息(1)"):
+                        return  # 用户中断
+                    continue  # 同一 IP 重试同一任务项
+
+                if block_stage == 1:
+                    # 休息后仍被风控 → 修复：重启浏览器拿新出口 IP。
+                    # 青果 IP 时效 30 分钟，此时旧 IP 通常已过期轮换，
+                    # launch_browser 会按新 IP 重新配对 Cookie。
+                    block_stage = 2
+                    board.log(f"{tag} ⚠ 休息后仍被风控（{reason}）"
+                              f" → 修复：重启浏览器获取新出口 IP 并重新配对 Cookie")
+                    old_identity = identity
+                    try:
+                        browser, page, identity, req_proxies = \
+                            relaunch_browser(
+                                board, tag, worker_id, args, db,
+                                proxy_server, browser, ctx, identity,
+                                stop, seed_kit=kit)
+                        ctx = page.context
+                        warm = True  # 新会话重新冷启动软着陆
+                    except RuntimeError as e:
+                        board.log(f"{tag} [X] 修复换 IP 失败: {e}，中止整个任务")
+                        stop.set()
+                        return
+                    if args.proxy and identity == old_identity:
+                        # 出口还没轮换（休息不足 30 分钟）：再等一轮让青果轮换
+                        rest = random.uniform(args.block_rest_min,
+                                              args.block_rest_max)
+                        board.log(f"{tag}   [!] 出口 IP 尚未轮换（青果 30 分钟时效），"
+                                  f"再休息 {rest / 60:.1f} 分钟等其过期后重试")
+                        if args.headed:
+                            # 有头模式：等轮换期间轮询用户是否手动登录
+                            # （此时页面在新会话首页，靠 Cookie 增量检测），
+                            # 登录成功立即继续，不必等轮换
+                            board.log(f"{tag}   👉 等轮换期间你也可以在 "
+                                      f"{identity} 的窗口里手动登录，脚本每 30s "
+                                      f"检测 Cookie（登录成功立即继续）...")
+                            if wait_manual_login(board, worker_id, stop,
+                                                 ctx, rest):
+                                board.log(f"{tag} ✓ 检测到已手动登录，"
+                                          f"登录态 Cookie 写回 {identity}，"
+                                          f"不等轮换立即继续采集")
+                                try:
+                                    save_cookies(db, identity, ctx)
+                                except Exception as e:
+                                    board.log(f"{tag}   [!] Cookie 回写失败: {e}")
+                                continue  # 同一 IP 重试同一任务项
+                            if stop.is_set():
+                                return
+                            board.log(f"{tag}   未检测到手动登录，"
+                                      f"按原计划重启浏览器绑定新 IP")
+                        elif wait_countdown(board, worker_id, stop, rest,
+                                            "等 IP 轮换"):
+                            return
+                        try:
+                            browser, page, identity, req_proxies = \
+                                relaunch_browser(
+                                    board, tag, worker_id, args, db,
+                                    proxy_server, browser, ctx, identity,
+                                    stop, seed_kit=kit)
+                            ctx = page.context
+                            warm = True  # 新会话重新冷启动软着陆
+                        except RuntimeError as e:
+                            board.log(f"{tag} [X] 二次修复仍失败: {e}，"
+                                      f"中止整个任务")
+                            stop.set()
+                            return
+                    continue  # 新 IP + 新 Cookie 重试同一任务项
+
+                # 修复换 IP 后仍失败：放弃当前任务项，继续下一个
+                phrase = task.on_giveup(db, item, reason, "block", wctx,
+                                        set_status, log)
+                board.log(f"{tag}   [X] 休息与修复后仍失败，{phrase}"
+                          f"（{reason}）")
+                info = None
+                break
+
+            if info is not None:
+                done_in_batch += task.on_success(
+                    db, item, info, wctx, set_status, log)
+                # 每次成功后把浏览器里的最新 Cookie（含可能轮换的 x5sec、
+                # 以及手动过证后新签发的安全 Cookie）写回该出口 IP 名下 ——
+                # 进程意外退出也不丢信任链，同 IP 复访直接复用
+                try:
+                    save_cookies(db, identity, ctx)
+                except Exception:
+                    pass
+            else:
+                # 放弃的任务项是否计入批次配额由任务层决定
+                # （联系人：failed 店铺计 1；类目页：页码未前进不计）
+                done_in_batch += task.giveup_cost(item)
+
+            # 当前任务项处理完毕（含放弃），任务层收尾（如释放类目占用）
+            task.after_item(item, wctx)
+
+            # 样本之间的随机间隔（防风控）；各 worker 按编号递增基准
+            # 间隔，避免多 worker 同频齐步请求形成集群特征
+            lo = args.sample_min + worker_id * 1.5
+            hi = args.sample_max + worker_id * 2.5
+            t = random.uniform(lo, hi)
+            set_status(state=f"{task.unit}间隔 {t:.1f}s")
+            if stop.wait(t):
+                return
+            # 每隔一定轮次随机长休息一次，模拟真人连续浏览后的停顿
+            n_rest = task.rest_counter(stats)
+            if (args.rest_every > 0 and n_rest > 0
+                    and n_rest % args.rest_every == 0
+                    and not stop.is_set()):
+                t = random.uniform(args.rest_min, args.rest_max)
+                board.log(f"{tag} ☕ 已连续抓取 {n_rest} 个{task.unit}，"
+                          f"随机长休息 {t / 60:.1f} 分钟 ...")
+                if wait_countdown(board, worker_id, stop, t, "长休息"):
+                    return  # 用户中断
+    except Exception as e:
+        board.log(f"{tag} [X] worker 异常退出: {e}")
+    finally:
+        # 退出前把浏览器里的最新 Cookie（含新 x5sec）写回该出口 IP 名下
+        if ctx is not None:
+            try:
+                save_cookies(db, identity, ctx)
+            except Exception as e:
+                board.log(f"{tag}   [!] Cookie 回写失败: {e}")
+        if browser is not None:
+            try:
+                browser.close()
+            except Exception:
+                pass
+        set_status(state="已退出", force=True)
+        with lock:
+            state["stats"][worker_id] = stats
+        db.close()
+
+
+# ---------- 引擎：CLI 参数与 main 编排 ----------
+
+def add_common_args(ap):
+    """添加所有任务共享的网络层 CLI 参数（任务层自己加 -n 等业务参数）。"""
+    ap.add_argument("--batch-rest", type=float, default=900,
+                    help="每批采满后的强制休息秒数（默认 900=15 分钟，±10%% 抖动）")
+    ap.add_argument("--max-batches", type=int, default=0,
+                    help="每个 worker 最多采集多少批（默认 0=不限）")
+    ap.add_argument("--ip-retry", type=int, default=3,
+                    help="重启浏览器获取新出口 IP 的重试次数（默认 3）")
+    ap.add_argument("--block-rest-min", type=float, default=600,
+                    help="风控后保持当前 IP 的休息时长下限秒数（默认 600=10 分钟）")
+    ap.add_argument("--block-rest-max", type=float, default=900,
+                    help="风控后保持当前 IP 的休息时长上限秒数（默认 900=15 分钟）")
+    ap.add_argument("--net-retry", type=int, default=5,
+                    help="单个任务项遇到网络/代理层错误（隧道断开等，非风控）"
+                         "时的重试次数（默认 5，不计入风控连续失败计数）")
+    ap.add_argument("--max-consecutive-fail", type=int, default=5,
+                    help="连续失败多少次后判定被风控并中止整个任务（默认 5）")
+    ap.add_argument("--headed", action="store_true",
+                    help="有头模式运行（部分站点对 headless 更敏感）")
+    ap.add_argument("--rest-every", type=int, default=20,
+                    help="每个 worker 每完成多少个单位后长休息一次"
+                         "（默认 20，0 关闭）")
+    ap.add_argument("--sample-min", type=float, default=13.0,
+                    help="样本之间随机间隔的下限秒数（默认 13）")
+    ap.add_argument("--sample-max", type=float, default=20.0,
+                    help="样本之间随机间隔的上限秒数（默认 20）")
+    ap.add_argument("--rest-min", type=float, default=60,
+                    help="长休息随机时长的下限秒数（默认 60）")
+    ap.add_argument("--rest-max", type=float, default=180,
+                    help="长休息随机时长的上限秒数（默认 180）")
+    ap.add_argument("--stagger-min", type=float, default=15.0,
+                    help="worker 启动错开的最小秒数（默认 15；多会话同分钟出生、"
+                         "同节奏访问是集群特征，启动时间必须打散）")
+    ap.add_argument("--stagger-max", type=float, default=60.0,
+                    help="worker 启动错开的最大秒数（默认 60）")
+    ap.add_argument("--proxy", action="store_true",
+                    help="走 util/proxy_qingguo.py 的青果住宅代理；"
+                         "Cookie 按出口 IP 存 SQLite（记录过期时间），"
+                         "退出时自动把最新 Cookie 写回该 IP 名下")
+    ap.add_argument("--seeds", type=str,
+                    default=str(ROOT_DIR / ".cache" / "seeds"),
+                    help="种子身份池目录（默认 .cache/seeds，每份熟身份一个 "
+                         "CDP 导出的 json）；代理模式下 worker 一对一独占认领，"
+                         "只种设备绑定 Cookie、指纹按种子固定；"
+                         "种子数少于 worker 数时多余 worker 按白板会话启动")
+    ap.add_argument("--channels", type=int, default=0,
+                    help="青果通道池大小（默认取 proxy_qingguo.CONFIG['channels']）")
+    ap.add_argument("--workers", type=int, default=0,
+                    help="并发 worker 数；代理模式默认=通道数，直连模式默认 1")
+    return ap
+
+
+def run_workers(args, task: FetchTask) -> int:
+    """引擎 main 编排：通道分配 → 状态板 → 信号处理 → 错开启动 → 汇总。
+
+    任务层在自己的 main() 里：解析参数（含 add_common_args）→
+    task.prepare(args) → 返回 run_workers(args, task)。
+    """
+    # ---- 并发度与通道分配（一 worker 一通道，IP + Cookie 配套）----
+    proxy_servers: list = [None]
+    if args.proxy:
+        sys.path.insert(0, str(ROOT_DIR / "util"))
+        import proxy_qingguo
+        pool = proxy_qingguo.get_pool(args.channels or None)
+        n_channels = len(pool.servers())
+        workers = args.workers or n_channels
+        if workers > n_channels:
+            print(f"[!] workers({workers}) > 通道数({n_channels})，"
+                  f"部分 worker 将共用通道（共享出口 IP），不建议")
+        # 轮询取通道：workers <= 通道数时每个 worker 独占一个通道
+        proxy_servers = [pool.acquire() for _ in range(workers)]
+    else:
+        workers = args.workers or 1
+        proxy_servers = [None] * workers
+        if workers > 1:
+            print(f"[!] 直连模式多 worker 共用本机 IP 和同一份 Cookie，"
+                  f"可能触发风控；建议 --proxy 走多通道")
+
+    # 种子身份池：每个 worker 独占认领一份熟身份（一对一，避免同一身份
+    # 多 IP 并发的 Cookie 重放特征）；种子不足时多余 worker 白板启动
+    seed_kits = load_seed_kits(args.seeds) if args.proxy else []
+    if args.proxy:
+        if seed_kits:
+            print(f"[seed] 种子身份池 {len(seed_kits)} 份: "
+                  f"{', '.join(k['name'] for k in seed_kits)}")
+            if workers > len(seed_kits):
+                print(f"[!] worker 数({workers}) > 种子数({len(seed_kits)})，"
+                      f"超出部分按白板会话启动（建议种子数 ≥ worker 数）")
+        else:
+            print(f"[seed] {args.seeds} 下没有可用种子身份，"
+                  f"全部 worker 按白板会话启动")
+    worker_kits = [seed_kits[i] if i < len(seed_kits) else None
+                   for i in range(workers)]
+
+    print(f"[2] 启动 {workers} 个 worker"
+          f"（{'代理通道: ' + ', '.join(proxy_servers) if args.proxy else '直连'}）")
+
+    # ---- 状态板：common 内部日志按线程标签路由进来 ----
+    board = StatusBoard(workers, compose=task.compose)
+
+    def _sink(tag: str, msg: str):
+        """common 内部日志路由：错误/警告进滚动日志，常规细节进状态行。"""
+        text = (msg or "").strip()
+        if not text:
+            return
+        m = re.match(r"\[w(\d+)\]", tag or "")
+        if "[X]" in text or "[!]" in text or "[license]" in text:
+            board.log(f"{tag} {text}" if tag else text)
+        elif m and int(m.group(1)) < workers:
+            board.set(int(m.group(1)), detail=text[:80])
+        else:
+            board.log(f"{tag} {text}" if tag else text)
+
+    set_log_sink(_sink)
+    board.start()
+
+    state = {"stats": {}}
+    lock = threading.Lock()
+    stop = threading.Event()
+
+    # 直接关终端窗口(SIGHUP)或被 kill(SIGTERM)时也走正常清理流程：
+    # 各 worker 关闭浏览器，服务端会话租约立即释放，
+    # 否则残留租约要等 ~10 分钟才过期，会堵住下次启动的席位
+    import signal
+
+    def _graceful_exit(signum, frame):
+        board.log(f"[!] 收到信号 {signum}，通知各 worker 清理后退出...")
+        stop.set()
+
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        try:
+            signal.signal(sig, _graceful_exit)
+        except (OSError, ValueError):
+            pass  # 平台不支持该信号时跳过
+
+    threads = [
+        threading.Thread(target=_engine_worker,
+                         args=(i, args, task, proxy_servers[i],
+                               worker_kits[i], board,
+                               state, lock, stop),
+                         name=f"worker-{i}", daemon=True)
+        for i in range(workers)
+    ]
+    for i, t in enumerate(threads):
+        t.start()
+        if i < len(threads) - 1:
+            # 启动时间打散（默认 15~60s/个）：多会话同一分钟内出生、
+            # 同一节奏访问同一端点，是风控识别爬虫集群的强特征
+            d = random.uniform(args.stagger_min, args.stagger_max)
+            print(f"    错开启动：{d:.0f}s 后启动下一个 worker ...")
+            time.sleep(d)
+
+    try:
+        for t in threads:
+            t.join()
+    except KeyboardInterrupt:
+        board.log("[!] 用户中断，等待各 worker 完成当前任务后退出...")
+        stop.set()
+        for t in threads:
+            t.join(timeout=90)
+        board.log("[!] 进度已保存，下次运行自动续爬")
+
+    print(f"[OK] {task.summary(state['stats'])}")
+    return 0
