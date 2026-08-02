@@ -152,6 +152,8 @@ export interface Dag {
   run_inputs?: Record<string, DagRunInput>
   nodes: DagNode[]
   edges?: [string, string][] // 顶层节点间依赖（v1 线性，缺省按数组序）
+  /** 画布 UI 元数据（节点位置等）；后端忽略该字段 */
+  ui?: { positions?: Record<string, { x: number; y: number }> } & Record<string, unknown>
 }
 
 /** GET /api/flows 列表项（不含 dag） */

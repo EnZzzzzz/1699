@@ -84,6 +84,18 @@ class AtomResult:
 
 > 容器节点是特殊 Atom：`body` 为子 DAG，引擎对其每个迭代执行子图。
 
+后续新增（v1.1，2026-08-02，滑块自愈能力接入）：
+
+| name | 显示名 | 来源 | 主要参数 |
+|---|---|---|---|
+| `refresh_page` | 刷新页面 | 新增（网络卡顿轻处置） | `timeout_ms`, `render_wait` |
+| `solve_slider` | 过滑块验证 | 包装 `util/slider_track.py`（轨迹库回放/多层滑块） | `max_attempts`, `max_rounds` |
+| `slider_repair` | 风控修复（滑块优先） | 新增组合原子：滑块 → 等待数分钟+刷新 → 再过滑块 → 换 IP（按 `_attempt` 分阶段） | `slider_attempts`, `wait_min/max`, `ip_retry` |
+| `net_repair` | 网络修复（先刷新后换 IP） | 新增组合原子：刷新 → 换 IP（按 `_attempt` 分阶段） | `refresh_attempts`, `ip_retry` |
+
+配套内置模板「联系人提取·滑块自愈」：fetch 节点 `on_blocked: {do: slider_repair, retry: 5}`、
+`on_net_error: {do: net_repair, retry: 5}`、熔断放宽到连续 6 次。
+
 ## 4. DAG 定义（flows.dag_json）
 
 ```jsonc

@@ -6,12 +6,12 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Progress } from '@/components/ui/progress'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { api, errorMessage, getAtomTitles, isNotImplemented } from '@/api/client'
+import { api, errorMessage, getAtomCatalog, isNotImplemented } from '@/api/client'
 import { getParamSpecs, paramLabel } from '@/api/paramSpecs'
-import type { Board, ContactFetchStatusCounts, NodeState, ParamSpecs, TaskDetail, WsMessage } from '@/api/types'
+import type { AtomSpec, Board, ContactFetchStatusCounts, NodeState, ParamSpecs, TaskDetail, WsMessage } from '@/api/types'
 import { TaskStatusBadge, TaskTypeLabel, ChannelStatusBadge } from '@/components/StatusBadge'
 import { EmptyState, NotImplementedState } from '@/components/EmptyState'
-import { FlowGraph } from '@/components/FlowGraph'
+import { FlowCanvas } from '@/components/canvas/FlowCanvas'
 import { useRealtime } from '@/hooks/useRealtime'
 import { useTaskActions, canStop, needsConfirm } from '@/hooks/useTaskActions'
 import { TaskEventsCard } from '@/components/TaskEventsCard'
@@ -164,13 +164,13 @@ export default function TaskDetailPage() {
 
 /** flow 任务的流水线执行图：dag 取 params._dag_snapshot，状态取 progress.nodes（随现有 WS/轮询刷新） */
 function FlowSection({ task }: { task: TaskDetail }) {
-  const [atomTitles, setAtomTitles] = useState<Record<string, string> | undefined>(undefined)
+  const [atomSpecs, setAtomSpecs] = useState<AtomSpec[]>([])
 
   useEffect(() => {
     let cancelled = false
-    getAtomTitles()
-      .then((t) => !cancelled && setAtomTitles(t))
-      .catch(() => undefined) // 原子目录不可用时退回注册名
+    getAtomCatalog()
+      .then((catalog) => !cancelled && setAtomSpecs(catalog))
+      .catch(() => undefined) // 原子目录不可用时退回注册名（空目录）
     return () => {
       cancelled = true
     }
@@ -199,7 +199,13 @@ function FlowSection({ task }: { task: TaskDetail }) {
         </CardTitle>
       </CardHeader>
       <CardContent>
-        <FlowGraph dag={dag} nodes={nodes} atomTitles={atomTitles} />
+        <FlowCanvas
+          dag={dag}
+          atomSpecs={atomSpecs}
+          statusNodes={nodes}
+          readonly
+          className="h-[480px] w-full rounded-lg border bg-slate-50"
+        />
       </CardContent>
     </Card>
   )

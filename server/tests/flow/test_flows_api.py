@@ -232,15 +232,15 @@ class FlowCrudTest(FlowsApiTestBase):
 
 class BuiltinFlowTest(FlowsApiTestBase):
     def test_seed_idempotent(self):
-        self.assertEqual(self.seed_builtin(), 2)
+        self.assertEqual(self.seed_builtin(), 3)
         self.assertEqual(self.seed_builtin(), 0)  # 幂等
         items = self.client.get("/api/flows").json()
-        self.assertEqual(len(items), 2)
+        self.assertEqual(len(items), 3)
         self.assertTrue(all(i["builtin"] for i in items))
 
     def test_seed_updates_outdated_template(self):
         """代码侧 DAG 修订后再次 seed：库中模板被更新且 id/created_at 不变。"""
-        self.assertEqual(self.seed_builtin(), 2)
+        self.assertEqual(self.seed_builtin(), 3)
         db = self.TestingSession()
         try:
             flow = db.query(Flow).filter(
@@ -284,14 +284,16 @@ class BuiltinFlowTest(FlowsApiTestBase):
 
     def test_builtin_dags_pass_validation(self):
         for builder in (builtin.build_contact_fetch_dag,
-                        builtin.build_shop_crawl_dag):
+                        builtin.build_shop_crawl_dag,
+                        builtin.build_contact_fetch_slider_dag):
             errors, _warnings = validate_dag(builder())
             self.assertEqual(errors, [], f"{builder.__name__}: {errors}")
 
     def test_builtin_proxy_headed_wired(self):
         """两个内置模板：proxy/headed 进 run_inputs 并以 ${} 接线到节点。"""
         for builder in (builtin.build_contact_fetch_dag,
-                        builtin.build_shop_crawl_dag):
+                        builtin.build_shop_crawl_dag,
+                        builtin.build_contact_fetch_slider_dag):
             dag = builder()
             ri = dag["run_inputs"]
             self.assertEqual(ri["proxy"]["type"], "bool")
@@ -307,7 +309,7 @@ class BuiltinFlowTest(FlowsApiTestBase):
         """seed 后库中模板带新 run_inputs（含 seed 更新逻辑同步路径）。"""
         self.seed_builtin()
         items = self.client.get("/api/flows").json()
-        self.assertEqual(len(items), 2)
+        self.assertEqual(len(items), 3)
         for item in items:
             detail = self.client.get(f"/api/flows/{item['id']}").json()
             ri = detail["dag"]["run_inputs"]

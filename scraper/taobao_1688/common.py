@@ -59,6 +59,49 @@ CONFIG_JSON = ROOT_DIR / ".cache" / "config.json"
 
 HOMEPAGE = "https://www.1688.com/"
 
+# 搜索域落地页（低敏）：用于 mtop 握手，不直接碰 offer_search 深链
+SEARCH_HOME = "https://s.1688.com/"
+
+
+# ---------- mtop 握手（搜索域入场券） ----------
+#
+# 实测（2026-08-03）：s.1688.com 搜索/黄页的数据走 mtop API
+# （h5api.m.1688.com），会话必须持有 _m_h5_tk 令牌才放行；无令牌的
+# 匿名会话直接踢登录墙（marketSigninJump），凌晨严格时段首请求即踢，
+# 连滑块都不给。健康会话全部持有 _m_h5_tk；被秒踢的新会话全部没有。
+# 因此：正式翻页前先在低敏落地页完成握手拿令牌，拿不到就不碰搜索。
+
+
+def has_mtop_token(page) -> bool:
+    """会话是否已持有 mtop API 令牌（_m_h5_tk）。"""
+    try:
+        return any(c["name"] == "_m_h5_tk"
+                   for c in page.context.cookies()
+                   if "1688.com" in c.get("domain", ""))
+    except Exception:
+        return False
+
+
+def ensure_mtop_token(page, log=None, attempts: int = 2) -> bool:
+    """确保会话持有 _m_h5_tk：没有就访问搜索域落地页触发 mtop 令牌
+    签发（最多 attempts 次）。拿到返回 True；拿不到返回 False，
+    调用方应放弃本次搜索采集（无令牌裸奔 = 白烧 IP）。"""
+    if has_mtop_token(page):
+        return True
+    for i in range(attempts):
+        try:
+            page.goto(SEARCH_HOME, wait_until="domcontentloaded",
+                      timeout=60000, referer=HOMEPAGE)
+            time.sleep(random.uniform(2.5, 4.5))
+        except Exception:
+            pass
+        if has_mtop_token(page):
+            if log:
+                log(f"mtop 握手完成（第 {i + 1} 次尝试），"
+                    f"会话已持有 _m_h5_tk")
+            return True
+    return False
+
 # 滑块自动过证（可选能力）：真人轨迹回放（轨迹库 util/tracks.json，
 # 录入/测试见 util/slider_track.py）。风控状态机命中拦截时先自动过证，
 # 过了立即继续采集，不过再按原逻辑等手动/休息换 IP。

@@ -27,11 +27,12 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
-import { createFlowTask, errorMessage, flowApi, getAtomTitles, isNotImplemented } from '@/api/client'
-import type { Dag, DagRunInput, DagValidation, Flow, FlowDetail } from '@/api/types'
+import { createFlowTask, errorMessage, flowApi, getAtomCatalog, isNotImplemented } from '@/api/client'
+import type { AtomSpec, Dag, DagRunInput, DagValidation, Flow, FlowDetail } from '@/api/types'
 import { EmptyState, NotImplementedState } from '@/components/EmptyState'
-import { FlowGraph } from '@/components/FlowGraph'
+import { FlowCanvas } from '@/components/canvas/FlowCanvas'
 import { FlowEditor } from '@/components/FlowEditor'
+import { FlowCanvasEditor } from '@/components/FlowCanvasEditor'
 import { toast } from 'sonner'
 import { Plus, RefreshCw, Play, Eye, Copy, Trash2, Loader2, Pencil, CopyPlus } from 'lucide-react'
 
@@ -40,24 +41,19 @@ export default function Flows() {
   const [loading, setLoading] = useState(true)
   const [notImpl, setNotImpl] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [atomTitles, setAtomTitles] = useState<Record<string, string> | undefined>(undefined)
 
   const [runTarget, setRunTarget] = useState<Flow | null>(null)
   const [viewTarget, setViewTarget] = useState<Flow | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Flow | null>(null)
   const [deleting, setDeleting] = useState(false)
-  const [createOpen, setCreateOpen] = useState(false)
-  const [editFlowId, setEditFlowId] = useState<number | null>(null)
+  // 编辑器状态：flowId=null 为新建；mode 默认画布（表单为兜底）
+  const [editor, setEditor] = useState<{ flowId: number | null; mode: 'canvas' | 'form' } | null>(null)
   const [duplicatingForEdit, setDuplicatingForEdit] = useState<number | null>(null)
 
   const load = useCallback(async () => {
     try {
-      const [list, titles] = await Promise.all([
-        flowApi.list(),
-        getAtomTitles().catch(() => undefined), // 原子目录失败不阻塞，退回注册名
-      ])
+      const list = await flowApi.list()
       setFlows(list)
-      setAtomTitles(titles)
       setNotImpl(false)
       setError(null)
     } catch (e) {
@@ -91,7 +87,7 @@ export default function Flows() {
     try {
       const dup = await flowApi.duplicate(f.id)
       toast.info(`内置模板为只读，已创建副本「${dup.name}」，正在编辑副本`)
-      setEditFlowId(dup.id)
+      setEditor({ flowId: dup.id, mode: 'canvas' })
       void load()
     } catch (e) {
       toast.error(`复制失败：${errorMessage(e)}`)
@@ -131,7 +127,7 @@ export default function Flows() {
             刷新
           </Button>
           {!notImpl && (
-            <Button size="sm" onClick={() => setCreateOpen(true)}>
+            <Button size="sm" onClick={() => setEditor({ flowId: null, mode: 'canvas' })}>
               <Plus className="mr-2 h-4 w-4" />
               新建模板
             </Button>
@@ -148,7 +144,7 @@ export default function Flows() {
           title="暂无流水线模板"
           description="点击右上角「新建模板」，或等待后端初始化内置模板"
           actionLabel="新建模板"
-          onAction={() => setCreateOpen(true)}
+          onAction={() => setEditor({ flowId: null, mode: 'canvas' })}
         />
       ) : (
         <div className="rounded-lg border bg-background">
@@ -199,7 +195,7 @@ export default function Flows() {
                           {duplicatingForEdit === f.id ? '复制中…' : '复制并编辑'}
                         </Button>
                       ) : (
-                        <Button variant="outline" size="sm" onClick={() => setEditFlowId(f.id)}>
+                        <Button variant="outline" size="sm" onClick={() => setEditor({ flowId: f.id, mode: 'canvas' })}>
                           <Pencil className="mr-1 h-3.5 w-3.5" />
                           编辑
                         </Button>
@@ -224,9 +220,26 @@ export default function Flows() {
       )}
 
       <RunFlowDialog flow={runTarget} onClose={() => setRunTarget(null)} />
-      <FlowViewSheet flow={viewTarget} atomTitles={atomTitles} onClose={() => setViewTarget(null)} />
-      <NewFlowDialog open={createOpen} onOpenChange={setCreateOpen} onCreated={() => void load()} />
-      <FlowEditor flowId={editFlowId} onClose={() => setEditFlowId(null)} onSaved={() => void load()} />
+      <FlowViewSheet flow={viewTarget} onClose={() => setViewTarget(null)} />
+      {/* 画布模式编辑器（默认）：新建=空 DAG，编辑=加载 FlowDetail */}
+      <FlowCanvasEditor
+        open={editor?.mode === 'canvas'}
+        flowId={editor?.flowId ?? null}
+        onSwitchToForm={() => setEditor((e) => (e ? { ...e, mode: 'form' } : e))}
+        onClose={() => setEditor(null)}
+        onSaved={() => void load()}
+      />
+      {/* 表单兜底：新建=JSON 对话框，编辑=FlowEditor（行为不变） */}
+      <NewFlowDialog
+        open={editor?.mode === 'form' && editor.flowId == null}
+        onOpenChange={(v) => !v && setEditor(null)}
+        onCreated={() => void load()}
+      />
+      <FlowEditor
+        flowId={editor?.mode === 'form' ? editor.flowId : null}
+        onClose={() => setEditor(null)}
+        onSaved={() => void load()}
+      />
 
       <AlertDialog open={deleteTarget != null} onOpenChange={(v) => !v && setDeleteTarget(null)}>
         <AlertDialogContent>
@@ -387,18 +400,17 @@ function RunInputField({
   )
 }
 
-// ---------- 查看：抽屉展示只读 DAG 图（无状态数据，全灰 pending） ----------
+// ---------- 查看：抽屉展示只读画板（FlowCanvas readonly，可缩放/拖动查看） ----------
 
 function FlowViewSheet({
   flow,
-  atomTitles,
   onClose,
 }: {
   flow: Flow | null
-  atomTitles?: Record<string, string>
   onClose: () => void
 }) {
   const [detail, setDetail] = useState<FlowDetail | null>(null)
+  const [atomSpecs, setAtomSpecs] = useState<AtomSpec[]>([])
 
   useEffect(() => {
     if (!flow) {
@@ -406,9 +418,15 @@ function FlowViewSheet({
       return
     }
     let cancelled = false
-    flowApi
-      .get(flow.id)
-      .then((d) => !cancelled && setDetail(d))
+    Promise.all([
+      flowApi.get(flow.id),
+      getAtomCatalog().catch(() => [] as AtomSpec[]), // 原子目录失败不阻塞，退回注册名
+    ])
+      .then(([d, specs]) => {
+        if (cancelled) return
+        setDetail(d)
+        setAtomSpecs(specs)
+      })
       .catch((e) => toast.error(`加载模板失败：${errorMessage(e)}`))
     return () => {
       cancelled = true
@@ -417,7 +435,7 @@ function FlowViewSheet({
 
   return (
     <Sheet open={flow != null} onOpenChange={(v) => !v && onClose()}>
-      <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-xl">
+      <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-[92vw]">
         <SheetHeader>
           <SheetTitle>
             {flow?.name}
@@ -427,7 +445,7 @@ function FlowViewSheet({
               </Badge>
             )}
           </SheetTitle>
-          <SheetDescription>{flow?.description ?? '只读流程图（模板视图，节点均为待执行状态）'}</SheetDescription>
+          <SheetDescription>{flow?.description ?? '只读画板视图（可缩放 / 拖动查看）'}</SheetDescription>
         </SheetHeader>
         <div className="mt-6 px-1">
           {detail == null ? (
@@ -442,7 +460,7 @@ function FlowViewSheet({
                   资源声明：{detail.dag.resources.join('、')}（引擎统一申请 / 释放）
                 </p>
               )}
-              <FlowGraph dag={detail.dag} atomTitles={atomTitles} />
+              <FlowCanvas dag={detail.dag} atomSpecs={atomSpecs} readonly className="h-[70vh] w-full rounded-lg border bg-slate-50" />
             </>
           )}
         </div>

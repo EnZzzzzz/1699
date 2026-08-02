@@ -122,6 +122,32 @@ def build_shop_crawl_dag() -> dict:
     }
 
 
+def build_contact_fetch_slider_dag() -> dict:
+    """联系人提取·滑块自愈版：在标准版基础上接入自动过滑块与分级修复。
+
+    与「联系人提取·标准」的唯一差异在 fetch 节点的补救策略：
+    - on_blocked → slider_repair（滑块优先的分阶段处置）：
+      第 1~2 次自动过滑块（保住 IP/Cookie，零资源成本）→
+      第 3 次原地等待 3~5 分钟并刷新页面 → 第 4 次刷新后再过滑块 →
+      第 5 次换出口 IP；retry=5 覆盖全部阶段
+    - on_net_error → net_repair（先刷新后换 IP）：
+      第 1~2 次原地刷新页面（不换通道不重启浏览器）→ 第 3 次起换 IP
+    - 熔断放宽到连续 6 次（补救链比标准版长，第 6 次仍 blocked 才中止）
+    """
+    dag = build_contact_fetch_dag()
+    for node in dag["nodes"]:
+        if node["id"] != "loop":
+            continue
+        for child in node["body"]:
+            if child["id"] != "fetch":
+                continue
+            child["on_blocked"] = {"do": "slider_repair", "retry": 5}
+            child["on_net_error"] = {"do": "net_repair", "retry": 5}
+            child["circuit_breaker"] = {"consecutive_fail": 6,
+                                        "action": "abort_task"}
+    return dag
+
+
 # (name, description, builder)；seed 按 name 查重
 _BUILTIN_FLOWS = [
     ("联系人提取·标准",
@@ -132,6 +158,10 @@ _BUILTIN_FLOWS = [
      "内置模板：复刻 shop_crawl 任务（类目分页轮采店铺，"
      "支持人工确认与指定类目）",
      build_shop_crawl_dag),
+    ("联系人提取·滑块自愈",
+     "内置模板：联系人提取 + 自动过滑块（风控先自动拖滑块，连打失败则等待"
+     "数分钟刷新页面再试，仍不行才换 IP；网络故障先原地刷新页面再换 IP）",
+     build_contact_fetch_slider_dag),
 ]
 
 
