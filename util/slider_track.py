@@ -40,7 +40,13 @@ import json
 import random
 import signal
 import sys
+import threading
 import time
+
+# 多 worker 并发拖动互斥锁：4 个线程同时回放轨迹时 GIL 互相抢占，
+# 鼠标事件成撮突发（卡一截跳一截），轨迹数据也会因突发被风控识破。
+# 同一时间只允许一个线程执行拖动，一次拖动约 1~2s，竞争开销可忽略。
+_DRAG_LOCK = threading.Lock()
 from pathlib import Path
 
 # 轨迹库默认放在本脚本旁边，可后续按需挪到 .cache/
@@ -351,6 +357,23 @@ def _densify(points, step_ms=10):
     return dense
 
 
+def _raw_mouse(page):
+    """
+    取原始（未拟人化）的鼠标方法。
+    humanize=True 会把 page.mouse.move 替换为贝塞尔曲线版本——高层操作
+    （click/type）用它很好，但轨迹回放必须绕过：否则我们加密后的每个点
+    都被再做一次多步曲线化，0.8s 的轨迹被拖成 4s 蠕行（已实测复现）。
+    cloakbrowser 把原始方法保存在 page._original.{mouse_move,mouse_down,mouse_up}。
+    """
+    orig = getattr(page, "_original", None)
+    if orig is not None:
+        try:
+            return orig.mouse_move, orig.mouse_down, orig.mouse_up
+        except AttributeError:
+            pass
+    return page.mouse.move, page.mouse.down, page.mouse.up
+
+
 def replay_track(page, handle_selector: str, distance: float,
                  track: list = None, y_dampen: float = 0.7):
     """
@@ -381,20 +404,25 @@ def replay_track(page, handle_selector: str, distance: float,
     dense = _densify(points)   # 插值加密到 10ms 一点
 
     # 对准把手（带随机偏移）→ 停顿 → 按住 → 按原始节奏回放 → 稍停 → 松手
-    page.mouse.move(sx + random.uniform(-2, 2), sy + random.uniform(-2, 2))
-    time.sleep(random.uniform(0.2, 0.45))
-    page.mouse.down()
-    time.sleep(random.uniform(0.05, 0.15))
-    # 绝对时钟对表发送：睡过了就直接发，误差不累积（防卡顿的关键）
-    start = time.monotonic()
-    for dx, dy, t_ms in dense:
-        target = start + t_ms / 1000.0
-        now = time.monotonic()
-        if target > now:
-            time.sleep(target - now)
-        page.mouse.move(sx + dx, sy + dy)
-    time.sleep(random.uniform(0.05, 0.15))
-    page.mouse.up()
+    # 整段在 _DRAG_LOCK 内执行：多 worker 并发时串行拖动，避免线程间
+    # 互相抢占导致鼠标事件突发（卡顿/跳段），每次仅占用 1~2s
+    # 必须用原始鼠标方法（_raw_mouse）：绕过 humanize 的二次曲线化
+    move, mdown, mup = _raw_mouse(page)
+    with _DRAG_LOCK:
+        move(sx + random.uniform(-2, 2), sy + random.uniform(-2, 2))
+        time.sleep(random.uniform(0.2, 0.45))
+        mdown()
+        time.sleep(random.uniform(0.05, 0.15))
+        # 绝对时钟对表发送：睡过了就直接发，误差不累积（防卡顿的关键）
+        start = time.monotonic()
+        for dx, dy, t_ms in dense:
+            target = start + t_ms / 1000.0
+            now = time.monotonic()
+            if target > now:
+                time.sleep(target - now)
+            move(sx + dx, sy + dy)
+        time.sleep(random.uniform(0.05, 0.15))
+        mup()
 
 
 def _measure_distance(fr, handle_box) -> float:
@@ -600,16 +628,25 @@ def solve_with_retry(page, selectors: list = None, success_selector: str = None)
                 page.reload(timeout=20000)
             except Exception:
                 pass
-            page.wait_for_timeout(3000)
+            # 刷新后滑块重渲需要时间（代理下更慢），轮询等待而不是固定 3s
+            deadline = time.time() + 10
+            while time.time() < deadline and not _find_slider(page, sels):
+                page.wait_for_timeout(500)
         # 状态判断：需要点击重置（"验证失败，点击框体重试"）就先点击，
         # 可拖动就直接拖——两种状态不同策略
         if not _click_retry_if_needed(page, sels):
             found = _find_slider(page, sels)
             if not found:
-                return attempt > 1   # 既无滑块也无重试框：已通过/本就没有
+                # 既无滑块也无重试框：可能真过了，也可能页面还在加载/渲染，
+                # 用全量滑块信号（把手+关键词）复核，避免把加载中误判为通过
+                if not _slider_present(page, sels):
+                    return True
+                continue   # 有滑块信号但定位不到把手：下一轮再试
         found = _find_slider(page, sels)
         if not found:
-            return attempt > 1   # 滑块消失：重试途中已通过；一开始就没有也算通过
+            if not _slider_present(page, sels):
+                return True   # 滑块消失且无残留信号：通过
+            continue
         fr, sel, box = found
         distance = _measure_distance(fr, box)
         pool = [t for t in tracks if t not in used] or tracks

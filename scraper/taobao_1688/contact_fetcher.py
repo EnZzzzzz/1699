@@ -40,11 +40,41 @@ import random
 import re
 import sys
 import time
+from pathlib import Path
 
 from common import (FetchTask, add_common_args, browser_alive,
                     is_fatal_browser_error, is_network_error,
                     page_block_reason, run_workers)
 from database import ShopDB
+
+# 滑块兜底：真人轨迹回放自动过证（轨迹库 util/tracks.json，录入/测试见
+# util/slider_track.py）。导入失败时退化为纯检测（原有换 IP 重试行为）。
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "util"))
+try:
+    from slider_track import solve_all_sliders
+except Exception:
+    solve_all_sliders = None
+
+
+# 穿透 shadow DOM 提取页面文本（1688 联系方式等内容挂在 <buyer-workbench>
+# 的 shadowRoot 里，document.body.innerText 可能取不到）
+_EXTRACT_TEXT_JS = """() => {
+    const parts = [];
+    const walk = (node, depth) => {
+        if (depth > 60 || parts.length > 20000) return;
+        if (node.nodeType === Node.TEXT_NODE) {
+            const t = node.textContent.trim();
+            if (t) parts.push(t);
+            return;
+        }
+        if (node.tagName === 'SCRIPT' || node.tagName === 'STYLE'
+            || node.tagName === 'NOSCRIPT') return;
+        if (node.shadowRoot) walk(node.shadowRoot, depth + 1);
+        for (const c of (node.children || [])) walk(c, depth + 1);
+    };
+    walk(document.body || document.documentElement, 0);
+    return parts.join('\\n');
+}"""
 
 
 # ---------- 联系方式页解析（任务层：采什么） ----------
@@ -102,7 +132,23 @@ def scrape_contact(page, shop_domain: str, referer: str = None) -> dict | None:
         page.goto(url, wait_until="domcontentloaded", timeout=60000,
                   referer=referer or f"https://{shop_domain}/")
         time.sleep(random.uniform(2.0, 4.0))
-        text = page.evaluate("() => document.body.innerText")
+        # 滑块兜底：命中风控/待验证时先尝试自动过证（真人轨迹回放 +
+        # 失败重试 + 点击重置 + 多层滑块扫描），过证后继续解析本页；
+        # 过不了则照常走下面的 _blocked 检测，由引擎换 IP 重试
+        if solve_all_sliders is not None and page_block_reason(page):
+            try:
+                if solve_all_sliders(page):
+                    time.sleep(random.uniform(1.5, 2.5))  # 等真实内容渲染
+            except Exception:
+                pass  # 过证异常不阻断，交给 _blocked 判定兜底
+        # 优先穿透 shadow DOM 提取（buyer-workbench），失败退回 innerText
+        text = ""
+        try:
+            text = page.evaluate(_EXTRACT_TEXT_JS) or ""
+        except Exception:
+            pass
+        if len(text.strip()) < 30:
+            text = page.evaluate("() => document.body.innerText") or ""
         info = parse_contact_text(text)
         info["_raw"] = text[:500]
         info["_source_url"] = page.url

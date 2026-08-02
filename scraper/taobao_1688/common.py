@@ -59,6 +59,16 @@ CONFIG_JSON = ROOT_DIR / ".cache" / "config.json"
 
 HOMEPAGE = "https://www.1688.com/"
 
+# 滑块自动过证（可选能力）：真人轨迹回放（轨迹库 util/tracks.json，
+# 录入/测试见 util/slider_track.py）。风控状态机命中拦截时先自动过证，
+# 过了立即继续采集，不过再按原逻辑等手动/休息换 IP。
+# 导入失败时退化为原有纯人工过证流程。
+sys.path.insert(0, str(ROOT_DIR / "util"))
+try:
+    from slider_track import solve_all_sliders as _solve_all_sliders
+except Exception:
+    _solve_all_sliders = None
+
 # 注意：不要给浏览器上下文硬编码 user_agent。CloakBrowser 二进制的
 # 指纹补丁会按自身 Chromium 版本自报 UA 与 UA-CH（sec-ch-ua），
 # 硬编码一个不一致的版本号（如二进制 145 却报 Chrome/150）会造成
@@ -80,7 +90,12 @@ def _fingerprint_args(identity: str) -> list[str]:
     seed = int(hashlib.md5(identity.encode()).hexdigest()[:8], 16) % 90000 + 10000
     plat = ("--fingerprint-platform=macos" if platform.system() == "Darwin"
             else "--fingerprint-platform=windows")
-    return ["--no-sandbox", f"--fingerprint={seed}", plat]
+    return ["--no-sandbox", f"--fingerprint={seed}", plat,
+            # 多窗口 headed 并发时，被遮挡/后台窗口会被 Chrome 节流，
+            # 滑块拖动的鼠标事件与页面计时被打断（卡顿/跳段）；关掉这三类节流
+            "--disable-background-timer-throttling",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-renderer-backgrounding"]
 
 
 # ---------- 日志出口（多 worker 时可把内部消息路由到状态板，避免刷屏） ----------
@@ -1390,6 +1405,26 @@ def _engine_worker(worker_id: int, args, task: FetchTask,
                               f"{consecutive_fail}/{args.max_consecutive_fail}）"
                               f" → 保持当前 IP {identity}，"
                               f"休息 {rest / 60:.1f} 分钟后重试")
+                    # 先尝试自动过证（真人轨迹回放滑块，含失败重试/点击重置/
+                    # 多层扫描）：过了立即继续并把新 Cookie 写回该 IP 名下；
+                    # 不过再按原逻辑等手动/休息。登录墙不属于滑块，跳过。
+                    if _solve_all_sliders is not None and not login_wall:
+                        try:
+                            set_status(state="自动过证（轨迹回放滑块）…")
+                            if _solve_all_sliders(page) \
+                                    and not page_block_reason(page):
+                                board.log(f"{tag} ✓ 自动过证成功，"
+                                          f"Cookie 写回 {identity}，立即继续采集")
+                                try:
+                                    save_cookies(db, identity, ctx)
+                                except Exception as e:
+                                    board.log(f"{tag}   [!] Cookie 回写失败: {e}")
+                                continue  # 同一 IP 重试同一任务项
+                            board.log(f"{tag}   自动过证未通过，"
+                                      f"转入等手动/休息流程")
+                        except Exception as e:
+                            board.log(f"{tag}   [!] 自动过证异常"
+                                      f"（{type(e).__name__}: {e}），转入原流程")
                     if args.headed:
                         # 有头模式：优先等用户手动过滑块/登录，过了立即继续，
                         # 并把新下发的 x5sec/登录态 Cookie 写回该出口 IP 名下
