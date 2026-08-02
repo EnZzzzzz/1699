@@ -444,6 +444,15 @@ class ShopDB:
             out.append(c)
         return out
 
+    def delete_cookies(self, identity: str) -> int:
+        """删除某出口 IP 名下的全部 Cookie（会话身份被风控最高级标记
+        —— 如登录墙 —— 后调用：旧 Cookie 留着只会让轮换回来的 IP
+        复活一个已烧毁的会话）。返回删除条数。"""
+        cur = self.conn.execute("DELETE FROM cookies WHERE identity=?",
+                                (identity,))
+        self.conn.commit()
+        return cur.rowcount
+
     def cookie_info(self, identity: str) -> dict:
         """某出口 IP 下 Cookie 的数量/已过期数/最近过期时间（用于日志）。"""
         now = int(time.time())

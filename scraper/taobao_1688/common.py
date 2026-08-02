@@ -1452,15 +1452,26 @@ def _engine_worker(worker_id: int, args, task: FetchTask,
                 ctr["since"] = 0  # 重新累计「距上次触发」的安全请求数
                 board.log(f"{tag}   [tmd] 出口 {identity} 在 {since} 次请求后"
                           f"触发反爬（本 IP 累计 {ctr['n']} 次请求）")
-                if kit and since <= 2:
-                    # 首请求即被拦：记到种子头上。同一熟身份在多个新鲜
-                    # IP 上都被秒拦，说明被标记的是身份而非 IP ——
-                    # 判定种子烧毁，停止播种，退回白板会话
+                if login_wall and identity != "direct":
+                    # 登录墙 = 会话身份被最高级标记：清空该 IP 名下的
+                    # Cookie，避免青果把此 IP 轮换回来时复活已烧毁的会话
+                    try:
+                        n = db.delete_cookies(identity)
+                        board.log(f"{tag}   🧹 登录墙标记：已清空 {identity} "
+                                  f"名下的 {n} 条 Cookie（会话身份已烧毁，"
+                                  f"此 IP 轮换回来时按全新身份重建）")
+                    except Exception as e:
+                        board.log(f"{tag}   [!] 清空登录墙 IP Cookie 失败: {e}")
+                if kit and (since <= 2 or login_wall):
+                    # 首请求即被拦、或触发登录墙（最高级风控，身份嫌疑
+                    # 与首请求秒拦同级，不论已爬多少请求）：记到种子头上。
+                    # 同一熟身份在多个新鲜 IP 上都这样，说明被标记的是
+                    # 身份而非 IP —— 判定种子烧毁，停止播种，退回白板会话
                     kit_burn_ips.add(identity)
                     if len(kit_burn_ips) >= 2:
                         board.log(f"{tag}   [!] 种子身份「{kit['name']}」已在 "
-                                  f"{len(kit_burn_ips)} 个新鲜 IP 上首请求即被拦，"
-                                  f"疑似已被风控标记，本 worker 停止播种，"
+                                  f"{len(kit_burn_ips)} 个新鲜 IP 上被风控标记"
+                                  f"（首请求秒拦/登录墙），本 worker 停止播种，"
                                   f"后续按白板会话处理（换种子文件可恢复）")
                         kit = None
                 if login_wall and block_stage == 0:
