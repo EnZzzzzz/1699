@@ -452,13 +452,13 @@ def launch_browser(headless: bool = True, use_proxy: bool = False, db=None,
             humanize=True,
             locale="zh-CN",
             timezone="Asia/Shanghai",
-            # 指纹：有种子身份时按种子固定（cna 等设备标识按设备签发，
-            # 指纹必须与身份配套，否则是"身份被篡改"信号）；无种子按
-            # 出口 IP 固定（同 IP 重启指纹不变，与库中 Cookie 配套）；
-            # 不硬编码 UA，由二进制指纹自报，避免 UA 与 UA-CH 版本错配
+            # 指纹：有种子身份时按种子名固定（cna 等设备标识按设备签发，
+            # 指纹必须与身份配套，否则是"身份被篡改"信号；harvest_seeds
+            # 收割的种子以原出口 IP 命名，恰好复现该身份养成时的指纹）；
+            # 无种子按出口 IP 固定（同 IP 重启指纹不变，与库中 Cookie
+            # 配套）；不硬编码 UA，由二进制指纹自报
             stealth_args=False,
-            args=_fingerprint_args(
-                f"seed:{seed_kit['name']}" if seed_kit else identity),
+            args=_fingerprint_args(seed_kit["name"] if seed_kit else identity),
             **({"proxy": proxy_conf, "geoip": True} if proxy_conf else {}),
         )
     except SystemExit as e:
