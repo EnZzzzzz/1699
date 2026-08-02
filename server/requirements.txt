@@ -1,8 +1,0 @@
-fastapi
-uvicorn[standard]
-sqlalchemy
-requests
-redis
-celery
-openpyxl
-loguru
