@@ -477,7 +477,8 @@ def _slider_present(page, sels) -> bool:
     return False
 
 
-def solve_all_sliders(page, selectors: list = None, max_rounds: int = 3) -> bool:
+def solve_all_sliders(page, selectors: list = None, max_rounds: int = 3,
+                      max_attempts: int = 8) -> bool:
     """
     多层滑块循环：阿里风控常"过一关弹一关"（底层验证页过了，上层模态框又弹一块滑块）。
     每过完一关重新全页扫描（所有 frame + shadow DOM，按把手元素 + 关键词双重检测），
@@ -496,9 +497,9 @@ def solve_all_sliders(page, selectors: list = None, max_rounds: int = 3) -> bool
             page.wait_for_timeout(1200)
         # 单层解决：注意这里不能再传 success_selector（真实页可能已在底层显示，
         # 但上层还有滑块），每关的通过只看该滑块组件自身的消失/报错
-        ok = solve_with_retry(page, selectors=list(sels))
+        ok = solve_with_retry(page, selectors=list(sels), max_attempts=max_attempts)
         if not ok:
-            print(f"[solve] ✗ 第 {rnd} 层滑块三次尝试均未通过")
+            print(f"[solve] ✗ 第 {rnd} 层滑块 {max_attempts} 次尝试均未通过")
             return False
         page.wait_for_timeout(1500)   # 等下一层弹层出现（如果有）
     # 循环结束后最后确认一次
@@ -608,22 +609,35 @@ def _click_retry_if_needed(page, sels, timeout_s: float = 6.0) -> bool:
     return False
 
 
-def solve_with_retry(page, selectors: list = None, success_selector: str = None) -> bool:
+def solve_with_retry(page, selectors: list = None, success_selector: str = None,
+                     max_attempts: int = 8) -> bool:
     """
-    滑块兜底（含失败重试，按实操经验）：
-        第1次回放失败 → 换一条轨迹原地重试；
-        再失败 → 刷新页面，重新等滑块、重新量距，最后试一次；
-        三次都失败才放弃。
+    滑块兜底（多轮重试 + 多轮刷新 + 轨迹轮换）：
+        - 每次尝试都从轨迹库里挑一条"本轮还没用过"的轨迹，尽量不重复；
+          轨迹库用完后重新洗牌继续换着用；
+        - 连续失败 2 次就刷新页面，重新等滑块、重新量距后再试；
+        - 默认最多尝试 max_attempts=8 次（可调 5~10）才放弃。
     success_selector: 验证通过后真实页的标志元素（如 1688 的 buyer-workbench），
         用于严格判定，避免把"滑块报错短暂隐藏"误判为通过。
     返回 True = 滑块已通过（或页面上本就没有滑块）。
     """
     sels = selectors or ("[id$='_n1z']", ".nc_iconfont.btn_slide", ".btn_slide")
     tracks = load_tracks()
-    used = []
-    for attempt in range(1, 4):
-        if attempt == 3:
-            print("[solve] 第2次仍失败，刷新页面重新等滑块……")
+    # 轨迹轮换池：随机洗牌后逐条取用，用完重新洗牌，保证尽量用不同轨迹
+    pool = tracks[:]
+    random.shuffle(pool)
+
+    def _next_track():
+        nonlocal pool
+        if not pool:
+            pool = tracks[:]
+            random.shuffle(pool)
+        return pool.pop()
+
+    for attempt in range(1, max_attempts + 1):
+        # 连续失败 2 次 → 刷新页面重新等滑块（第 3、5、7… 次尝试前）
+        if attempt > 2 and (attempt - 1) % 2 == 0:
+            print(f"[solve] 已连续失败 {attempt - 1} 次，刷新页面重新等滑块……")
             try:
                 page.reload(timeout=20000)
             except Exception:
@@ -649,10 +663,9 @@ def solve_with_retry(page, selectors: list = None, success_selector: str = None)
             continue
         fr, sel, box = found
         distance = _measure_distance(fr, box)
-        pool = [t for t in tracks if t not in used] or tracks
-        track = random.choice(pool)
-        used.append(track)
-        print(f"[solve] 第 {attempt} 次尝试：回放 {len(track)} 点轨迹，距离 {distance:.0f}px")
+        track = _next_track()
+        print(f"[solve] 第 {attempt}/{max_attempts} 次尝试：回放 {len(track)} 点轨迹，"
+              f"距离 {distance:.0f}px（剩余未用轨迹 {len(pool)} 条）")
         try:
             replay_track(page, sel, distance, track=track)
         except Exception as e:
@@ -666,22 +679,25 @@ def solve_with_retry(page, selectors: list = None, success_selector: str = None)
 
 
 def try_solve_slider(page, distance: float = 0,
-                     selectors: list = None, wait_ms: int = 800) -> bool:
+                     selectors: list = None, wait_ms: int = 800,
+                     max_attempts: int = 8) -> bool:
     """
     检测页面上是否存在滑块，发现即用真人轨迹回放拖动。
-    每层内部含失败重试（换轨迹 → 刷新再试）；过完一关全页扫描，
-    模态框/嵌套组件里还有滑块会继续打（多层滑块循环）。
+    每层内部含多轮重试（换不同轨迹，每失败 2 次刷新页面再试，默认最多
+    max_attempts=8 次）；过完一关全页扫描，模态框/嵌套组件里还有滑块
+    会继续打（多层滑块循环）。
 
     参数:
-        distance:  保留参数（兼容旧调用）；距离现在自动测量
-        selectors: 把手选择器列表，默认内置阿里系选择器
+        distance:     保留参数（兼容旧调用）；距离现在自动测量
+        selectors:    把手选择器列表，默认内置阿里系选择器
+        max_attempts: 单层滑块最多尝试次数（建议 5~10）
     返回:
         True = 页面已无滑块；False = 没有滑块可打，或打不动
     """
     sels = tuple(selectors) if selectors else ("[id$='_n1z']", ".nc_iconfont.btn_slide", ".btn_slide")
     if not _slider_present(page, sels):
         return False   # 页面上没有滑块，与旧语义一致
-    return solve_all_sliders(page, selectors=selectors)
+    return solve_all_sliders(page, selectors=selectors, max_attempts=max_attempts)
 
 
 # ---------------------------------------------------------------- CLI

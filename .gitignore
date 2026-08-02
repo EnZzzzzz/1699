@@ -21,3 +21,4 @@ venv/
 # Logs
 logs/
 *.log
+*.mov
