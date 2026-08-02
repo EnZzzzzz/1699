@@ -44,11 +44,20 @@ import random
 import sys
 import threading
 import time
+from pathlib import Path
 
 from common import (HOMEPAGE, FetchTask, add_common_args, browser_alive,
                     is_fatal_browser_error, is_network_error,
                     page_block_reason, run_workers)
 from database import ShopDB
+
+# 滑块兜底：真人轨迹回放自动过证（轨迹库 util/tracks.json，录入/测试见
+# util/slider_track.py）。导入失败时退化为纯检测（原有换 IP 重试行为）。
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "util"))
+try:
+    from slider_track import solve_all_sliders
+except Exception:
+    solve_all_sliders = None
 
 
 # ---------- 类目搜索页解析（任务层：采什么） ----------
@@ -157,6 +166,18 @@ def scrape_category(page, keyword: str, page_no: int = 1,
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=60000,
                   referer=HOMEPAGE)
+        time.sleep(random.uniform(1.0, 2.0))
+        # 滑块兜底：命中风控/待验证时先尝试自动过证（与 contact_fetcher
+        # 同策略：点击重置 → 刷新 → 换轨迹再试，最多 5 次），过证后
+        # 照常等数据解析；过不了则 _blocked 检测兜底，由引擎换 IP 重试。
+        # 不先过证的话，拦截页上 offerV2 数据永远不就绪，会白等
+        # data_wait 秒再原样返回
+        if solve_all_sliders is not None and page_block_reason(page):
+            try:
+                if solve_all_sliders(page, max_attempts=5):
+                    time.sleep(random.uniform(1.5, 2.5))  # 等真实内容渲染
+            except Exception:
+                pass  # 过证异常不阻断，交给 _blocked 判定兜底
         # 等异步搜索结果数据就绪（轮询，不加重风控）
         deadline = time.monotonic() + data_wait
         ready = False
