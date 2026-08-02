@@ -153,6 +153,12 @@ CREATE TABLE IF NOT EXISTS category_progress (
     exhausted       INTEGER NOT NULL DEFAULT 0,     -- 1 = 已采到末页，之后跳过
     last_crawled_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS seed_leases (
+    kit_name     TEXT PRIMARY KEY,             -- 种子文件名（去扩展名）
+    owner        TEXT NOT NULL,                -- 认领者 "pid:worker_id"
+    heartbeat_at TEXT NOT NULL                 -- 最近一次心跳；超 TTL 视为过期
+);
 """
 
 # 依赖迁移后列（status）的索引，单独在 _migrate 之后创建
@@ -205,6 +211,16 @@ class ShopDB:
         if "req_since_block" not in evt_cols:
             self.conn.execute(
                 "ALTER TABLE ip_events ADD COLUMN req_since_block INTEGER")
+        # ip_stats 补滑动窗口列（跨进程共享的配额预算依据：
+        # requests 是累计值，预算要看最近窗口内的请求数）
+        stat_cols = {r[1] for r in self.conn.execute("PRAGMA table_info(ip_stats)")}
+        if "req_window_start" not in stat_cols:
+            self.conn.execute(
+                "ALTER TABLE ip_stats ADD COLUMN req_window_start TEXT")
+        if "req_window_count" not in stat_cols:
+            self.conn.execute(
+                "ALTER TABLE ip_stats ADD COLUMN req_window_count "
+                "INTEGER NOT NULL DEFAULT 0")
 
     # ---------- crawl_runs ----------
     def start_run(self, category_name: str = None,
@@ -506,19 +522,101 @@ class ShopDB:
 
         每次 scrape 调用 = 一次页面请求；网络/代理层错误（请求没到目标站）
         由调用方跳过不计。tmd 率 = blocks / requests。
+        同时维护 30 分钟滑动窗口计数（req_window_start/req_window_count），
+        供 ip_window_requests 做跨进程配额预算判定。
         """
         try:
+            now = _now()
+            cutoff = time.strftime("%Y-%m-%d %H:%M:%S",
+                                   time.localtime(time.time() - 1800))
             self.conn.execute(
-                """INSERT INTO ip_stats (identity, requests, ok, updated_at)
-                   VALUES (?, 1, ?, ?)
+                """INSERT INTO ip_stats (identity, requests, ok,
+                                         req_window_start, req_window_count,
+                                         updated_at)
+                   VALUES (?, 1, ?, ?, 1, ?)
                    ON CONFLICT(identity) DO UPDATE SET
                        requests = requests + 1,
                        ok = ok + ?,
+                       req_window_start = CASE
+                           WHEN req_window_start IS NULL
+                                OR req_window_start < ? THEN ?
+                           ELSE req_window_start END,
+                       req_window_count = CASE
+                           WHEN req_window_start IS NULL
+                                OR req_window_start < ? THEN 1
+                           ELSE req_window_count + 1 END,
                        updated_at = ?""",
-                (identity, 1 if ok else 0, _now(), 1 if ok else 0, _now()))
+                (identity, 1 if ok else 0, now, now,
+                 1 if ok else 0, cutoff, now, cutoff, now))
             self.conn.commit()
         except Exception:
             pass  # 统计不影响主流程
+
+    def ip_window_requests(self, identity: str,
+                           window_sec: int = 1800) -> int:
+        """该出口 IP 最近 window_sec 秒内的页面请求数（跨进程共享的配额
+        预算依据；requests 是累计值，多脚本先后/同时用同一 IP 时各自的
+        内存计数会重复消耗站点配额，必须看 DB 窗口值）。"""
+        try:
+            row = self.conn.execute(
+                "SELECT req_window_start, req_window_count FROM ip_stats "
+                "WHERE identity=?", (identity,)).fetchone()
+            if not row or not row["req_window_start"]:
+                return 0
+            cutoff = time.strftime("%Y-%m-%d %H:%M:%S",
+                                   time.localtime(time.time() - window_sec))
+            return (row["req_window_count"]
+                    if row["req_window_start"] >= cutoff else 0)
+        except Exception:
+            return 0
+
+    # ---------- 种子身份租约（跨进程认领互斥） ----------
+
+    # 租约 TTL：worker 每处理完一个任务项心跳一次；进程死亡后租约
+    # 最长挂 1 小时自动过期（批次/风控休息均远短于此，不会误释放）
+    SEED_LEASE_TTL = 3600
+
+    def claim_seed_kit(self, kit_name: str, owner: str,
+                       ttl: int = None) -> bool:
+        """认领一份种子身份（跨进程互斥）：无租约或租约已过期（或本就
+        是自己的）则认领成功返回 True；被其他存活进程持有返回 False。
+        owner 建议 "pid:worker_id"。"""
+        ttl = ttl or self.SEED_LEASE_TTL
+        now = _now()
+        cutoff = time.strftime("%Y-%m-%d %H:%M:%S",
+                               time.localtime(time.time() - ttl))
+        cur = self.conn.execute(
+            """INSERT INTO seed_leases (kit_name, owner, heartbeat_at)
+               VALUES (?, ?, ?)
+               ON CONFLICT(kit_name) DO UPDATE SET
+                   owner = excluded.owner,
+                   heartbeat_at = excluded.heartbeat_at
+               WHERE seed_leases.heartbeat_at < ?
+                  OR seed_leases.owner = ?""",
+            (kit_name, owner, now, cutoff, owner))
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def heartbeat_seed_kit(self, kit_name: str, owner: str) -> None:
+        """续约：worker 每处理完一个任务项调一次。"""
+        try:
+            self.conn.execute(
+                "UPDATE seed_leases SET heartbeat_at=? "
+                "WHERE kit_name=? AND owner=?",
+                (_now(), kit_name, owner))
+            self.conn.commit()
+        except Exception:
+            pass
+
+    def release_seed_kit(self, kit_name: str, owner: str) -> None:
+        """释放本进程持有的种子租约（worker 退出/种子烧毁时调用）。"""
+        try:
+            self.conn.execute(
+                "DELETE FROM seed_leases WHERE kit_name=? AND owner=?",
+                (kit_name, owner))
+            self.conn.commit()
+        except Exception:
+            pass
 
     def ip_stat_block(self, identity: str) -> None:
         """累计该出口 IP 的一次风控触发（滑块/登录墙/其他拦截）。"""

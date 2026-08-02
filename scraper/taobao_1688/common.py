@@ -1316,6 +1316,7 @@ def _engine_worker(worker_id: int, args, task: FetchTask,
     # 而非 IP —— 判定种子烧毁，停止播种，退回白板会话
     kit = seed_kit
     kit_burn_ips: set = set()
+    kit_owner = f"{os.getpid()}:{worker_id}"  # 种子租约持有者标识
     budget_stuck: set = set()  # 已达请求预算但 IP 未轮换的出口
                                # （避免反复重启浏览器空转）
 
@@ -1521,7 +1522,12 @@ def _engine_worker(worker_id: int, args, task: FetchTask,
                         board.log(f"{tag}   [!] 种子身份「{kit['name']}」已在 "
                                   f"{len(kit_burn_ips)} 个新鲜 IP 上被风控标记"
                                   f"（首请求秒拦/登录墙），本 worker 停止播种，"
-                                  f"后续按白板会话处理（换种子文件可恢复）")
+                                  f"释放种子租约，后续按白板会话处理"
+                                  f"（换种子文件可恢复）")
+                        try:
+                            db.release_seed_kit(kit["name"], kit_owner)
+                        except Exception:
+                            pass
                         kit = None
                 if login_wall and block_stage == 0:
                     if args.headed:
@@ -1693,18 +1699,27 @@ def _engine_worker(worker_id: int, args, task: FetchTask,
 
             # 当前任务项处理完毕（含放弃），任务层收尾（如释放类目占用）
             task.after_item(item, wctx)
+            # 种子租约心跳续约（跨进程互斥的存活证明）
+            if kit:
+                try:
+                    db.heartbeat_seed_kit(kit["name"], kit_owner)
+                except Exception:
+                    pass
 
             # 每 IP 请求预算（任务层声明，如搜索页匿名配额墙）：
-            # 该出口成功采满预算后主动换 IP，把「被配额墙踢掉」变成
-            # 「主动全身而退」；IP 未轮换（青果 30 分钟时效）则放行
+            # 该出口最近 30 分钟窗口内的请求数达预算即主动换 IP，
+            # 把「被配额墙踢掉」变成「主动全身而退」。窗口计数查 DB
+            # （跨进程共享：多脚本先后/同时用同一 IP 不会重复消耗
+            # 站点配额）；IP 未轮换（青果 30 分钟时效）则放行
             # 不再反复重启，等其自然轮换
             budget = getattr(task, "ip_request_budget", None)
+            win_n = db.ip_window_requests(identity) if budget else 0
             if (budget and args.proxy and info is not None
-                    and ip_req.get(identity, {}).get("n", 0) >= budget
+                    and win_n >= budget
                     and identity not in budget_stuck):
                 old_identity = identity
                 board.log(f"{tag} 📦 出口 {identity} 已达请求预算 "
-                          f"（{ip_req[identity]['n']}/{budget} 次），"
+                          f"（30 分钟窗口 {win_n}/{budget} 次），"
                           f"主动换 IP 规避配额墙")
                 try:
                     browser, page, identity, req_proxies = \
@@ -1750,6 +1765,12 @@ def _engine_worker(worker_id: int, args, task: FetchTask,
                 save_cookies(db, identity, ctx)
             except Exception as e:
                 board.log(f"{tag}   [!] Cookie 回写失败: {e}")
+        # 释放种子租约（进程死亡则由 TTL 兜底自动过期）
+        if kit:
+            try:
+                db.release_seed_kit(kit["name"], kit_owner)
+            except Exception:
+                pass
         if browser is not None:
             try:
                 browser.close()
@@ -1845,9 +1866,10 @@ def run_workers(args, task: FetchTask) -> int:
             print(f"[!] 直连模式多 worker 共用本机 IP 和同一份 Cookie，"
                   f"可能触发风控；建议 --proxy 走多通道")
 
-    # 种子身份池：每个 worker 独占认领一份熟身份（一对一，避免同一身份
-    # 多 IP 并发的 Cookie 重放特征）；种子不足时多余 worker 白板启动。
-    # --seed-x5sec：A/B 实验，偶数 worker 用含 x5sec 的种子（A 组），
+    # 种子身份池：每个 worker 独占认领一份熟身份（DB 租约跨进程互斥，
+    # 多脚本并发跑也不会两个进程撞同一身份；进程死亡租约 1 小时自动
+    # 过期）；种子不足时多余 worker 白板启动。
+    # --seed-x5sec：A/B 实验，偶数 worker 优先用含 x5sec 的种子（A 组），
     # 奇数 worker 用不含的（B 组对照），同一批种子两种过滤口径
     seed_kits = load_seed_kits(args.seeds) if args.proxy else []
     seed_kits_x5 = (load_seed_kits(args.seeds, keep_x5sec=True)
@@ -1867,14 +1889,27 @@ def run_workers(args, task: FetchTask) -> int:
         else:
             print(f"[seed] {args.seeds} 下没有可用种子身份，"
                   f"全部 worker 按白板会话启动")
-    if args.seed_x5sec and seed_kits_x5:
-        worker_kits = [
-            (seed_kits_x5[i] if i % 2 == 0 else seed_kits[i])
-            if i < len(seed_kits) else None
-            for i in range(workers)]
-    else:
-        worker_kits = [seed_kits[i] if i < len(seed_kits) else None
-                       for i in range(workers)]
+    # 按序认领先到先得：DB 租约保证跨进程互斥（含其他脚本进程已
+    # 认领的种子会自动跳过），认不到则白板启动
+    worker_kits = [None] * workers
+    if args.proxy and seed_kits:
+        from database import ShopDB  # 延迟导入，保持 common 可独立加载
+        seed_db = ShopDB()
+        n_claimed = 0
+        for i in range(workers):
+            cand = (seed_kits_x5
+                    if args.seed_x5sec and seed_kits_x5 and i % 2 == 0
+                    else seed_kits)
+            for k in cand:
+                if seed_db.claim_seed_kit(k["name"], f"{os.getpid()}:{i}"):
+                    worker_kits[i] = k
+                    n_claimed += 1
+                    break
+        seed_db.close()
+        n_white = workers - n_claimed
+        print(f"[seed] 本进程认领 {n_claimed} 份种子"
+              + (f"，{n_white} 个 worker 白板启动"
+                 f"（种子已被其他进程持有或数量不足）" if n_white else ""))
 
     print(f"[2] 启动 {workers} 个 worker"
           f"（{'代理通道: ' + ', '.join(proxy_servers) if args.proxy else '直连'}）")
