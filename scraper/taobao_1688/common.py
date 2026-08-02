@@ -230,12 +230,21 @@ SECURITY_COOKIE_NAMES = frozenset({
 # 指纹必须与身份配套，否则是"身份被篡改"信号）。
 
 
-def load_seed_kits(seeds_dir) -> list[dict]:
+# 种子里可保留的验证凭证（仅 --seed-x5sec 实验时启用）：
+# x5sec/x5secdata 是纯人机验证凭证，种子一对一独占后不存在并发重放；
+# 若 1688 对 x5sec 的校验实际绑设备而非严格绑 IP，保留它可免滑块。
+# sgcookie/sg/isg/x5sectag 与会话安全上下文绑定更深，始终剔除。
+X5SEC_SEEDABLE_NAMES = frozenset({"x5sec", "x5secdata"})
+
+
+def load_seed_kits(seeds_dir, keep_x5sec: bool = False) -> list[dict]:
     """加载种子身份池：seeds_dir 下每个 .json 是一份 CDP 导出的熟身份 Cookie。
 
-    返回 [{"name": 文件名（去扩展名）, "cookies": [Playwright 格式]}...]，
-    只保留 1688 域且非 IP 绑定的设备身份 Cookie。不含 cna/cookie2 的
-    文件视为「不熟」（和白板没区别），跳过并打日志。
+    返回 [{"name": 文件名（去扩展名）, "cookies": [Playwright 格式],
+           "x5sec": bool}...]，只保留 1688 域且非 IP 绑定的设备身份 Cookie；
+    keep_x5sec=True 时额外保留未过期的 x5sec/x5secdata（免滑块实验，
+    kit["x5sec"] 标记供日志与 A/B 归因）。不含 cna/cookie2 的文件
+    视为「不熟」（和白板没区别），跳过并打日志。
     """
     kits = []
     seeds_dir = Path(seeds_dir)
@@ -252,7 +261,15 @@ def load_seed_kits(seeds_dir) -> list[dict]:
             if "1688.com" not in c.get("domain", ""):
                 continue
             if c["name"] in SECURITY_COOKIE_NAMES:
-                continue  # IP 绑定的安全 Cookie 绝不跨 IP 复制
+                if not (keep_x5sec and c["name"] in X5SEC_SEEDABLE_NAMES):
+                    continue  # IP 绑定的安全 Cookie 不跨 IP 复制
+                # x5sec 短时效：过期的别种（带过期凭证比不带更可疑）
+                exp = c.get("expires") or c.get("expirationDate")
+                try:
+                    if exp and float(exp) > 0 and float(exp) <= time.time():
+                        continue
+                except (TypeError, ValueError):
+                    continue
             names.add(c["name"])
             cookies.append({
                 "name": c["name"],
@@ -266,7 +283,8 @@ def load_seed_kits(seeds_dir) -> list[dict]:
             _log(f"    [seed] 种子 {f.name} 不含 cna/cookie2"
                  f"（身份不够熟，和白板没区别），跳过")
             continue
-        kits.append({"name": f.stem, "cookies": cookies})
+        kits.append({"name": f.stem, "cookies": cookies,
+                     "x5sec": bool(X5SEC_SEEDABLE_NAMES & names)})
     return kits
 
 
@@ -408,14 +426,19 @@ def launch_browser(headless: bool = True, use_proxy: bool = False, db=None,
          f"最近过期: {info['earliest_expiry'] or '未知'}）")
     if use_proxy and not cookies and seed_kit:
         # 种子身份池：本 worker 独占的熟身份（仅设备绑定 Cookie，
-        # IP 绑定的安全 Cookie 加载时已剔除）。一对一绑定 worker，
-        # 不存在同一身份多 IP 并发的重放特征；指纹也按种子固定。
-        # 写入该出口 IP 名下，让会话链路在此 IP 上沉淀。
+        # IP 绑定的安全 Cookie 加载时已剔除，--seed-x5sec 实验组除外）。
+        # 一对一绑定 worker，不存在同一身份多 IP 并发的重放特征；
+        # 指纹也按种子固定。写入该出口 IP 名下，让会话链路在此 IP 上沉淀。
         cookies = [dict(c) for c in seed_kit["cookies"]]
         if db:
             db.save_cookies(identity, cookies)
+            # 播种落库：A/B 归因用（哪个种子、是否含 x5sec、种到哪个 IP）
+            db.record_ip_event(
+                identity, "seed",
+                f"kit={seed_kit['name']} x5sec={1 if seed_kit.get('x5sec') else 0}")
         _log(f"    [cookie] 新出口 IP 播种独占种子身份"
-             f"「{seed_kit['name']}」（{len(cookies)} 个设备绑定 Cookie）")
+             f"「{seed_kit['name']}」（{len(cookies)} 个 Cookie"
+             f"{'，含 x5sec 实验组' if seed_kit.get('x5sec') else ''}）")
     elif use_proxy and not cookies:
         # 无种子可用：空会话白板启动，由 warmup 让站点为当前出口
         # 现场签发一套全新的匿名身份（信任分从零，敏感端点容易弹滑块）
@@ -1567,6 +1590,10 @@ def add_common_args(ap):
                          "CDP 导出的 json）；代理模式下 worker 一对一独占认领，"
                          "只种设备绑定 Cookie、指纹按种子固定；"
                          "种子数少于 worker 数时多余 worker 按白板会话启动")
+    ap.add_argument("--seed-x5sec", action="store_true",
+                    help="x5sec 免滑块实验：偶数 worker 的种子保留未过期的 "
+                         "x5sec/x5secdata（A 组），奇数 worker 不含（B 组对照），"
+                         "用巡检报告的 gap=1 比例判定 x5sec 是否绑设备")
     ap.add_argument("--channels", type=int, default=0,
                     help="青果通道池大小（默认取 proxy_qingguo.CONFIG['channels']）")
     ap.add_argument("--workers", type=int, default=0,
@@ -1601,8 +1628,12 @@ def run_workers(args, task: FetchTask) -> int:
                   f"可能触发风控；建议 --proxy 走多通道")
 
     # 种子身份池：每个 worker 独占认领一份熟身份（一对一，避免同一身份
-    # 多 IP 并发的 Cookie 重放特征）；种子不足时多余 worker 白板启动
+    # 多 IP 并发的 Cookie 重放特征）；种子不足时多余 worker 白板启动。
+    # --seed-x5sec：A/B 实验，偶数 worker 用含 x5sec 的种子（A 组），
+    # 奇数 worker 用不含的（B 组对照），同一批种子两种过滤口径
     seed_kits = load_seed_kits(args.seeds) if args.proxy else []
+    seed_kits_x5 = (load_seed_kits(args.seeds, keep_x5sec=True)
+                    if args.proxy and args.seed_x5sec else [])
     if args.proxy:
         if seed_kits:
             print(f"[seed] 种子身份池 {len(seed_kits)} 份: "
@@ -1610,11 +1641,22 @@ def run_workers(args, task: FetchTask) -> int:
             if workers > len(seed_kits):
                 print(f"[!] worker 数({workers}) > 种子数({len(seed_kits)})，"
                       f"超出部分按白板会话启动（建议种子数 ≥ worker 数）")
+            if args.seed_x5sec:
+                n_x5 = sum(1 for k in seed_kits_x5 if k["x5sec"])
+                print(f"[seed] --seed-x5sec 实验: 偶数 worker 为 A 组"
+                      f"（含 x5sec，{n_x5}/{len(seed_kits_x5)} 份有有效 "
+                      f"x5sec），奇数 worker 为 B 组对照（不含）")
         else:
             print(f"[seed] {args.seeds} 下没有可用种子身份，"
                   f"全部 worker 按白板会话启动")
-    worker_kits = [seed_kits[i] if i < len(seed_kits) else None
-                   for i in range(workers)]
+    if args.seed_x5sec and seed_kits_x5:
+        worker_kits = [
+            (seed_kits_x5[i] if i % 2 == 0 else seed_kits[i])
+            if i < len(seed_kits) else None
+            for i in range(workers)]
+    else:
+        worker_kits = [seed_kits[i] if i < len(seed_kits) else None
+                       for i in range(workers)]
 
     print(f"[2] 启动 {workers} 个 worker"
           f"（{'代理通道: ' + ', '.join(proxy_servers) if args.proxy else '直连'}）")

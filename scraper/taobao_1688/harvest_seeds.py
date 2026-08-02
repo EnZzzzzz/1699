@@ -10,8 +10,9 @@
     - 名下持有 cna 或 cookie2（设备身份标识）
 
 导出规则（与 common.load_seed_kits 的过滤口径一致）：
-    - 只留 1688 域、非 IP 绑定的设备身份 Cookie
-      （剔除 x5sec/sgcookie/isg 等 SECURITY_COOKIE_NAMES）
+    - 只留 1688 域的设备身份 Cookie；剔除与会话安全上下文深度绑定的
+      sgcookie/sg/isg/x5sectag，但**保留 x5sec/x5secdata**（纯验证凭证，
+      是否实际播种由运行时 --seed-x5sec 开关决定）
     - 按 cna 值去重：同一设备身份可能挂在多个出口 IP 名下，
       保留最近更新的一份；seeds 目录里已有种子包含的 cna 也跳过
     - 文件名 = 原 identity（出口 IP）：引擎按种子名固定浏览器指纹，
@@ -29,7 +30,7 @@ import json
 import sys
 from pathlib import Path
 
-from common import SECURITY_COOKIE_NAMES
+from common import SECURITY_COOKIE_NAMES, X5SEC_SEEDABLE_NAMES
 from database import ShopDB
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -66,8 +67,10 @@ def harvest(db: ShopDB) -> list[dict]:
             {"identity": r["identity"], "ok": r["ok"],
              "requests": r["requests"], "updated_at": r["updated_at"],
              "cookies": [], "cna": None})
-        if r["name"] in SECURITY_COOKIE_NAMES:
-            continue  # IP 绑定的安全 Cookie 绝不进种子
+        if r["name"] in SECURITY_COOKIE_NAMES \
+                and r["name"] not in X5SEC_SEEDABLE_NAMES:
+            continue  # IP 绑定的安全 Cookie 不进种子
+                    # （x5sec/x5secdata 保留，是否使用由 --seed-x5sec 决定）
         if "1688.com" not in (r["domain"] or ""):
             continue
         slot["cookies"].append({
