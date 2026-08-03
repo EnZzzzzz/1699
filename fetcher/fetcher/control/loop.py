@@ -1,0 +1,430 @@
+# -*- coding: utf-8 -*-
+"""CrawlLoop：单 worker 核心循环「采集 → 判场景 → 执行策略」。
+
+对应旧 _engine_worker 的完整生命周期（启动浏览器 → 批次循环 →
+item 级重试循环 → 收尾清理），但风控状态机不再写死在控制流里：
+场景判断走 SceneInspector，处置走 Policy 策略表，循环体只负责
+编排、簿记（tmd 统计 / IP 事件 / 种子烧毁 / 熔断）与节奏
+（批次休息 / 样本间隔 / 长休息 / 请求预算）。
+
+保留的簿记（对应旧引擎逐条语义）：
+    - ip_req 按 identity 计页面请求数与「距上次触发」计数，
+      存于 ctx.state["ip_req"]（Session 换 IP 后自然分开累计）；
+    - 风控触发时 record_ip_event + ip_stat_block + since 清零；
+    - 登录墙 = 身份最高级标记：判定当下立即烧毁该 identity 的
+      Cookie（避免轮换回来复活已烧毁会话），与旧引擎同点位；
+    - SeedBurnTracker：首请求秒拦/登录墙记到种子头上，烧毁后
+      session.seed_kit=None，后续重启按白板会话；
+    - 网络层错误（NET_ERROR/BROWSER_DEAD/IP_ROTATED）不计入熔断。
+"""
+
+from __future__ import annotations
+
+import random
+
+from fetcher.atoms.browser_ops import RelaunchBrowser
+from fetcher.control.board import wait_countdown
+from fetcher.control.circuit import CircuitBreaker
+from fetcher.control.task import Task
+from fetcher.core.errors import UserInterrupted
+from fetcher.core.session import Session
+from fetcher.core.types import Outcome, Scenario
+from fetcher.detect.base import SceneInspector
+from fetcher.net.seeds import SeedBurnTracker
+from fetcher.strategy.base import PolicyAction
+from fetcher.strategy.policy import AttemptTracker, Policy
+
+# fetch 自报 outcome 到 Scenario 的兜底映射（探测器判 OK 但 fetch
+# 显式报告异常时，信 fetch —— 对应旧 scrape 返回 _blocked/_fatal/
+# _net_error 标记的契约）
+_OUTCOME_FALLBACK = {
+    Outcome.BLOCKED: Scenario.RISK_SLIDER_PAGE,
+    Outcome.NET_ERROR: Scenario.NET_ERROR,
+    Outcome.FATAL: Scenario.BROWSER_DEAD,
+    Outcome.EMPTY: Scenario.EMPTY,
+}
+
+# 风控事件名（record_ip_event）
+_EVENT_NAMES = {
+    Scenario.RISK_LOGIN: "block_login",
+    Scenario.RISK_SLIDER_PAGE: "block_slider",
+    Scenario.RISK_SLIDER_EMBED: "block_slider",
+}
+
+# 不计请求数（没到目标站）的场景
+_NO_REQUEST_SCENARIOS = frozenset({Scenario.BROWSER_DEAD, Scenario.NET_ERROR})
+
+# giveup kind="net" 的场景（其余为 "block"）
+_NET_KIND_SCENARIOS = frozenset({Scenario.NET_ERROR, Scenario.BROWSER_DEAD})
+
+
+class CrawlLoop:
+    """单 worker 采集循环。
+
+    用法：
+        ctx = WorkerContext(config=cfg, store=store, browser_manager=mgr,
+                            site=site, stop=stop, log=log)
+        loop = CrawlLoop(ctx, task, policy=policy, board=board, seed_kit=kit)
+        stats = loop.run()
+    """
+
+    def __init__(self, ctx, task: Task, policy: Policy | None = None,
+                 inspector: SceneInspector | None = None, board=None,
+                 seed_kit: dict | None = None):
+        self.ctx = ctx
+        self.task = task
+        self.policy = policy or Policy(
+            max_consecutive_fail=ctx.config.max_consecutive_fail)
+        self.inspector = inspector or SceneInspector.for_site(ctx.site)
+        self.board = board
+        self.seed_tracker = SeedBurnTracker(seed_kit)
+        self.circuit = CircuitBreaker(ctx.config.max_consecutive_fail)
+        self.tracker = AttemptTracker()
+        self.stats = task.make_stats()
+        # 任务层暂存（对应旧 wctx，含 stats）
+        self.ctx.state.setdefault("task", {})["stats"] = self.stats
+        self.wctx = self.ctx.state["task"]
+        # tmd：按出口 IP 计页面请求数与「距上次触发」计数
+        self.ip_req: dict = self.ctx.state.setdefault("ip_req", {})
+        self.budget_stuck: set = set()
+        self.batch_no = 1
+        self.done_in_batch = 0
+        self.total_done = 0
+
+    # ---- 日志 / 状态行 ----
+
+    @property
+    def tag(self) -> str:
+        return f"[w{self.ctx.wid}]"
+
+    def log(self, msg: str):
+        self.ctx.log(f"{self.tag} {msg}")
+
+    # ---- 主流程 ----
+
+    def run(self) -> dict:
+        """worker 完整生命周期；返回本 worker 的统计字典。"""
+        cfg = self.ctx.config
+        self.ctx.state["warm"] = True  # 新会话冷启动软着陆标记
+        try:
+            self.ctx.set_status(state="启动浏览器…", force=True)
+            self._launch_with_retry()
+            self.log(f"浏览器就绪，出口 IP={self.ctx.identity}"
+                     f"（{'通道 ' + self.ctx.session.channel.server
+                         if self.ctx.session.channel else '直连'}）")
+            self.ctx.set_status(ip=self.ctx.identity, batch=1,
+                                state="就绪", force=True)
+
+            while not self.ctx.stopped():
+                # ---- 批次配额：采满 batch_num 强制大休息（±10% 抖动），
+                #      max_batches 到顶收工 ----
+                if self.done_in_batch >= cfg.batch_num:
+                    if cfg.max_batches and self.batch_no >= cfg.max_batches:
+                        self.log(f"第 {self.batch_no} 批采满，"
+                                 f"已达批次上限（--max-batches），收工")
+                        self.ctx.set_status(state="收工")
+                        return self.stats
+                    rest = random.uniform(cfg.batch_rest * 0.9,
+                                          cfg.batch_rest * 1.1)
+                    self.log(f"⏸ 第 {self.batch_no} 批已采满 "
+                             f"{cfg.batch_num} 个{self.task.batch_unit}，"
+                             f"强制休息 {rest / 60:.1f} 分钟（防风控）...")
+                    if wait_countdown(self.board, self.ctx.wid, self.ctx.stop,
+                                      rest, "批次休息",
+                                      set_status=self.ctx.set_status):
+                        return self.stats
+                    self.batch_no += 1
+                    self.done_in_batch = 0
+                    self.log(f"▶ 休息结束，开始第 {self.batch_no} 批")
+                    self.ctx.set_status(batch=self.batch_no, state="采集中")
+
+                # ---- 冷启动（acquire 前的任务，如先逛首页填类目池）----
+                if self.task.cold_start_before_acquire and self._take_warm():
+                    self.ctx.set_status(state="冷启动软着陆…")
+                    self.task.cold_start(self.ctx, None)
+
+                # ---- 认领任务项 ----
+                item = self.task.acquire_item(self.ctx)
+                if item is None:
+                    self.log(self.task.empty_message())
+                    self.ctx.set_status(state="无待做任务，退出")
+                    break
+                self.ctx.state["item"] = item
+                self.ctx.set_status(shop=self.task.label(item),
+                                    state="检查出口 IP…")
+
+                # ---- 出口 IP 保鲜检查（青果 30 分钟轮换）----
+                if cfg.use_proxy and not self._ensure_fresh_ip():
+                    return self.stats  # 重启失败/中断，走 finally 清理
+
+                # ---- 冷启动（acquire 后的任务，如先逛店铺首页）----
+                if self._take_warm():
+                    self.ctx.set_status(state="冷启动软着陆…")
+                    self.task.cold_start(self.ctx, item)
+
+                # ---- item 级重试循环（策略表驱动）----
+                kind, count = self._process_item(item)
+                if kind in ("abort", "stop"):
+                    return self.stats
+                self.done_in_batch += count
+                self.total_done += count
+                if kind == "success":
+                    # 每次成功后回写最新 Cookie（含轮换的 x5sec）——
+                    # 进程意外退出也不丢信任链
+                    try:
+                        self.ctx.browser_manager.save_cookies(self.ctx.session)
+                    except Exception:  # noqa: BLE001
+                        pass
+
+                # 当前任务项处理完毕（含放弃），任务层收尾
+                self.task.after_item(self.ctx, item)
+
+                # ---- 每 IP 请求预算：采满预算主动换 IP 规避配额墙 ----
+                if kind == "success" and not self._check_budget():
+                    return self.stats
+
+                if cfg.limit and self.total_done >= cfg.limit:
+                    self.log(f"已达本次采集上限（--limit {cfg.limit}），收工")
+                    self.ctx.set_status(state="收工")
+                    return self.stats
+
+                # ---- 样本间隔（按 worker 编号递增错峰，避免集群同频）----
+                lo = cfg.sample_min + self.ctx.wid * 1.5
+                hi = cfg.sample_max + self.ctx.wid * 2.5
+                t = random.uniform(lo, hi)
+                self.ctx.set_status(state=f"{self.task.unit}间隔 {t:.1f}s")
+                if self.ctx.wait(t):
+                    return self.stats
+
+                # ---- 周期性随机长休息（模拟真人连续浏览后的停顿）----
+                n_rest = self.task.rest_counter(self.stats)
+                if (cfg.rest_every > 0 and n_rest > 0
+                        and n_rest % cfg.rest_every == 0
+                        and not self.ctx.stopped()):
+                    t = random.uniform(cfg.rest_min, cfg.rest_max)
+                    self.log(f"☕ 已连续抓取 {n_rest} 个{self.task.unit}，"
+                             f"随机长休息 {t / 60:.1f} 分钟 ...")
+                    if wait_countdown(self.board, self.ctx.wid, self.ctx.stop,
+                                      t, "长休息",
+                                      set_status=self.ctx.set_status):
+                        return self.stats
+        except UserInterrupted:
+            pass
+        except Exception as e:  # noqa: BLE001
+            self.log(f"[X] worker 异常退出: {e}")
+        finally:
+            self._cleanup()
+        return self.stats
+
+    # ---- 启动 / 收尾 ----
+
+    def _take_warm(self) -> bool:
+        """取走冷启动标记（RelaunchBrowser 原子在换 IP 后重新置位）。"""
+        return bool(self.ctx.state.pop("warm", False))
+
+    def _launch_with_retry(self):
+        cfg = self.ctx.config
+        last_err = None
+        for attempt in range(1, cfg.ip_retry + 1):
+            if self.ctx.stopped():
+                raise UserInterrupted("用户中断")
+            try:
+                self.ctx.session = self.ctx.browser_manager.launch(
+                    seed_kit=self.seed_tracker.kit, stop=self.ctx.stop)
+                self.seed_tracker.kit = self.ctx.session.seed_kit
+                return
+            except UserInterrupted:
+                raise
+            except (Exception, SystemExit) as e:  # noqa: BLE001
+                last_err = e
+                backoff = min(30 * attempt, 120)
+                self.log(f"  [!] 启动浏览器第 {attempt}/{cfg.ip_retry} "
+                         f"次失败: {e}，{backoff}s 后重试...")
+                if wait_countdown(self.board, self.ctx.wid, self.ctx.stop,
+                                  backoff, "启动退避",
+                                  set_status=self.ctx.set_status):
+                    raise UserInterrupted("用户中断") from e
+        raise RuntimeError(f"启动浏览器重试 {cfg.ip_retry} 次仍失败: {last_err}")
+
+    def _cleanup(self):
+        """退出前回写 Cookie、关浏览器（任何路径都走这里）。"""
+        session = self.ctx.session
+        if session is not None:
+            session.close(store=self.ctx.store, log=self.ctx.log)
+            self.ctx.session.browser = None
+        self.ctx.set_status(state="已退出", force=True)
+        if self.ctx.store is not None:
+            try:
+                self.ctx.store.db.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    # ---- 出口 IP 保鲜 / 请求预算 ----
+
+    def _relaunch(self) -> bool:
+        """重启浏览器（经 RelaunchBrowser 原子）；成功返回 True。"""
+        result = RelaunchBrowser().run(self.ctx, {})
+        if result.outcome is Outcome.OK:
+            self.ctx.set_status(ip=self.ctx.identity, state="浏览器已重启",
+                                force=True)
+            return True
+        if result.outcome is Outcome.SKIPPED:
+            return False
+        self.log(f"[X] 重启浏览器失败: {result.detail}")
+        return False
+
+    def _ensure_fresh_ip(self) -> bool:
+        """青果出口 30 分钟轮换：不一致即重启浏览器重绑 Cookie。"""
+        need, _cur, reason = self.ctx.browser_manager.check_ip_fresh(
+            self.ctx.session)
+        if not need:
+            return True
+        self.log(f"🔄 {reason}，重启浏览器绑定新 IP ...")
+        return self._relaunch()
+
+    def _check_budget(self) -> bool:
+        """每 IP 请求预算：采满主动换 IP；IP 未轮换则放行（budget_stuck）。"""
+        cfg = self.ctx.config
+        budget = self.task.ip_request_budget
+        identity = self.ctx.identity
+        if not (budget and cfg.use_proxy
+                and self.ip_req.get(identity, {}).get("n", 0) >= budget
+                and identity not in self.budget_stuck):
+            return True
+        old_identity = identity
+        self.log(f"📦 出口 {identity} 已达请求预算 "
+                 f"（{self.ip_req[identity]['n']}/{budget} 次），"
+                 f"主动换 IP 规避配额墙")
+        if not self._relaunch():
+            self.log("[X] 预算换 IP 失败，中止整个任务")
+            self.ctx.stop.set()
+            return False
+        if self.ctx.identity == old_identity:
+            self.budget_stuck.add(identity)
+            self.log("  [!] 出口 IP 尚未轮换，本次预算放行（等青果自然轮换）")
+        return True
+
+    # ---- item 级重试循环（核心：采集 → 判场景 → 执行策略） ----
+
+    def _process_item(self, item) -> tuple[str, int]:
+        """返回 (kind, count)：kind ∈ success/giveup/abort/stop。"""
+        ctx = self.ctx
+        while not ctx.stopped():
+            ctx.set_status(state="采集中")
+            ctx.last_error = None
+            result = self.task.fetch(ctx, item)
+            scenario = self.inspector.inspect(ctx)
+            if scenario is Scenario.OK:
+                if result is None:
+                    # fetch 未返回结果（对应旧 scrape 返回 None，按风控处理）
+                    scenario = Scenario.RISK_SLIDER_PAGE
+                else:
+                    # 探测器判 OK 但 fetch 自报异常时信 fetch（旧 _blocked/
+                    # _fatal/_net_error 标记契约）
+                    scenario = _OUTCOME_FALLBACK.get(result.outcome,
+                                                     Scenario.OK)
+                    if scenario is Scenario.OK \
+                            and not self.task.validate(ctx, item, result):
+                        # 结构化校验失败（软拦截/跳转错页）：按 EMPTY 处置，
+                        # EmptyPageDetector 的文本阈值只是兜底
+                        scenario = Scenario.EMPTY
+            self._bookkeep_request(scenario)
+
+            # ---- 成功 ----
+            if scenario is Scenario.OK:
+                self.circuit.note_success()
+                self.tracker.note_success()
+                count = self.task.on_success(ctx, item, result)
+                return "success", count
+
+            # ---- 失败：簿记（IP 事件 / 种子烧毁 / 登录墙烧毁）----
+            reason = self._bookkeep_block(scenario, result)
+
+            # ---- 熔断（与旧引擎同点位：风控类失败立即计数判断）----
+            if self.circuit.note_failure(scenario):
+                self.log(f"[X] 已连续失败 {self.circuit.count} 次"
+                         f"（最近一次: {reason}），判定被风控，中止整个任务")
+                extra = self.task.on_abort(ctx, item)
+                if extra:
+                    self.log(f"    {extra}")
+                ctx.stop.set()
+                return "abort", 0
+
+            # ---- 策略表决策 ----
+            decision = self.policy.decide(scenario, self.tracker)
+            if decision.action is PolicyAction.ABORT:
+                self.log(f"[X] 策略链中止: {decision.detail}")
+                extra = self.task.on_abort(ctx, item)
+                if extra:
+                    self.log(f"    {extra}")
+                ctx.stop.set()
+                return "abort", 0
+            if decision.action is PolicyAction.GIVE_UP:
+                kind = ("net" if scenario in _NET_KIND_SCENARIOS else "block")
+                phrase = self.task.on_giveup(ctx, item, reason, kind)
+                self.tracker.note_failure()
+                self.log(f"  [X] {decision.detail}，{phrase}（{reason}）")
+                return "giveup", self.task.giveup_cost(item)
+
+            # ---- 执行策略后重试同一任务项 ----
+            strategy = self.policy.strategies[decision.strategy]
+            ctx.state["attempt"] = decision.attempt
+            ctx.set_status(state=f"处置: {decision.strategy}"
+                                 f"（{decision.attempt} 次）")
+            self.log(f"⚠ {reason} → 策略 {decision.strategy}"
+                     f"（第 {decision.attempt} 次）")
+            step = strategy.run(ctx)
+            if step.solved:
+                self.log(f"✓ 策略 {decision.strategy} 完成: {step.detail}")
+        return "stop", 0
+
+    # ---- 簿记 ----
+
+    def _bookkeep_request(self, scenario: Scenario):
+        """tmd 计数：请求到了目标站才计（网络层错误不算）。"""
+        if scenario in _NO_REQUEST_SCENARIOS or self.ctx.store is None:
+            return
+        identity = self.ctx.identity
+        ctr = self.ip_req.setdefault(identity, {"n": 0, "since": 0})
+        ctr["n"] += 1
+        ctr["since"] += 1
+        self.ctx.store.stat_request(identity, ok=scenario is Scenario.OK)
+        self.ctx.set_status(ip_n=ctr["n"])
+
+    def _bookkeep_block(self, scenario: Scenario, result) -> str:
+        """风控簿记：IP 事件 + 触发统计 + since 清零 + 种子烧毁 +
+        登录墙身份烧毁。返回原因串（日志用）。"""
+        ctx = self.ctx
+        reason = (result.detail if result is not None and result.detail
+                  else f"场景 {scenario.value}（疑似风控拦截）")
+        if scenario in _NO_REQUEST_SCENARIOS or scenario is Scenario.NET_ERROR:
+            return reason
+        identity = ctx.identity
+        ctr = self.ip_req.setdefault(identity, {"n": 0, "since": 0})
+        since = ctr["since"]
+        login_wall = scenario is Scenario.RISK_LOGIN
+        if ctx.store is not None:
+            ctx.store.record_event(identity,
+                                   _EVENT_NAMES.get(scenario, "block_other"),
+                                   reason, req_since_block=since)
+            ctx.store.stat_block(identity)
+        ctr["since"] = 0
+        self.log(f"  [tmd] 出口 {identity} 在 {since} 次请求后"
+                 f"触发反爬（本 IP 累计 {ctr['n']} 次请求）")
+
+        # 登录墙 = 会话身份最高级标记：判定当下立即烧毁该 IP 名下的
+        # Cookie（避免轮换回来复活已烧毁会话）——与旧引擎同点位
+        if login_wall and identity != "direct" and ctx.store is not None:
+            try:
+                n = ctx.store.burn(identity)
+                self.log(f"  🧹 登录墙标记：已清空 {identity} 名下的 {n} 条"
+                         f" Cookie（此 IP 轮换回来时按全新身份重建）")
+            except Exception as e:  # noqa: BLE001
+                self.log(f"  [!] 清空登录墙 IP Cookie 失败: {e}")
+
+        # 种子烧毁判定：首请求秒拦/登录墙记到种子头上
+        if self.seed_tracker.note_block(identity, since, login_wall,
+                                        log=self.log):
+            if ctx.session is not None:
+                ctx.session.seed_kit = None  # 后续重启按白板会话
+        return reason
