@@ -118,6 +118,7 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
   const [savingTpl, setSavingTpl] = useState(false)
   const [tplToDelete, setTplToDelete] = useState<TaskTemplate | null>(null)
   const [deletingTpl, setDeletingTpl] = useState(false)
+  const [tplManageOpen, setTplManageOpen] = useState(false)
 
   const isWaCheck = type === 'wa_check'
 
@@ -465,41 +466,34 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
           {/* 从模板加载 */}
           <div className="space-y-2">
             <Label>从模板加载</Label>
-            <Select value={templateSel} onValueChange={handleLoadTemplate}>
-              <SelectTrigger>
-                <SelectValue
-                  placeholder={templates.length > 0 ? '选择模板，立即回填表单' : '暂无已保存模板'}
-                />
-              </SelectTrigger>
-              <SelectContent>
-                {templates.map((t) => (
-                  <SelectItem key={t.id} value={String(t.id)}>
-                    <span className="flex w-full items-center justify-between gap-4">
-                      <span>
-                        {t.name}
-                        <span className="ml-1.5 text-xs text-muted-foreground">
-                          {taskTypeLabel(t.type)}
-                        </span>
+            <div className="flex gap-2">
+              <Select value={templateSel} onValueChange={handleLoadTemplate}>
+                <SelectTrigger className="flex-1">
+                  <SelectValue
+                    placeholder={templates.length > 0 ? '选择模板，立即回填表单' : '暂无已保存模板'}
+                  />
+                </SelectTrigger>
+                <SelectContent>
+                  {templates.map((t) => (
+                    <SelectItem key={t.id} value={String(t.id)}>
+                      {t.name}
+                      <span className="ml-1.5 text-xs text-muted-foreground">
+                        {taskTypeLabel(t.type)}
                       </span>
-                      <span
-                        role="button"
-                        aria-label={`删除模板 ${t.name}`}
-                        title="删除模板"
-                        className="rounded p-0.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                        onPointerDown={(e) => e.stopPropagation()}
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          e.preventDefault()
-                          setTplToDelete(t)
-                        }}
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </span>
-                    </span>
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button
+                variant="outline"
+                size="sm"
+                className="shrink-0"
+                disabled={templates.length === 0}
+                onClick={() => setTplManageOpen(true)}
+              >
+                管理
+              </Button>
+            </div>
           </div>
 
           <div className="space-y-2">
@@ -721,6 +715,42 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
             {savingTpl ? '保存中…' : '保存'}
           </Button>
         </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    {/* 模板管理 */}
+    <Dialog open={tplManageOpen} onOpenChange={setTplManageOpen}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>模板管理</DialogTitle>
+          <DialogDescription>已保存的任务模板，可在此删除。</DialogDescription>
+        </DialogHeader>
+        <div className="max-h-72 space-y-2 overflow-y-auto">
+          {templates.length === 0 ? (
+            <p className="py-6 text-center text-sm text-muted-foreground">暂无模板</p>
+          ) : (
+            templates.map((t) => (
+              <div
+                key={t.id}
+                className="flex items-center justify-between rounded-md border border-border px-3 py-2"
+              >
+                <div>
+                  <div className="text-sm font-medium">{t.name}</div>
+                  <div className="text-xs text-muted-foreground">{taskTypeLabel(t.type)}</div>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-destructive hover:text-destructive"
+                  onClick={() => setTplToDelete(t)}
+                >
+                  <Trash2 className="mr-1 h-3.5 w-3.5" />
+                  删除
+                </Button>
+              </div>
+            ))
+          )}
+        </div>
       </DialogContent>
     </Dialog>
 
