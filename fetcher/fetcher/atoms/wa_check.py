@@ -12,7 +12,11 @@ CLI（``check.js``）。Baileys 以「已链接设备」身份走 WhatsApp 协�
                                      的裸手机号自动补此前缀。缺省不补。
         "wa_check_dir": str | Path   可选，wa-check 目录；缺省读环境变量
                                      WA_CHECK_DIR，再缺省仓库内置 vendor/wa-check
-        "timeout":      float        可选，子进程总超时秒数（缺省 600）
+        "timeout":      float        可选，子进程总超时秒数；缺省按号码数
+                                     与间隔自适应（见下）
+        "sample_min":   float        可选，逐号码随机间隔下限（秒，缺省 1.5）
+        "sample_max":   float        可选，逐号码随机间隔上限（秒，缺省 =
+                                     sample_min，即固定间隔）
         "account":      str          可选，账号名；各账号会话存于
                                      auth_info-<account>/，凭证完全隔离，
                                      缺省用 auth_info/（单账号）
@@ -42,6 +46,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 from pathlib import Path
 
 from fetcher.core.types import ActionResult
@@ -117,8 +122,19 @@ class CheckWhatsApp:
                 f"wa-check 账号{f'「{account}」' if account else ''}未登录："
                 f"{login_hint}，手机扫码完成首次登录后重试")
 
-        timeout = float(params.get("timeout", 600))
-        ctx.log(f"    ...WhatsApp 查号 {len(numbers)} 个（{wa_dir.name}）")
+        timeout = params.get("timeout")
+        # 逐号码随机间隔：经环境变量传给 check.js（缺省固定 1.5s）
+        delay_min = float(params.get("sample_min") or 1.5)
+        delay_max = float(params.get("sample_max") or delay_min)
+        delay_min, delay_max = max(0.0, delay_min), max(0.0, delay_max)
+        if delay_min > delay_max:
+            delay_min, delay_max = delay_max, delay_min
+        if timeout is None:
+            # 超时自适应：连接 ~60s + 每号码（查询 ~5s + 最大间隔），上浮 20%
+            timeout = (60 + len(numbers) * (delay_max + 5)) * 1.2
+        timeout = float(timeout)
+        ctx.log(f"    ...WhatsApp 查号 {len(numbers)} 个（{wa_dir.name}，"
+                f"逐号间隔 {delay_min:g}~{delay_max:g}s）")
 
         fd, list_path = tempfile.mkstemp(prefix="wa_nums_", suffix=".txt")
         results_path = tempfile.mktemp(prefix="wa_results_", suffix=".json")
@@ -127,7 +143,9 @@ class CheckWhatsApp:
                 f.write("\n".join(numbers))
             rc, out = self._run_node(
                 [node, str(cli), list_path], ctx, timeout,
-                cwd=wa_dir, results_path=results_path, auth_dir=auth_dir)
+                cwd=wa_dir, results_path=results_path, auth_dir=auth_dir,
+                extra_env={"WA_DELAY_MIN": str(delay_min),
+                           "WA_DELAY_MAX": str(delay_max)})
             if rc is None:
                 return ActionResult.skipped("被停止信号中断（已终止子进程）")
             if rc == -1:
@@ -161,24 +179,48 @@ class CheckWhatsApp:
 
     def _run_node(self, cmd, ctx, timeout: float, *,
                   cwd: Path, results_path: str,
-                  auth_dir: Path | None = None) -> tuple[int | None, str]:
+                  auth_dir: Path | None = None,
+                  extra_env: dict | None = None) -> tuple[int | None, str]:
         """跑 node check.js；轮询停止信号。返回 (退出码, 合并输出)。
 
-        退出码 None = 被中断已终止；-1 = 超时已终止。
+        子进程输出由泵线程逐行实时转发到 ctx.log（任务事件流中可见
+        每个号码的查询结果），同时攒入缓冲返回（供退出后错误关键字
+        判定）。退出码 None = 被中断已终止；-1 = 超时已终止。
         auth_dir 非空时经 WA_AUTH_DIR 指定账号会话目录（多账号隔离）。
+        extra_env 追加注入子进程环境（如逐号码间隔 WA_DELAY_MIN/MAX）。
         """
         env = dict(os.environ, WA_RESULTS=results_path)
         if auth_dir is not None:
             env["WA_AUTH_DIR"] = str(auth_dir)
+        if extra_env:
+            env.update(extra_env)
         proc = subprocess.Popen(
             cmd, cwd=str(cwd), env=env,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1)
+        lines: list[str] = []
+
+        def _pump() -> None:
+            assert proc.stdout is not None
+            for raw in proc.stdout:
+                line = raw.rstrip()
+                lines.append(line)
+                stripped = line.strip()
+                # Baileys(pino) 内部 JSON 运行日志不转发（噪音大），
+                # 但仍留在缓冲里供退出后错误关键字判定
+                if stripped and not stripped.startswith('{"level":'):
+                    ctx.log(f"      {stripped}")
+
+        pump = threading.Thread(target=_pump, daemon=True)
+        pump.start()
+        rc: int | None = proc.returncode
         waited = 0.0
         while proc.poll() is None:
             if waited >= timeout:
                 proc.kill()
                 proc.wait()
-                return -1, ""
+                rc = -1
+                break
             if ctx.wait(1.0):          # 可中断等待，同时充当 1s 轮询节拍
                 proc.terminate()
                 try:
@@ -186,10 +228,13 @@ class CheckWhatsApp:
                 except subprocess.TimeoutExpired:
                     proc.kill()
                     proc.wait()
-                return None, ""
+                rc = None
+                break
             waited += 1.0
-        out = proc.stdout.read() if proc.stdout else ""
-        return proc.returncode, out
+        else:
+            rc = proc.returncode
+        pump.join(timeout=5)
+        return rc, "\n".join(lines)
 
     @staticmethod
     def _read_results(results_path: str):

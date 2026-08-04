@@ -18,10 +18,19 @@ WhatsApp，约 5-10s/批，属正常）。
 - stop_event 置位或 tasks.stop_requested=1（每批检查一次 DB）→ 优雅停止；
 - 原子连续 FATAL（未登录/登出，不可自愈）→ failed。
 
+节奏控制（与其他采集任务同策略）：
+- 逐号码间隔：params["sample_min"]/["sample_max"]（秒）范围内的随机停顿，
+  在 check.js 逐号循环内生效（默认 1.5s 固定）；兼容旧参数
+  params["interval"]（等价于 min == max）；
+- 批次：每 params["batch_num"] 个号码（默认 500）为一批，采满后批间
+  休息 params["batch_rest_min"]~["batch_rest_max"] 秒随机时长；
+- 批间休息可被 stop_event 中断。
+
 DB 写入一律短事务 + busy_timeout（1688.db 为 WAL，正被采集进程写入）。
 """
 
 import json
+import random
 import sqlite3
 import threading
 import time
@@ -37,6 +46,49 @@ BATCH_SIZE = 50
 DEFAULT_CC = "86"
 MAX_CONSECUTIVE_FATAL = 2
 _PROGRESS_THROTTLE_SEC = 1.0
+
+# 节奏默认值：逐号码随机间隔 1.5s 固定（check.js 内部缺省）；
+# 每 500 个号码一批，批间休息随机 60~180s
+DEFAULT_SAMPLE_MIN = 1.5
+DEFAULT_SAMPLE_MAX = 1.5
+DEFAULT_BATCH_NUM = 500
+DEFAULT_BATCH_REST_MIN = 60.0
+DEFAULT_BATCH_REST_MAX = 180.0
+
+
+def _pacing_params(params: dict) -> tuple[float, float, int, float, float]:
+    """解析节奏参数：(sample_min, sample_max, batch_num, rest_min, rest_max)。
+
+    sample_min/max 为逐号码随机间隔（秒），batch_num 为每批号码数，
+    rest_min/max 为批间休息范围（秒）。兼容旧参数 interval（固定间隔）：
+    显式给了 interval 而没给 sample_min/sample_max 时，等价于
+    sample_min == sample_max == interval。
+    """
+    interval = params.get("interval")
+    sample_min = params.get("sample_min")
+    sample_max = params.get("sample_max")
+    if interval is not None:
+        interval = float(interval)
+        if sample_min is None:
+            sample_min = interval
+        if sample_max is None:
+            sample_max = interval
+    lo = float(sample_min) if sample_min is not None else DEFAULT_SAMPLE_MIN
+    hi = float(sample_max) if sample_max is not None else DEFAULT_SAMPLE_MAX
+    lo, hi = max(0.0, lo), max(0.0, hi)
+    if lo > hi:
+        lo, hi = hi, lo
+    batch_num = int(params.get("batch_num") or DEFAULT_BATCH_NUM)
+    r_lo = float(params.get("batch_rest_min")
+                 if params.get("batch_rest_min") is not None
+                 else DEFAULT_BATCH_REST_MIN)
+    r_hi = float(params.get("batch_rest_max")
+                 if params.get("batch_rest_max") is not None
+                 else DEFAULT_BATCH_REST_MAX)
+    r_lo, r_hi = max(0.0, r_lo), max(0.0, r_hi)
+    if r_lo > r_hi:
+        r_lo, r_hi = r_hi, r_lo
+    return lo, hi, max(0, batch_num), r_lo, r_hi
 
 
 def _fetch_pending_rows(limit: int) -> list:
@@ -167,8 +219,8 @@ def run(task_id: int, params: dict, stop_event: threading.Event) -> None:
         migrate()  # 防御：服务未跑迁移时也能工作
         params = params or {}
         limit = int(params.get("limit") or 0)
-        interval = float(params.get("interval")
-                         if params.get("interval") is not None else 2.0)
+        sample_min, sample_max, batch_num, rest_min, rest_max = \
+            _pacing_params(params)
         accounts = [str(a).strip()
                     for a in (params.get("accounts") or []) if str(a).strip()]
 
@@ -186,9 +238,15 @@ def run(task_id: int, params: dict, stop_event: threading.Event) -> None:
         _insert_event(
             task_id, "info",
             f"wa_check 启动：待查 {total} 个号码（{len(rows)} 行联系人），"
-            f"账号池：{account_label}，批大小 {BATCH_SIZE}，批间 {interval}s",
+            f"账号池：{account_label}，每次连接查 {BATCH_SIZE} 个，"
+            f"逐号间隔 {sample_min:g}~{sample_max:g}s（随机），"
+            f"每 {batch_num} 个号码一批，批间休息 "
+            f"{rest_min:g}~{rest_max:g}s（随机）",
             {"total": total, "rows": len(rows), "accounts": accounts,
-             "interval": interval, "batch_size": BATCH_SIZE})
+             "batch_size": BATCH_SIZE,
+             "sample_min": sample_min, "sample_max": sample_max,
+             "batch_num": batch_num,
+             "batch_rest_min": rest_min, "batch_rest_max": rest_max})
         if total == 0:
             _write_progress(task_id, 0, 0, 0, account_label)
             _finalize(task_id, "done", None)
@@ -202,6 +260,7 @@ def run(task_id: int, params: dict, stop_event: threading.Event) -> None:
         stopped = False
         fail_detail = None
         last_progress = 0.0
+        nums_since_rest = 0  # 距上次批间休息已成功查号的号码数
 
         for bi, batch in enumerate(batches, 1):
             if stop_event.is_set() or _db_stop_requested(task_id):
@@ -217,6 +276,8 @@ def run(task_id: int, params: dict, stop_event: threading.Event) -> None:
                 "numbers": batch,
                 "default_cc": DEFAULT_CC,
                 "account": _atom_account(account_name),
+                "sample_min": sample_min,
+                "sample_max": sample_max,
             })
 
             if res.outcome is Outcome.OK:
@@ -269,11 +330,40 @@ def run(task_id: int, params: dict, stop_event: threading.Event) -> None:
                 _write_progress(task_id, total, checked,
                                 registered, account_name)
 
-            # 批间节奏：stop_event.wait 实现可中断 sleep
-            if bi < len(batches) and interval > 0:
-                if stop_event.wait(interval):
-                    stopped = True
+            # 批次配额（号码数计）：采满 batch_num 个号码后批间随机长休息
+            # （防风控）；逐号码间隔已在 check.js 循环内生效，批与批之间
+            # 的间隔即重连开销本身，不再额外 sleep。
+            if res.outcome is Outcome.OK:
+                nums_since_rest += len(batch)
+            if (bi < len(batches) and batch_num > 0
+                    and nums_since_rest >= batch_num):
+                rest = random.uniform(rest_min, rest_max)
+                _insert_event(
+                    task_id, "info",
+                    f"⏸ 本批已查满 {nums_since_rest} 个号码，"
+                    f"批间休息 {rest / 60:.1f} 分钟（防风控）...",
+                    {"checked": checked, "registered": registered,
+                     "rest_seconds": round(rest, 1)})
+                # 分段等待 + 心跳：每 30s 刷一条剩余时间，避免休息期间
+                # 日志静默被误判为卡死；每段都可被 stop_event 中断
+                deadline = time.monotonic() + rest
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    if stop_event.wait(min(30.0, remaining)):
+                        stopped = True
+                        break
+                    remaining = deadline - time.monotonic()
+                    if remaining > 1:
+                        _insert_event(
+                            task_id, "info",
+                            f"⏸ 批间休息中，剩余约 "
+                            f"{remaining / 60:.1f} 分钟...")
+                if stopped:
                     break
+                nums_since_rest = 0
+                _insert_event(task_id, "info", "▶ 批间休息结束，继续查号")
 
         if fail_detail:
             _finalize(task_id, "failed", fail_detail[:500])

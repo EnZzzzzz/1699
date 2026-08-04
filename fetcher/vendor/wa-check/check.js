@@ -109,8 +109,15 @@ async function main() {
   console.log('已连接，开始查询...\n');
 
   const results = [];
-  // 逐个查询并加延时，降低触发风控的概率
-  for (const num of numbers) {
+  // 逐个查询并加随机延时（WA_DELAY_MIN/WA_DELAY_MAX，秒，缺省固定 1.5s），
+  // 降低触发风控的概率；最后一个号码后不再等待
+  const delayMin = parseFloat(process.env.WA_DELAY_MIN || '1.5');
+  const delayMax = parseFloat(process.env.WA_DELAY_MAX || String(delayMin));
+  const randDelay = () =>
+    delayMax > delayMin
+      ? (delayMin + Math.random() * (delayMax - delayMin)) * 1000
+      : delayMin * 1000;
+  for (const [i, num] of numbers.entries()) {
     try {
       const res = await sock.onWhatsApp(num);
       const hit = res && res[0];
@@ -124,7 +131,9 @@ async function main() {
       results.push({ number: num, registered: null, error: String(e.message || e) });
       console.log(`${num}\t⚠️ 查询失败: ${e.message || e}`);
     }
-    await new Promise((r) => setTimeout(r, 1500));
+    if (i < numbers.length - 1) {
+      await new Promise((r) => setTimeout(r, randDelay()));
+    }
   }
 
   const out = process.env.WA_RESULTS || path.join(__dirname, 'results.json');

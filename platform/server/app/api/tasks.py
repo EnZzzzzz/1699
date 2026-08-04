@@ -77,8 +77,13 @@ class TaskParams(BaseModel):
     auto_solve: bool | None = None          # false → --no-auto-solve
     retry_failed: bool | None = None        # true 且 1688_contact → --retry-failed
     # wa_check（进程内 WhatsApp 查号）专用：
-    interval: float | None = None           # 批间间隔秒
+    interval: float | None = None           # 旧参数：固定调用间隔秒（等价
+                                            # sample_min == sample_max）
     accounts: list[str] | None = None       # 账号池，空 = 仅默认账号
+    batch_rest_min: float | None = None     # wa_check 批间休息下限（秒）
+    batch_rest_max: float | None = None     # wa_check 批间休息上限（秒）
+    # 注：wa_check 复用上方 batch_num（每批调用次数）、
+    # sample_min / sample_max（调用间隔范围）三个字段
     # 循环模式：本轮正常结束（done/failed）后 N 秒自动重启；None/<=0 = 不循环
     repeat_interval: int | None = None
 
@@ -192,6 +197,7 @@ def batch_tasks(body: TaskBatch):
                 if runner.is_running(tid):
                     results.append({"id": tid, "ok": False, "detail": "进程已在运行"})
                     continue
+                _write("DELETE FROM task_events WHERE task_id=?", (tid,))
                 _write(
                     "UPDATE tasks SET status='running', error=NULL, progress_json=NULL, "
                     "stop_requested=0, started_at=?, finished_at=NULL WHERE id=?",
@@ -263,6 +269,8 @@ def start_task(task_id: int):
             detail=f"当前状态 {status!r} 不可启动（仅 pending/failed/stopped）")
     if runner.is_running(task_id):
         raise HTTPException(status_code=409, detail="任务进程已在运行")
+    # 清空上一轮的事件日志：每次启动从头开始记
+    _write("DELETE FROM task_events WHERE task_id=?", (task_id,))
     # 同行重置状态、清空 error、写 started_at
     _write(
         "UPDATE tasks SET status='running', error=NULL, progress_json=NULL, "

@@ -76,7 +76,8 @@ export interface Task {
 export type TaskType = '1688_shop' | '1688_company' | '1688_contact' | 'yiwugo_search' | 'wa_check'
 
 // 采集类参数全量可选键：留空即不传，由 CLI 默认值生效。
-// wa_check 仅使用 limit / interval / accounts。
+// wa_check 使用 limit / accounts / sample_min / sample_max / batch_num /
+// batch_rest_min / batch_rest_max（interval 为旧参数，向后兼容）。
 export interface TaskParams {
   batch_num?: number
   limit?: number
@@ -103,8 +104,10 @@ export interface TaskParams {
   // 任务结束后自动重启的间隔（秒）；0 或不传 = 不循环
   repeat_interval?: number
   // wa_check 专用
-  interval?: number
+  interval?: number // 旧参数：固定调用间隔（等价 sample_min == sample_max）
   accounts?: string[]
+  batch_rest_min?: number // wa_check 批间休息下限（秒）
+  batch_rest_max?: number // wa_check 批间休息上限（秒）
 }
 
 export interface CreateTaskRequest {

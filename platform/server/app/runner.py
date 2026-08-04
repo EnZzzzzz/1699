@@ -414,6 +414,7 @@ class TaskRunner:
         except ValueError:
             params = {}
         try:
+            _db_write("DELETE FROM task_events WHERE task_id=?", (task_id,))
             _db_write(
                 "UPDATE tasks SET status='running', error=NULL, progress_json=NULL, "
                 "stop_requested=0, started_at=?, finished_at=NULL WHERE id=?",

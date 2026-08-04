@@ -98,7 +98,11 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
 
   // wa_check 专用表单状态
   const [waLimit, setWaLimit] = useState('')
-  const [waInterval, setWaInterval] = useState('')
+  const [waSampleMin, setWaSampleMin] = useState('')
+  const [waSampleMax, setWaSampleMax] = useState('')
+  const [waBatchNum, setWaBatchNum] = useState('')
+  const [waRestMin, setWaRestMin] = useState('')
+  const [waRestMax, setWaRestMax] = useState('')
   const [waAccounts, setWaAccounts] = useState<WaAccount[]>([])
   const [selectedAccounts, setSelectedAccounts] = useState<string[]>([])
 
@@ -138,7 +142,13 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
     setAutoSolve(p.auto_solve !== false)
     setRetryFailed(p.retry_failed === true)
     setWaLimit(typeof p.limit === 'number' ? String(p.limit) : '')
-    setWaInterval(typeof p.interval === 'number' ? String(p.interval) : '')
+    // 节奏参数：sample_min/max 缺省时用旧参数 interval 回填（向后兼容）
+    const legacyInterval = typeof p.interval === 'number' ? String(p.interval) : ''
+    setWaSampleMin(typeof p.sample_min === 'number' ? String(p.sample_min) : legacyInterval)
+    setWaSampleMax(typeof p.sample_max === 'number' ? String(p.sample_max) : legacyInterval)
+    setWaBatchNum(typeof p.batch_num === 'number' ? String(p.batch_num) : '')
+    setWaRestMin(typeof p.batch_rest_min === 'number' ? String(p.batch_rest_min) : '')
+    setWaRestMax(typeof p.batch_rest_max === 'number' ? String(p.batch_rest_max) : '')
     setSelectedAccounts(
       Array.isArray(p.accounts)
         ? (p.accounts as unknown[]).filter((a): a is string => typeof a === 'string')
@@ -168,7 +178,11 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
       setAutoSolve(true)
       setRetryFailed(false)
       setWaLimit('')
-      setWaInterval('')
+      setWaSampleMin('')
+      setWaSampleMax('')
+      setWaBatchNum('')
+      setWaRestMin('')
+      setWaRestMax('')
       setSelectedAccounts([])
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -201,10 +215,21 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
       const params: TaskParams = { accounts: selectedAccounts }
       const limitN = Number(waLimit)
       if (waLimit.trim() !== '' && Number.isInteger(limitN) && limitN >= 0) params.limit = limitN
-      const intervalN = Number(waInterval)
-      if (waInterval.trim() !== '' && Number.isFinite(intervalN) && intervalN >= 0) {
-        params.interval = intervalN
+      const numOrUndef = (raw: string): number | undefined => {
+        if (raw.trim() === '') return undefined
+        const n = Number(raw)
+        return Number.isFinite(n) && n >= 0 ? n : undefined
       }
+      const sampleMin = numOrUndef(waSampleMin)
+      if (sampleMin !== undefined) params.sample_min = sampleMin
+      const sampleMax = numOrUndef(waSampleMax)
+      if (sampleMax !== undefined) params.sample_max = sampleMax
+      const batchNum = numOrUndef(waBatchNum)
+      if (batchNum !== undefined && Number.isInteger(batchNum)) params.batch_num = batchNum
+      const restMin = numOrUndef(waRestMin)
+      if (restMin !== undefined) params.batch_rest_min = restMin
+      const restMax = numOrUndef(waRestMax)
+      if (restMax !== undefined) params.batch_rest_max = restMax
       // 循环间隔：由命令导入 / 模板回填时透传（wa 表单不展示该字段）
       const riRaw = (values.repeat_interval ?? '').trim()
       const riN = Number(riRaw)
@@ -230,10 +255,12 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
     () =>
       JSON.stringify({
         type, values, channels, useProxy, headless, autoSolve, retryFailed,
-        waLimit, waInterval, selectedAccounts,
+        waLimit, waSampleMin, waSampleMax, waBatchNum, waRestMin, waRestMax,
+        selectedAccounts,
       }),
     [type, values, channels, useProxy, headless, autoSolve, retryFailed,
-      waLimit, waInterval, selectedAccounts],
+      waLimit, waSampleMin, waSampleMax, waBatchNum, waRestMin, waRestMax,
+      selectedAccounts],
   )
 
   // 命令预览：防抖 500ms 调 preview 接口，失败静默不阻塞
@@ -258,10 +285,28 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
           return false
         }
       }
-      if (waInterval.trim() !== '') {
-        const n = Number(waInterval)
-        if (!Number.isFinite(n) || n < 0) {
-          toast.error('批间间隔需为不小于 0 的数字（秒）')
+      const ranges: [string, string, string][] = [
+        ['查号间隔', waSampleMin, waSampleMax],
+        ['批间休息', waRestMin, waRestMax],
+      ]
+      for (const [label, loRaw, hiRaw] of ranges) {
+        for (const [side, raw] of [['下限', loRaw], ['上限', hiRaw]] as const) {
+          if (raw.trim() === '') continue
+          const n = Number(raw)
+          if (!Number.isFinite(n) || n < 0) {
+            toast.error(`${label}${side}需为不小于 0 的数字（秒）`)
+            return false
+          }
+        }
+        if (loRaw.trim() !== '' && hiRaw.trim() !== '' && Number(loRaw) > Number(hiRaw)) {
+          toast.error(`${label}下限不能大于上限`)
+          return false
+        }
+      }
+      if (waBatchNum.trim() !== '') {
+        const n = Number(waBatchNum)
+        if (!Number.isInteger(n) || n < 0) {
+          toast.error('每批查号数量需为不小于 0 的整数（0 = 不分批）')
           return false
         }
       }
@@ -532,19 +577,76 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
                   <p className="text-xs text-muted-foreground">0 = 全部未查</p>
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="wa-interval">批间间隔（秒）</Label>
+                  <Label htmlFor="wa-batch-num">每批查号数量（个）</Label>
                   <Input
-                    id="wa-interval"
+                    id="wa-batch-num"
+                    type="number"
+                    min={0}
+                    value={waBatchNum}
+                    placeholder="默认 500"
+                    onChange={(e) => setWaBatchNum(e.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground">默认 500 个号码/批，0 = 不分批</p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-2">
+                  <Label htmlFor="wa-sample-min">查号间隔下限（秒）</Label>
+                  <Input
+                    id="wa-sample-min"
                     type="number"
                     min={0}
                     step={0.5}
-                    value={waInterval}
-                    placeholder="默认 2.0"
-                    onChange={(e) => setWaInterval(e.target.value)}
+                    value={waSampleMin}
+                    placeholder="默认 1.5"
+                    onChange={(e) => setWaSampleMin(e.target.value)}
                   />
-                  <p className="text-xs text-muted-foreground">默认 2.0 秒</p>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="wa-sample-max">查号间隔上限（秒）</Label>
+                  <Input
+                    id="wa-sample-max"
+                    type="number"
+                    min={0}
+                    step={0.5}
+                    value={waSampleMax}
+                    placeholder="默认 1.5"
+                    onChange={(e) => setWaSampleMax(e.target.value)}
+                  />
                 </div>
               </div>
+              <p className="-mt-1.5 text-xs text-muted-foreground">
+                每个号码查询之间随机停顿，上下限相等 = 固定间隔
+              </p>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-2">
+                  <Label htmlFor="wa-rest-min">批间休息下限（秒）</Label>
+                  <Input
+                    id="wa-rest-min"
+                    type="number"
+                    min={0}
+                    value={waRestMin}
+                    placeholder="默认 60"
+                    onChange={(e) => setWaRestMin(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="wa-rest-max">批间休息上限（秒）</Label>
+                  <Input
+                    id="wa-rest-max"
+                    type="number"
+                    min={0}
+                    value={waRestMax}
+                    placeholder="默认 180"
+                    onChange={(e) => setWaRestMax(e.target.value)}
+                  />
+                </div>
+              </div>
+              <p className="-mt-1.5 text-xs text-muted-foreground">
+                每采满一批后随机长休息（防风控），随后自动开始下一批
+              </p>
 
               <div className="space-y-2 rounded-md border border-border px-3 py-2">
                 <Label>查号账号</Label>
