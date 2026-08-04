@@ -75,7 +75,7 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
   const [channels, setChannels] = useState('')
   const [useProxy, setUseProxy] = useState(true)
   const [headless, setHeadless] = useState(true)
-  const [autoSolve, setAutoSolve] = useState(false)
+  const [autoSolve, setAutoSolve] = useState(true)
   const [retryFailed, setRetryFailed] = useState(false)
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [submitting, setSubmitting] = useState(false)
@@ -110,7 +110,7 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
       setChannels(typeof p.channels === 'string' ? (p.channels as string) : '')
       setUseProxy(p.use_proxy !== false)
       setHeadless(p.headless !== false)
-      setAutoSolve(p.auto_solve === true)
+      setAutoSolve(p.auto_solve !== false)
       setRetryFailed(p.retry_failed === true)
       setWaLimit(typeof p.limit === 'number' ? String(p.limit) : '')
       setWaInterval(typeof p.interval === 'number' ? String(p.interval) : '')
@@ -125,7 +125,7 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
       setChannels('')
       setUseProxy(true)
       setHeadless(true)
-      setAutoSolve(false)
+      setAutoSolve(true)
       setRetryFailed(false)
       setWaLimit('')
       setWaInterval('')
@@ -158,7 +158,7 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
       }
       return params
     }
-    const params: TaskParams = { use_proxy: useProxy, headless }
+    const params: TaskParams = { use_proxy: useProxy, headless, auto_solve: autoSolve }
     for (const key of ALL_NUM_KEYS) {
       const raw = (values[key] ?? '').trim()
       if (raw === '') continue
@@ -167,7 +167,6 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
       ;(params as Record<string, unknown>)[key] = n
     }
     if (channels.trim() !== '') params.channels = channels.trim()
-    if (autoSolve) params.auto_solve = true
     if (retryFailed && type === '1688_contact') params.retry_failed = true
     return params
   }
