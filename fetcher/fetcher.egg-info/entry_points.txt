@@ -1,2 +1,0 @@
-[console_scripts]
-fetcher = fetcher.cli.main:main

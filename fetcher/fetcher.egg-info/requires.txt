@@ -1,8 +1,0 @@
-playwright>=1.40
-requests>=2.31
-
-[cloak]
-cloakbrowser
-
-[dev]
-pytest
