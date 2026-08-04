@@ -13,6 +13,7 @@ DB 写入一律短事务 + busy_timeout（1688.db 为 WAL，正被其他采集�
 
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import threading
@@ -130,6 +131,15 @@ def _insert_event(task_id: int, level: str, message: str, data=None) -> None:
         (task_id, beijing_now(), level, message[:500],
          json.dumps(data, ensure_ascii=False) if data is not None else None),
     )
+
+
+_WORKER_RE = re.compile(r"^\s*\[(\d+)\]")
+
+
+def _extract_worker(line: str):
+    """从日志行首的 worker 标记（如 "[2] ..."）提取 worker 编号，供前端分色。"""
+    m = _WORKER_RE.match(line)
+    return {"worker": int(m.group(1))} if m else None
 
 
 class _RunEntry:
@@ -440,7 +450,8 @@ class TaskRunner:
                     if len(entry.tail) > _TAIL_KEEP:
                         entry.tail.pop(0)
                 try:
-                    _insert_event(task_id, classify_line(line), line)
+                    _insert_event(task_id, classify_line(line), line,
+                                  data=_extract_worker(line))
                 except Exception as e:
                     print(f"[runner] task {task_id} 写事件失败: {e}")
                 now = time.monotonic()

@@ -22,6 +22,54 @@ import { TaskLogSheet } from './tasks/TaskLogSheet'
 
 type BatchAction = 'start' | 'stop' | 'delete'
 
+// ---- 列宽可拖拽（localStorage 持久化）----
+const COL_W_KEY = 'tasks-col-widths'
+const COLS: { key: string; label: string; width: number; resizable?: boolean }[] = [
+  { key: 'select', label: '', width: 40, resizable: false },
+  { key: 'id', label: 'ID', width: 64 },
+  { key: 'type', label: '类型', width: 140 },
+  { key: 'params', label: '参数', width: 200 },
+  { key: 'status', label: '状态', width: 220 },
+  { key: 'created', label: '创建时间', width: 160 },
+  { key: 'duration', label: '耗时', width: 90 },
+  { key: 'error', label: '错误', width: 240 },
+  { key: 'actions', label: '操作', width: 260 },
+]
+
+function useColumnWidths() {
+  const [widths, setWidths] = useState<Record<string, number>>(() => {
+    const base = Object.fromEntries(COLS.map((c) => [c.key, c.width]))
+    try {
+      const saved = JSON.parse(localStorage.getItem(COL_W_KEY) || '{}')
+      return { ...base, ...saved }
+    } catch {
+      return base
+    }
+  })
+
+  const startResize = (key: string) => (e: React.MouseEvent) => {
+    e.preventDefault()
+    const startX = e.clientX
+    const startW = widths[key]
+    const onMove = (ev: MouseEvent) => {
+      setWidths((prev) => {
+        const next = { ...prev, [key]: Math.max(48, startW + ev.clientX - startX) }
+        localStorage.setItem(COL_W_KEY, JSON.stringify(next))
+        return next
+      })
+    }
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+
+  const totalWidth = COLS.reduce((s, c) => s + (widths[c.key] ?? c.width), 0)
+  return { widths, startResize, totalWidth }
+}
+
 function lastLine(task: Task): string | null {
   const v = task.progress?.last_line
   if (typeof v !== 'string' || v.length === 0) return null
@@ -52,8 +100,8 @@ function TaskRow({
         />
       </TableCell>
       <TableCell className="font-mono text-xs text-muted-foreground">#{task.id}</TableCell>
-      <TableCell className="font-medium">{taskTypeLabel(task.type)}</TableCell>
-      <TableCell className="max-w-40">
+      <TableCell className="truncate font-medium" title={taskTypeLabel(task.type)}>{taskTypeLabel(task.type)}</TableCell>
+      <TableCell>
         <span className="block truncate text-xs text-muted-foreground" title={paramsSummary(task)}>
           {paramsSummary(task)}
         </span>
@@ -61,14 +109,14 @@ function TaskRow({
       <TableCell>
         {statusBadge(task.status)}
         {line && (
-          <div className="mt-1 max-w-64 truncate text-xs text-muted-foreground" title={line}>
+          <div className="mt-1 truncate text-xs text-muted-foreground" title={line}>
             {line}
           </div>
         )}
       </TableCell>
       <TableCell className="text-sm">{formatTime(task.created_at)}</TableCell>
       <TableCell className="text-sm">{formatDuration(task.started_at, task.finished_at)}</TableCell>
-      <TableCell className="max-w-56">
+      <TableCell>
         {task.error ? (
           <TooltipProvider>
             <Tooltip>
@@ -118,6 +166,7 @@ export default function Tasks() {
   }, [data])
 
   const tasks = data ?? []
+  const { widths, startResize, totalWidth } = useColumnWidths()
   const allChecked = tasks.length > 0 && selected.size === tasks.length
   const someChecked = selected.size > 0 && !allChecked
 
@@ -212,25 +261,35 @@ export default function Tasks() {
       ) : tasks.length === 0 ? (
         <EmptyState text="暂无任务记录" />
       ) : (
-        <div className="rounded-lg border border-border">
-          <Table>
+        <div className="overflow-x-auto rounded-lg border border-border">
+          <Table style={{ tableLayout: 'fixed', width: totalWidth, minWidth: '100%' }}>
+            <colgroup>
+              {COLS.map((c) => (
+                <col key={c.key} style={{ width: widths[c.key] ?? c.width }} />
+              ))}
+            </colgroup>
             <TableHeader>
               <TableRow>
-                <TableHead className="w-10">
-                  <Checkbox
-                    checked={allChecked ? true : someChecked ? 'indeterminate' : false}
-                    onCheckedChange={(v) => toggleAll(v === true)}
-                    aria-label="全选"
-                  />
-                </TableHead>
-                <TableHead className="w-16">ID</TableHead>
-                <TableHead>类型</TableHead>
-                <TableHead>参数</TableHead>
-                <TableHead>状态</TableHead>
-                <TableHead>创建时间</TableHead>
-                <TableHead>耗时</TableHead>
-                <TableHead>错误</TableHead>
-                <TableHead className="w-60">操作</TableHead>
+                {COLS.map((c) => (
+                  <TableHead key={c.key} className="relative">
+                    {c.key === 'select' ? (
+                      <Checkbox
+                        checked={allChecked ? true : someChecked ? 'indeterminate' : false}
+                        onCheckedChange={(v) => toggleAll(v === true)}
+                        aria-label="全选"
+                      />
+                    ) : (
+                      c.label
+                    )}
+                    {c.resizable !== false && (
+                      <span
+                        onMouseDown={startResize(c.key)}
+                        className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize select-none hover:bg-primary/40 active:bg-primary/60"
+                        title="拖拽调整列宽"
+                      />
+                    )}
+                  </TableHead>
+                ))}
               </TableRow>
             </TableHeader>
             <TableBody>

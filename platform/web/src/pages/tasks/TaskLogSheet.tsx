@@ -7,7 +7,7 @@ import {
 } from '@/components/ui/sheet'
 import { Button } from '@/components/ui/button'
 import { ArrowDown, Loader2 } from 'lucide-react'
-import { levelBadge, statusBadge, taskTypeLabel } from './task-ui'
+import { levelBadge, statusBadge, taskTypeLabel, workerChip, eventWorker } from './task-ui'
 
 interface TaskLogSheetProps {
   task: Task | null
@@ -102,6 +102,7 @@ export function TaskLogSheet({ task, open, onOpenChange, onStatus }: TaskLogShee
                 {events.map((ev) => (
                   <li key={ev.id} className="flex items-start gap-2">
                     <span className="shrink-0 pt-px">{levelBadge(ev.level)}</span>
+                    <span className="shrink-0 pt-0.5">{workerChip(eventWorker(ev))}</span>
                     <span className="shrink-0 pt-0.5 font-mono text-xs text-muted-foreground">
                       {ev.ts}
                     </span>

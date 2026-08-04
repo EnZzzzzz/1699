@@ -156,6 +156,7 @@ export interface TaskEvent {
   ts: string
   level: TaskEventLevel
   message: string
+  data?: { worker?: number | string } & Record<string, unknown> | null
 }
 
 export interface TaskStatusEvent {

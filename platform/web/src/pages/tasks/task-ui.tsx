@@ -53,6 +53,36 @@ export function taskTypeLabel(type: string): string {
   return TASK_TYPE_OPTIONS.find((o) => o.value === type)?.label ?? type
 }
 
+/** worker 标识徽标：同一 worker 恒同色（哈希取色相，明暗主题通用）。 */
+export function workerChip(worker: number | string | undefined | null) {
+  if (worker === undefined || worker === null || worker === '') return null
+  const s = String(worker)
+  let hash = 0
+  for (let i = 0; i < s.length; i++) hash = (hash * 31 + s.charCodeAt(i)) >>> 0
+  const hue = (hash * 47) % 360
+  const label = typeof worker === 'number' ? `W${worker}` : s
+  return (
+    <span
+      className="inline-flex shrink-0 items-center rounded px-1 py-px font-mono text-[10px] font-semibold"
+      style={{
+        color: `hsl(${hue} 75% 45%)`,
+        background: `hsl(${hue} 75% 45% / 0.12)`,
+        border: `1px solid hsl(${hue} 75% 45% / 0.35)`,
+      }}
+      title={`worker ${s}`}
+    >
+      {label}
+    </span>
+  )
+}
+
+/** 从日志事件取 worker：优先 data.worker，回退解析消息行首 [N] 标记。 */
+export function eventWorker(ev: { message: string; data?: { worker?: number | string } | null }): number | string | null {
+  if (ev.data?.worker !== undefined && ev.data?.worker !== null) return ev.data.worker
+  const m = /^\s*\[(\d+)\]/.exec(ev.message)
+  return m ? Number(m[1]) : null
+}
+
 // 秒数人性化：>=3600 显小时、>=60 显分钟、否则显秒（最多 1 位小数）
 function humanizeSeconds(sec: number): string {
   const trim = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(1))

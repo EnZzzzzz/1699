@@ -237,6 +237,7 @@ def run(task_id: int, params: dict, stop_event: threading.Event) -> None:
                     msg += "（" + "，".join(extra) + "）"
                 _insert_event(task_id, "info", msg, {
                     "batch": bi, "batches": len(batches),
+                    "worker": account_name,
                     "account": account_name, "checked": checked,
                     "registered": registered, "written": written,
                 })
