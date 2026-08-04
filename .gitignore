@@ -25,6 +25,6 @@ logs/
 *.jpg
 
 # wa-check（WhatsApp 查号）：会话凭证与本地产物
-wa-check/auth_info/
-wa-check/tmp/
-wa-check/results.json
+fetcher/vendor/wa-check/auth_info/
+fetcher/vendor/wa-check/tmp/
+fetcher/vendor/wa-check/results.json

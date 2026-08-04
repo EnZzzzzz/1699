@@ -54,8 +54,10 @@ class TestResolveDir(unittest.TestCase):
     def test_params_win(self):
         self.assertEqual(resolve_wa_dir({"wa_check_dir": "/tmp/x"}), Path("/tmp/x"))
 
-    def test_default_under_project_root(self):
-        self.assertEqual(resolve_wa_dir({}).name, "wa-check")
+    def test_default_under_vendor(self):
+        d = resolve_wa_dir({})
+        self.assertEqual(d.name, "wa-check")
+        self.assertEqual(d.parent.name, "vendor")
 
 
 class TestAtomOutcomes(unittest.TestCase):

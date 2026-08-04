@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """CheckWhatsApp 原子：输入手机号，返回是否注册过 WhatsApp。
 
-实现方式：以子进程调用项目根 ``wa-check/`` 下的 Node/Baileys CLI
-（``check.js``）。Baileys 以「已链接设备」身份走 WhatsApp 协议查询，
-会话凭证保存在 ``wa-check/auth_info/``（首次需人工扫码登录，见下文）。
+实现方式：以子进程调用内置 ``fetcher/vendor/wa-check/`` 下的 Node/Baileys
+CLI（``check.js``）。Baileys 以「已链接设备」身份走 WhatsApp 协议查询，
+会话凭证保存在 ``vendor/wa-check/auth_info/``（首次需人工扫码登录，见下文）。
 
 契约：
     params = {
@@ -11,7 +11,7 @@
         "default_cc":   str          可选，国家码（如 "86"）；11 位且 1 开头
                                      的裸手机号自动补此前缀。缺省不补。
         "wa_check_dir": str | Path   可选，wa-check 目录；缺省读环境变量
-                                     WA_CHECK_DIR，再缺省 <项目根>/wa-check
+                                     WA_CHECK_DIR，再缺省仓库内置 vendor/wa-check
         "timeout":      float        可选，子进程总超时秒数（缺省 600）
     }
 
@@ -26,7 +26,7 @@
 存在性检查，import 本身无任何重依赖（符合包的分层约束）。
 
 首次登录（人工一次性操作）：
-    cd wa-check && node check.js 8613800000000
+    cd fetcher/vendor/wa-check && node check.js 8613800000000
     用手机 WhatsApp「已链接的设备」扫码（二维码同时存为 wa-check/qr.png）。
     建议使用备用小号：协议查询违反 WhatsApp ToS，有封号风险。
 """
@@ -41,11 +41,14 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from fetcher.core.context import PROJECT_ROOT
 from fetcher.core.types import ActionResult
 
 _DIGITS = re.compile(r"\D+")
 _CN_MOBILE = re.compile(r"1\d{10}$")
+
+# 内置 wa-check（Node/Baileys CLI）位置：fetcher/vendor/wa-check
+# （本文件在 fetcher/fetcher/atoms/ 下，parents[2] 即仓库根）
+DEFAULT_WA_DIR = Path(__file__).resolve().parents[2] / "vendor" / "wa-check"
 
 
 def normalize_numbers(raw, default_cc: str = "") -> list[str]:
@@ -67,9 +70,9 @@ def normalize_numbers(raw, default_cc: str = "") -> list[str]:
 
 
 def resolve_wa_dir(params: dict) -> Path:
-    """wa-check 目录：params > 环境变量 WA_CHECK_DIR > <项目根>/wa-check。"""
+    """wa-check 目录：params > 环境变量 WA_CHECK_DIR > 仓库内置 vendor 目录。"""
     p = params.get("wa_check_dir") or os.environ.get("WA_CHECK_DIR")
-    return Path(p) if p else PROJECT_ROOT / "wa-check"
+    return Path(p) if p else DEFAULT_WA_DIR
 
 
 class CheckWhatsApp:
@@ -94,13 +97,13 @@ class CheckWhatsApp:
                 f"wa-check CLI 不存在: {cli}（先部署 wa-check 或设置 wa_check_dir）")
         if not (wa_dir / "node_modules").is_dir():
             return ActionResult.fatal(
-                f"wa-check 依赖未安装: {wa_dir}（cd wa-check && npm install）")
+                f"wa-check 依赖未安装: {wa_dir}（cd {wa_dir} && npm install）")
         node = shutil.which("node")
         if not node:
             return ActionResult.fatal("未找到 node 可执行文件（需 Node.js >= 18）")
         if not (wa_dir / "auth_info").is_dir():
             return ActionResult.fatal(
-                "wa-check 未登录：cd wa-check && node check.js <任意号码>，"
+                f"wa-check 未登录：cd {wa_dir} && node check.js <任意号码>，"
                 "手机扫码完成首次登录后重试")
 
         timeout = float(params.get("timeout", 600))
