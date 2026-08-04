@@ -32,4 +32,9 @@ fetcher/vendor/wa-check/results.json
 
 # 管理平台运行时
 platform/run/
-platform/logs/*.egg-info/
+platform/logs/
+
+# Python 构建产物
+**/*.egg-info/
+egg-info/
+
