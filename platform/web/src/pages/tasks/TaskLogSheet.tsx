@@ -16,12 +16,46 @@ interface TaskLogSheetProps {
   onStatus?: (status: string) => void
 }
 
+const SHEET_W_KEY = 'tasklog-sheet-width'
+const SHEET_W_DEFAULT = 900
+const SHEET_W_MIN = 480
+
+/** 日志抽屉宽度：左缘拖拽调整，localStorage 持久化。 */
+function useSheetWidth() {
+  const [width, setWidth] = useState(() => {
+    const saved = Number(localStorage.getItem(SHEET_W_KEY))
+    return Number.isFinite(saved) && saved >= SHEET_W_MIN ? saved : SHEET_W_DEFAULT
+  })
+
+  const startResize = (e: React.MouseEvent) => {
+    e.preventDefault()
+    const startX = e.clientX
+    const startW = width
+    const onMove = (ev: MouseEvent) => {
+      // 抽屉贴右侧：向左拖（clientX 减小）= 变宽
+      const max = Math.floor(window.innerWidth * 0.95)
+      const next = Math.min(max, Math.max(SHEET_W_MIN, startW + (startX - ev.clientX)))
+      setWidth(next)
+      localStorage.setItem(SHEET_W_KEY, String(next))
+    }
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+
+  return { width, startResize }
+}
+
 export function TaskLogSheet({ task, open, onOpenChange, onStatus }: TaskLogSheetProps) {
   const { events, status, connected } = useTaskEvents(
     open ? (task?.id ?? null) : null,
     open,
     (s) => onStatus?.(s),
   )
+  const { width, startResize } = useSheetWidth()
   const scrollRef = useRef<HTMLDivElement>(null)
   const autoRef = useRef(true)
   const [autoScroll, setAutoScroll] = useState(true)
@@ -61,7 +95,17 @@ export function TaskLogSheet({ task, open, onOpenChange, onStatus }: TaskLogShee
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="right" className="flex w-full flex-col sm:max-w-2xl">
+      <SheetContent
+        side="right"
+        className="flex w-full flex-col sm:max-w-none"
+        style={{ maxWidth: width }}
+      >
+        {/* 左缘拖拽调宽手柄 */}
+        <div
+          onMouseDown={startResize}
+          className="absolute left-0 top-0 z-10 h-full w-1.5 cursor-col-resize select-none hover:bg-primary/40 active:bg-primary/60"
+          title="拖拽调整面板宽度"
+        />
         <SheetHeader>
           <div className="flex items-center gap-2 pr-6">
             <SheetTitle className="text-base">
