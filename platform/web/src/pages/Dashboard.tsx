@@ -2,9 +2,7 @@ import { useState } from 'react'
 import { api, useApiData, formatTime, type PipelinePeriod } from '@/lib/api'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
-} from '@/components/ui/select'
+import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
@@ -110,37 +108,38 @@ export default function Dashboard() {
         </StatCard>
       </div>
 
-      {/* 时间段选择 */}
-      <div className="mt-4 flex flex-wrap items-center gap-3">
-        <Select value={period} onValueChange={(v) => setPeriod(v as PipelinePeriod)}>
-          <SelectTrigger className="w-44">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {PERIOD_OPTIONS.map((o) => (
-              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+      {/* 时间段选择：预设快捷按钮 + 自定义区间 */}
+      <div className="mt-4 flex flex-wrap items-center gap-2 rounded-lg border border-border bg-muted/30 px-4 py-3">
+        <span className="mr-1 text-sm text-muted-foreground">时间范围</span>
+        {PERIOD_OPTIONS.map((o) => (
+          <Button
+            key={o.value}
+            size="sm"
+            variant={period === o.value ? 'default' : 'outline'}
+            onClick={() => setPeriod(o.value)}
+          >
+            {o.label}
+          </Button>
+        ))}
         {period === 'custom' && (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Input
               type="datetime-local"
-              className="h-9 w-52"
+              className="h-9 w-52 bg-background"
               value={customStart}
               onChange={(e) => setCustomStart(e.target.value)}
             />
             至
             <Input
               type="datetime-local"
-              className="h-9 w-52"
+              className="h-9 w-52 bg-background"
               value={customEnd}
               onChange={(e) => setCustomEnd(e.target.value)}
             />
           </div>
         )}
         {pp && (
-          <span className="text-xs text-muted-foreground">
+          <span className="ml-auto text-xs text-muted-foreground">
             窗口：{pp.window.start} ~ {pp.window.end} · 按{pp.window.bucket === 'hour' ? '小时' : '天'}统计
           </span>
         )}
