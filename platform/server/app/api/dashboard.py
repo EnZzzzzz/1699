@@ -70,67 +70,111 @@ def _max_time(cur, table_col_pairs):
     return best
 
 
+def _parse_dt(s: str, is_end: bool) -> datetime:
+    """解析 'YYYY-MM-DD' 或 'YYYY-MM-DD HH:MM[:SS]'，日期型按当天起/止。"""
+    s = s.strip().replace("T", " ")
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            return datetime.strptime(s, fmt).replace(tzinfo=TZ)
+        except ValueError:
+            pass
+    d = datetime.strptime(s, "%Y-%m-%d").replace(tzinfo=TZ)
+    return d + (timedelta(days=1, seconds=-1) if is_end else timedelta())
+
+
 @router.get("/pipeline")
-def pipeline(hours: int = Query(default=3, ge=1, le=720)):
+def pipeline(period: str = Query(default=None),
+             hours: int = Query(default=None, ge=1, le=720),
+             start: str = Query(default=None),
+             end: str = Query(default=None)):
+    """管道平衡统计。两种用法：
+    - hours=N：最近 N 小时（向后兼容，终点取数据最大时间）
+    - period=today|yesterday|7d|30d|custom：预设/自定义时间段（按自然日界）
+      custom 需 start（YYYY-MM-DD[ HH:MM[:SS]]），end 可缺省=现在
+    粒度自适应：窗口 ≤48h 按小时桶，否则按天桶。
+    """
+    now_real = datetime.now(TZ)
+
+    if period:
+        today0 = now_real.replace(hour=0, minute=0, second=0, microsecond=0)
+        if period == "today":
+            win_start, win_end = today0, now_real
+        elif period == "yesterday":
+            win_start = today0 - timedelta(days=1)
+            win_end = today0 - timedelta(seconds=1)
+        elif period == "7d":
+            win_start, win_end = now_real - timedelta(days=7), now_real
+        elif period == "30d":
+            win_start, win_end = now_real - timedelta(days=30), now_real
+        elif period == "custom":
+            if not start:
+                return {"error": "custom 模式需提供 start 参数"}
+            try:
+                win_start = _parse_dt(start, is_end=False)
+                win_end = _parse_dt(end, is_end=True) if end else now_real
+            except ValueError:
+                return {"error": f"时间格式无法解析: start={start!r} end={end!r}"}
+        else:
+            return {"error": f"未知 period: {period!r}"}
+    else:
+        hours = hours or 12
+        with connect() as conn:
+            now_str = _max_time(conn.cursor(), [("contacts", "scraped_at"),
+                                                ("shops", "first_seen_at"),
+                                                ("shops", "last_seen_at")])
+        win_end = (datetime.strptime(now_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=TZ)
+                   if now_str else now_real)
+        win_start = win_end - timedelta(hours=hours)
+
+    span_h = (win_end - win_start).total_seconds() / 3600
+    bucket = "hour" if span_h <= 48 else "day"
+    label_fmt = "%m-%d %H:00" if bucket == "hour" else "%m-%d"
+    step = timedelta(hours=1) if bucket == "hour" else timedelta(days=1)
+
+    start_str = win_start.strftime("%Y-%m-%d %H:%M:%S")
+    end_str = win_end.strftime("%Y-%m-%d %H:%M:%S")
+
     with connect() as conn:
         cur = conn.cursor()
-
-        now_str = _max_time(cur, [("contacts", "scraped_at"),
-                                  ("shops", "first_seen_at"),
-                                  ("shops", "last_seen_at")])
-        if not now_str:
-            return {
-                "window": {"start": None, "end": None, "hours": hours},
-                "backlog": 0,
-                "rates": {"collect_per_hour": 0.0, "consume_per_hour": 0.0},
-                "hourly": [],
-            }
-
-        now = datetime.strptime(now_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=TZ)
-        start = now - timedelta(hours=hours)
-        start_str = start.strftime("%Y-%m-%d %H:%M:%S")
-
         backlog = cur.execute(
             "SELECT COUNT(*) FROM shops WHERE status = 'pending'").fetchone()[0]
-
         collected = cur.execute(
-            "SELECT COUNT(*) FROM shops WHERE first_seen_at >= ?",
-            (start_str,)).fetchone()[0]
+            "SELECT COUNT(*) FROM shops WHERE first_seen_at BETWEEN ? AND ?",
+            (start_str, end_str)).fetchone()[0]
         consumed = cur.execute(
-            "SELECT COUNT(*) FROM contacts WHERE scraped_at >= ?",
-            (start_str,)).fetchone()[0]
+            "SELECT COUNT(*) FROM contacts WHERE scraped_at BETWEEN ? AND ?",
+            (start_str, end_str)).fetchone()[0]
+        collect_map = dict(cur.execute(f"""
+            SELECT strftime('{label_fmt}', first_seen_at), COUNT(*)
+            FROM shops WHERE first_seen_at BETWEEN ? AND ? GROUP BY 1""",
+            (start_str, end_str)).fetchall())
+        consume_map = dict(cur.execute(f"""
+            SELECT strftime('{label_fmt}', scraped_at), COUNT(*)
+            FROM contacts WHERE scraped_at BETWEEN ? AND ? GROUP BY 1""",
+            (start_str, end_str)).fetchall())
 
-        collect_hourly = dict(cur.execute("""
-            SELECT strftime('%m-%d %H:00', first_seen_at), COUNT(*)
-            FROM shops WHERE first_seen_at >= ? GROUP BY 1""",
-            (start_str,)).fetchall())
-        consume_hourly = dict(cur.execute("""
-            SELECT strftime('%m-%d %H:00', scraped_at), COUNT(*)
-            FROM contacts WHERE scraped_at >= ? GROUP BY 1""",
-            (start_str,)).fetchall())
-
-    hourly = []
-    cur_hour = start.replace(minute=0, second=0, microsecond=0)
-    end_hour = now.replace(minute=0, second=0, microsecond=0)
-    while cur_hour <= end_hour:
-        label = cur_hour.strftime("%m-%d %H:00")
-        hourly.append({
+    buckets = []
+    cur_t = win_start.replace(minute=0, second=0, microsecond=0)
+    if bucket == "day":
+        cur_t = cur_t.replace(hour=0)
+    while cur_t <= win_end:
+        label = cur_t.strftime(label_fmt)
+        buckets.append({
             "label": label,
-            "collected": collect_hourly.get(label, 0),
-            "consumed": consume_hourly.get(label, 0),
+            "collected": collect_map.get(label, 0),
+            "consumed": consume_map.get(label, 0),
         })
-        cur_hour += timedelta(hours=1)
+        cur_t += step
 
+    divisor = max(span_h if bucket == "hour" else span_h / 24, 0.01)
     return {
-        "window": {
-            "start": start.strftime("%Y-%m-%d %H:%M:%S"),
-            "end": now.strftime("%Y-%m-%d %H:%M:%S"),
-            "hours": hours,
-        },
+        "window": {"start": start_str, "end": end_str, "bucket": bucket},
         "backlog": backlog,
+        "totals": {"collected": collected, "consumed": consumed},
         "rates": {
-            "collect_per_hour": round(collected / hours, 2),
-            "consume_per_hour": round(consumed / hours, 2),
+            "unit": "每小时" if bucket == "hour" else "每天",
+            "collect": round(collected / divisor, 2),
+            "consume": round(consumed / divisor, 2),
         },
-        "hourly": hourly,
+        "buckets": buckets,
     }

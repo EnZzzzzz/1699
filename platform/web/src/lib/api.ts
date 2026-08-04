@@ -44,11 +44,14 @@ export interface Overview {
 }
 
 export interface Pipeline {
-  window: { start: string; end: string; hours: number }
+  window: { start: string; end: string; bucket: 'hour' | 'day' }
   backlog: number
-  rates: { collect_per_hour: number; consume_per_hour: number }
-  hourly: { label: string; collected: number; consumed: number }[]
+  totals: { collected: number; consumed: number }
+  rates: { unit: string; collect: number; consume: number }
+  buckets: { label: string; collected: number; consumed: number }[]
 }
+
+export type PipelinePeriod = '12h' | 'today' | 'yesterday' | '7d' | '30d' | 'custom'
 
 export interface Task {
   id: number
@@ -224,7 +227,13 @@ function normalizeTask(t: any): Task {
 export const api = {
   health: () => request<{ ok: boolean }>('/health'),
   overview: () => request<Overview>('/dashboard/overview'),
-  pipeline: (hours = 12) => request<Pipeline>(`/dashboard/pipeline?hours=${hours}`),
+  pipeline: (period: PipelinePeriod = '12h', start?: string, end?: string) => {
+    let qs: string
+    if (period === '12h') qs = 'hours=12'
+    else if (period === 'custom') qs = `period=custom&start=${encodeURIComponent(start ?? '')}&end=${encodeURIComponent(end ?? '')}`
+    else qs = `period=${period}`
+    return request<Pipeline>(`/dashboard/pipeline?${qs}`)
+  },
   tasks: async () => (await request<unknown[]>('/tasks')).map(normalizeTask),
   createTask: async (body: CreateTaskRequest) =>
     normalizeTask(await request<unknown>('/tasks', { method: 'POST', body: JSON.stringify(body) })),
