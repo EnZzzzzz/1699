@@ -150,7 +150,7 @@ export default function Dashboard() {
       <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-3">
         <Card className="border-amber-500/40">
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">待处理积压（pending 队列）</CardTitle>
+            <CardTitle className="text-sm font-medium text-muted-foreground">待采集</CardTitle>
             <Hourglass className="h-4 w-4 text-amber-400" />
           </CardHeader>
           <CardContent>
@@ -165,7 +165,7 @@ export default function Dashboard() {
           </CardContent>
         </Card>
 
-        <StatCard title="采集" icon={Timer}>
+        <StatCard title="已入库商店数量" icon={Timer}>
           <div className="text-3xl font-bold text-sky-400">
             {pp ? pp.totals.collected.toLocaleString() : '—'}
             <span className="ml-1 text-sm font-normal text-muted-foreground">条</span>
@@ -177,15 +177,15 @@ export default function Dashboard() {
           )}
         </StatCard>
 
-        <StatCard title="消耗" icon={ArrowDownUp}>
+        <StatCard title="已采集" icon={ArrowDownUp}>
           <div className="text-3xl font-bold text-emerald-400">
             {pp ? pp.totals.consumed.toLocaleString() : '—'}
             <span className="ml-1 text-sm font-normal text-muted-foreground">条</span>
           </div>
           {pp && pp.rates.collect > 0 && (
             <p className="mt-1 text-xs text-muted-foreground">
-              速率 {pp.rates.consume.toFixed(1)} 条/{rateUnit.replace('每', '')} · 消耗/采集比：{(pp.rates.consume / pp.rates.collect).toFixed(2)}
-              {pp.rates.consume >= pp.rates.collect ? ' · 消化能力充足' : ' · 积压在增长'}
+              速率 {pp.rates.consume.toFixed(1)} 条/{rateUnit.replace('每', '')} · 已采集/入库比：{(pp.rates.consume / pp.rates.collect).toFixed(2)}
+              {pp.rates.consume >= pp.rates.collect ? ' · 进度跟得上' : ' · 待采集在增长'}
             </p>
           )}
         </StatCard>
@@ -195,7 +195,7 @@ export default function Dashboard() {
       <Card className="mt-4">
         <CardHeader>
           <CardTitle className="text-sm font-medium">
-            采集 / 消耗对比（{periodLabel}{pp ? ` · 按${pp.window.bucket === 'hour' ? '小时' : '天'}` : ''}）
+            已入库商店 / 已采集对比（{periodLabel}{pp ? ` · 按${pp.window.bucket === 'hour' ? '小时' : '天'}` : ''}）
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -217,8 +217,8 @@ export default function Dashboard() {
                     labelStyle={{ color: 'hsl(var(--foreground))' }}
                   />
                   <Legend />
-                  <Bar dataKey="collected" name="采集" fill="hsl(var(--chart-collected))" radius={[3, 3, 0, 0]} />
-                  <Bar dataKey="consumed" name="消耗" fill="hsl(var(--chart-consumed))" radius={[3, 3, 0, 0]} />
+                  <Bar dataKey="collected" name="已入库商店" fill="hsl(var(--chart-collected))" radius={[3, 3, 0, 0]} />
+                  <Bar dataKey="consumed" name="已采集" fill="hsl(var(--chart-consumed))" radius={[3, 3, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
