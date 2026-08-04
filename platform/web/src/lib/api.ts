@@ -104,6 +104,12 @@ export interface TaskPreview {
   cmdline: string // cmd 拼接的命令行，或 wa_check 的说明文案
 }
 
+export interface TaskBatchResult {
+  ok: number
+  failed: number
+  results: { id: number; ok: boolean; detail: string }[]
+}
+
 export interface StartTaskResult {
   ok: boolean
   pid: number
@@ -231,6 +237,11 @@ export const api = {
   startTask: (id: number) => request<StartTaskResult>(`/tasks/${id}/start`, { method: 'POST' }),
   stopTask: (id: number) => request<{ ok: boolean }>(`/tasks/${id}/stop`, { method: 'POST' }),
   deleteTask: (id: number) => request<{ ok: boolean }>(`/tasks/${id}`, { method: 'DELETE' }),
+  batchTasks: (action: 'start' | 'stop' | 'delete', ids: number[]) =>
+    request<TaskBatchResult>('/tasks/batch', {
+      method: 'POST',
+      body: JSON.stringify({ action, ids }),
+    }),
   providers: async () => (await request<unknown[]>('/providers')).map(normalizeProvider),
   createProvider: async (body: CreateProviderRequest) =>
     normalizeProvider(

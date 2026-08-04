@@ -145,6 +145,63 @@ class TaskUpdate(BaseModel):
     params: TaskParams = Field(...)
 
 
+class TaskBatch(BaseModel):
+    action: str = Field(...)              # start / stop / delete
+    ids: list[int] = Field(..., min_length=1, max_length=200)
+
+
+@router.post("/tasks/batch")
+def batch_tasks(body: TaskBatch):
+    """批量操作：逐个执行并汇总结果，单项失败不影响其他项。"""
+    if body.action not in ("start", "stop", "delete"):
+        raise HTTPException(status_code=422, detail=f"未知批量操作 {body.action!r}")
+    results = []
+    for tid in body.ids:
+        try:
+            with connect() as conn:
+                row = conn.execute("SELECT * FROM tasks WHERE id=?",
+                                   (tid,)).fetchone()
+            if not row:
+                results.append({"id": tid, "ok": False, "detail": "不存在"})
+                continue
+            status = row["status"]
+            if body.action == "start":
+                if status not in ("pending", "failed", "stopped"):
+                    results.append({"id": tid, "ok": False, "detail": f"状态 {status} 不可启动"})
+                    continue
+                if runner.is_running(tid):
+                    results.append({"id": tid, "ok": False, "detail": "进程已在运行"})
+                    continue
+                _write(
+                    "UPDATE tasks SET status='running', error=NULL, progress_json=NULL, "
+                    "stop_requested=0, started_at=?, finished_at=NULL WHERE id=?",
+                    (beijing_now(), tid))
+                params = _parse_json(row["params_json"]) or {}
+                pid = runner.start(tid, row["type"], params)
+                results.append({"id": tid, "ok": True, "detail": f"已启动 pid={pid}"})
+            elif body.action == "stop":
+                if status != "running":
+                    results.append({"id": tid, "ok": False, "detail": f"状态 {status} 不可停止"})
+                    continue
+                runner.stop(tid)
+                results.append({"id": tid, "ok": True, "detail": "已请求停止"})
+            else:  # delete
+                if status == "running" or runner.is_running(tid):
+                    results.append({"id": tid, "ok": False, "detail": "运行中，需先停止"})
+                    continue
+                _write("DELETE FROM task_events WHERE task_id=?", (tid,))
+                _write("DELETE FROM tasks WHERE id=?", (tid,))
+                results.append({"id": tid, "ok": True, "detail": "已删除"})
+        except Exception as e:
+            results.append({"id": tid, "ok": False, "detail": str(e)[:200]})
+    ok = sum(1 for r in results if r["ok"])
+    return {
+        "ok": ok,
+        "failed": len(results) - ok,
+        "results": results,
+    }
+
+
 @router.put("/tasks/{task_id}")
 def update_task(task_id: int, body: TaskUpdate):
     """修改任务参数：仅 pending/failed/stopped 可改，否则 409。"""
