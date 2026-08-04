@@ -79,6 +79,8 @@ class TaskParams(BaseModel):
     # wa_check（进程内 WhatsApp 查号）专用：
     interval: float | None = None           # 批间间隔秒
     accounts: list[str] | None = None       # 账号池，空 = 仅默认账号
+    # 循环模式：本轮正常结束（done/failed）后 N 秒自动重启；None/<=0 = 不循环
+    repeat_interval: int | None = None
 
 
 class TaskCreate(BaseModel):
@@ -121,6 +123,24 @@ def _get_task_row(task_id: int):
 
 
 # ---------------- 命令预览 / 参数修改 ----------------
+
+
+class CommandParse(BaseModel):
+    command: str = Field(..., min_length=1)
+
+
+@router.post("/tasks/parse")
+def parse_task_command(body: CommandParse):
+    """把 fetcher CLI 命令文本解析回 type + params（build_command 的反向）。
+
+    容忍 python -m fetcher / 直接 fetcher 前缀与 while/for + sleep N 循环包裹。
+    """
+    from app.cmdparse import CommandParseError, parse_command
+    try:
+        return parse_command(body.command)
+    except CommandParseError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
 
 @router.post("/tasks/preview")
 def preview_task(body: TaskCreate):
@@ -189,6 +209,7 @@ def batch_tasks(body: TaskBatch):
                 if status == "running" or runner.is_running(tid):
                     results.append({"id": tid, "ok": False, "detail": "运行中，需先停止"})
                     continue
+                runner.cancel_timer(tid)  # 循环模式待重启 Timer 一并取消
                 _write("DELETE FROM task_events WHERE task_id=?", (tid,))
                 _write("DELETE FROM tasks WHERE id=?", (tid,))
                 results.append({"id": tid, "ok": True, "detail": "已删除"})
@@ -226,6 +247,7 @@ def delete_task(task_id: int):
         raise HTTPException(
             status_code=409,
             detail="任务运行中，请先停止再删除")
+    runner.cancel_timer(task_id)  # 循环模式待重启 Timer 一并取消
     _write("DELETE FROM task_events WHERE task_id=?", (task_id,))
     _write("DELETE FROM tasks WHERE id=?", (task_id,))
     return {"ok": True}
@@ -263,10 +285,11 @@ def start_task(task_id: int):
 @router.post("/tasks/{task_id}/stop")
 def stop_task(task_id: int):
     row = _get_task_row(task_id)
-    if row["status"] != "running":
+    # running 可停；done/failed 但循环模式待重启（Timer 挂起）也可停
+    if row["status"] != "running" and not runner.has_pending_timer(task_id):
         raise HTTPException(
             status_code=409,
-            detail=f"当前状态 {row['status']!r} 不可停止（仅 running）")
+            detail=f"当前状态 {row['status']!r} 不可停止（仅 running 或循环等待中）")
     runner.stop(task_id)
     return {"ok": True}
 

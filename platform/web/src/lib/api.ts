@@ -26,7 +26,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new ApiError('无法连接后端服务（http://127.0.0.1:8765）')
   }
   if (!res.ok) {
-    throw new ApiError(`请求失败：${res.status} ${res.statusText}`, res.status)
+    // 优先透传后端 detail（如 422 无法识别命令的具体原因）
+    let detail = ''
+    try {
+      const body = (await res.json()) as { detail?: unknown }
+      if (typeof body?.detail === 'string') detail = body.detail
+    } catch {
+      /* 非 JSON 错误体，忽略 */
+    }
+    throw new ApiError(detail || `请求失败：${res.status} ${res.statusText}`, res.status)
   }
   if (res.status === 204) {
     return undefined as T
@@ -65,7 +73,7 @@ export interface Task {
   finished_at: string | null
 }
 
-export type TaskType = '1688_shop' | '1688_contact' | 'yiwugo_search' | 'wa_check'
+export type TaskType = '1688_shop' | '1688_company' | '1688_contact' | 'yiwugo_search' | 'wa_check'
 
 // 采集类参数全量可选键：留空即不传，由 CLI 默认值生效。
 // wa_check 仅使用 limit / interval / accounts。
@@ -92,6 +100,8 @@ export interface TaskParams {
   headless?: boolean
   auto_solve?: boolean
   retry_failed?: boolean // 仅 1688_contact
+  // 任务结束后自动重启的间隔（秒）；0 或不传 = 不循环
+  repeat_interval?: number
   // wa_check 专用
   interval?: number
   accounts?: string[]
@@ -105,6 +115,27 @@ export interface CreateTaskRequest {
 export interface TaskPreview {
   cmd: string[] | null // wa_check 为进程内任务，返回 null
   cmdline: string // cmd 拼接的命令行，或 wa_check 的说明文案
+}
+
+// 命令解析结果：422 时 request() 抛出带后端 detail 的 ApiError
+export interface TaskParseResult {
+  type: TaskType
+  params: TaskParams
+  warnings: string[]
+}
+
+export interface TaskTemplate {
+  id: number
+  name: string
+  type: TaskType
+  params: TaskParams
+  created_at: string
+}
+
+export interface CreateTaskTemplateRequest {
+  name: string
+  type: TaskType
+  params: TaskParams
 }
 
 export interface TaskBatchResult {
@@ -239,6 +270,11 @@ export const api = {
     normalizeTask(await request<unknown>('/tasks', { method: 'POST', body: JSON.stringify(body) })),
   previewTask: (body: CreateTaskRequest) =>
     request<TaskPreview>('/tasks/preview', { method: 'POST', body: JSON.stringify(body) }),
+  parseCommand: (command: string) =>
+    request<TaskParseResult>('/tasks/parse', {
+      method: 'POST',
+      body: JSON.stringify({ command }),
+    }),
   putTask: async (id: number, params: TaskParams) =>
     normalizeTask(
       await request<unknown>(`/tasks/${id}`, { method: 'PUT', body: JSON.stringify({ params }) })),
@@ -251,6 +287,15 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ action, ids }),
     }),
+  // 任务模板：params 字段兼容后端 params_json 命名
+  getTaskTemplates: async () =>
+    ((await request<unknown[]>('/task-templates')) as (TaskTemplate & { params_json?: TaskParams })[]).map(
+      (t) => ({ ...t, params: t.params ?? t.params_json ?? {} }),
+    ),
+  createTaskTemplate: (body: CreateTaskTemplateRequest) =>
+    request<TaskTemplate>('/task-templates', { method: 'POST', body: JSON.stringify(body) }),
+  deleteTaskTemplate: (id: number) =>
+    request<{ ok: boolean }>(`/task-templates/${id}`, { method: 'DELETE' }),
   providers: async () => (await request<unknown[]>('/providers')).map(normalizeProvider),
   createProvider: async (body: CreateProviderRequest) =>
     normalizeProvider(

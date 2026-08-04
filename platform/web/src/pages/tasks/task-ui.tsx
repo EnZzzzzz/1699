@@ -43,6 +43,7 @@ export function levelBadge(level: TaskEventLevel) {
 
 export const TASK_TYPE_OPTIONS: { value: TaskType; label: string }[] = [
   { value: '1688_shop', label: '1688 店铺采集' },
+  { value: '1688_company', label: '1688 公司采集' },
   { value: '1688_contact', label: '1688 联系方式采集' },
   { value: 'yiwugo_search', label: '义乌购搜索' },
   { value: 'wa_check', label: 'WhatsApp 查号' },
@@ -52,12 +53,22 @@ export function taskTypeLabel(type: string): string {
   return TASK_TYPE_OPTIONS.find((o) => o.value === type)?.label ?? type
 }
 
+// 秒数人性化：>=3600 显小时、>=60 显分钟、否则显秒（最多 1 位小数）
+function humanizeSeconds(sec: number): string {
+  const trim = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(1))
+  if (sec >= 3600) return `${trim(sec / 3600)}小时`
+  if (sec >= 60) return `${trim(sec / 60)}分钟`
+  return `${sec}秒`
+}
+
 // 任务参数摘要：表格 params 列的小字展示
-// 采集类示例：n=10 批=4 代理 无头；wa_check：上限=500 账号=a,b
+// 采集类示例：n=10 批=4 代理 无头 循环30分钟；wa_check：上限=500 账号=a,b
 export function paramsSummary(task: { type: string; params: Record<string, unknown> }): string {
   const p = task.params ?? {}
   const num = (k: string): number | null =>
     typeof p[k] === 'number' && Number.isFinite(p[k] as number) ? (p[k] as number) : null
+  const repeat = num('repeat_interval')
+  const repeatPart = repeat !== null && repeat > 0 ? `循环${humanizeSeconds(repeat)}` : null
 
   if (task.type === 'wa_check') {
     const parts: string[] = []
@@ -67,6 +78,7 @@ export function paramsSummary(task: { type: string; params: Record<string, unkno
     if (accs.length > 0) parts.push(`账号=${accs.join(',')}`)
     const interval = num('interval')
     if (interval !== null) parts.push(`间隔=${interval}s`)
+    if (repeatPart) parts.push(repeatPart)
     return parts.length > 0 ? parts.join(' ') : '默认参数'
   }
 
@@ -83,5 +95,6 @@ export function paramsSummary(task: { type: string; params: Record<string, unkno
   if (p.headless === true) parts.push('无头')
   else if (p.headless === false) parts.push('有头')
   if (p.retry_failed === true) parts.push('重试失败')
+  if (repeatPart) parts.push(repeatPart)
   return parts.length > 0 ? parts.join(' ') : '默认参数'
 }

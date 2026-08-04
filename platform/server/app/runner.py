@@ -28,6 +28,7 @@ PYTHON_BIN = os.path.join(PROJECT_ROOT, "platform/server/.venv/bin/python")
 TASK_COMMANDS = {
     "1688_shop": ["1688", "shop"],
     "1688_contact": ["1688", "contact"],
+    "1688_company": ["1688", "company"],
     "yiwugo_search": ["yiwugo", "search"],
 }
 
@@ -150,6 +151,7 @@ class TaskRunner:
 
     def __init__(self):
         self._runs = {}  # task_id -> _RunEntry
+        self._timers = {}  # task_id -> threading.Timer（循环模式待重启）
         self._lock = threading.Lock()
 
     # ---------- 生命周期 ----------
@@ -172,9 +174,13 @@ class TaskRunner:
             conn.close()
 
     def shutdown(self) -> None:
-        """服务关闭：终止仍在跑的子进程 / 通知进程内任务停止，避免留下孤儿。"""
+        """服务关闭：取消待重启 Timer；终止仍在跑的子进程 / 通知进程内任务停止。"""
         with self._lock:
+            timers = list(self._timers.values())
+            self._timers.clear()
             entries = list(self._runs.items())
+        for timer in timers:
+            timer.cancel()
         for task_id, entry in entries:
             if entry.stop_event is not None:
                 entry.stop_event.set()
@@ -267,13 +273,37 @@ class TaskRunner:
         finally:
             with self._lock:
                 self._runs.pop(task_id, None)
+            # 进程内任务循环模式：执行器自身已回写终态，按 DB 状态决定是否重启
+            try:
+                conn = sqlite3.connect(DB_PATH, timeout=30)
+                try:
+                    conn.execute("PRAGMA busy_timeout = 30000")
+                    row = conn.execute(
+                        "SELECT status FROM tasks WHERE id=?",
+                        (task_id,)).fetchone()
+                finally:
+                    conn.close()
+                if row:
+                    self._maybe_schedule_restart(task_id, row[0])
+            except Exception as e:
+                print(f"[runner] 进程内任务 {task_id} 重启调度失败: {e}")
 
     def stop(self, task_id: int) -> bool:
-        """先置 stop_requested=1；进程内任务置 stop_event，子进程 terminate。"""
+        """先置 stop_requested=1；取消待重启 Timer；进程内任务置 stop_event，子进程 terminate。"""
         _db_write("UPDATE tasks SET stop_requested=1 WHERE id=?", (task_id,))
+        timer_canceled = self.cancel_timer(task_id)
         with self._lock:
             entry = self._runs.get(task_id)
         if not entry:
+            if timer_canceled:
+                # 本轮已结束、正在等待自动重启：直接落终态 stopped，不再重启
+                _db_write(
+                    "UPDATE tasks SET status='stopped', finished_at=? "
+                    "WHERE id=? AND status IN ('done', 'failed')",
+                    (beijing_now(), task_id))
+                _insert_event(task_id, "warning",
+                              "循环模式：已取消自动重启（手动停止）")
+                return True
             return False
         entry.stop_requested = True
         if entry.stop_event is not None:
@@ -289,6 +319,99 @@ class TaskRunner:
             except Exception:
                 pass
         return True
+
+    # ---------- 循环重启 ----------
+
+    def cancel_timer(self, task_id: int) -> bool:
+        """取消任务待重启 Timer（stop/delete/shutdown 时调用）。返回是否有 Timer 被取消。"""
+        with self._lock:
+            timer = self._timers.pop(task_id, None)
+        if timer is not None:
+            timer.cancel()
+            return True
+        return False
+
+    def has_pending_timer(self, task_id: int) -> bool:
+        with self._lock:
+            return task_id in self._timers
+
+    def _maybe_schedule_restart(self, task_id: int, status: str) -> None:
+        """本轮正常终态（done/failed）后，按 params.repeat_interval 安排自动重启。"""
+        if status not in ("done", "failed"):
+            return
+        conn = sqlite3.connect(DB_PATH, timeout=30)
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA busy_timeout = 30000")
+            row = conn.execute(
+                "SELECT params_json, stop_requested FROM tasks WHERE id=?",
+                (task_id,)).fetchone()
+        finally:
+            conn.close()
+        if not row or row["stop_requested"]:
+            return
+        try:
+            params = json.loads(row["params_json"] or "{}")
+        except ValueError:
+            params = {}
+        interval = params.get("repeat_interval")
+        if not isinstance(interval, (int, float)) or interval <= 0:
+            return
+        interval = int(interval)
+        try:
+            _insert_event(
+                task_id, "info",
+                f"本轮结束（{status}），{interval} 秒后自动重启（循环模式）",
+                {"repeat_interval": interval, "status": status})
+        except Exception as e:
+            print(f"[runner] task {task_id} 写重启事件失败: {e}")
+        self.cancel_timer(task_id)
+        timer = threading.Timer(interval, self._auto_restart, args=(task_id,))
+        timer.daemon = True
+        timer.name = f"task-restart-{task_id}"
+        with self._lock:
+            self._timers[task_id] = timer
+        timer.start()
+
+    def _auto_restart(self, task_id: int) -> None:
+        """Timer 触发：任务仍存在、未被停止、处于终态 → 走与 start 相同的重置逻辑再起一轮。"""
+        with self._lock:
+            self._timers.pop(task_id, None)
+        conn = sqlite3.connect(DB_PATH, timeout=30)
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA busy_timeout = 30000")
+            row = conn.execute("SELECT * FROM tasks WHERE id=?",
+                               (task_id,)).fetchone()
+        finally:
+            conn.close()
+        if not row or row["stop_requested"]:
+            return
+        if row["status"] not in ("done", "failed"):
+            return
+        if self.is_running(task_id):
+            return
+        try:
+            params = json.loads(row["params_json"] or "{}")
+        except ValueError:
+            params = {}
+        try:
+            _db_write(
+                "UPDATE tasks SET status='running', error=NULL, progress_json=NULL, "
+                "stop_requested=0, started_at=?, finished_at=NULL WHERE id=?",
+                (beijing_now(), task_id))
+            _insert_event(task_id, "info", "循环模式：自动重启任务")
+            self.start(task_id, row["type"], params)
+        except Exception as e:
+            print(f"[runner] 任务 {task_id} 自动重启失败: {e}")
+            try:
+                _insert_event(task_id, "error", f"自动重启失败: {e}")
+                _db_write(
+                    "UPDATE tasks SET status='failed', error=?, finished_at=? "
+                    "WHERE id=? AND status='running'",
+                    (f"自动重启失败: {e}"[:500], beijing_now(), task_id))
+            except Exception:
+                pass
 
     def is_running(self, task_id: int) -> bool:
         with self._lock:
@@ -333,9 +456,13 @@ class TaskRunner:
                 tail = list(entry.tail)
             self._update_progress(task_id,
                                   tail[-1] if tail else "", n)
-            self._finalize(task_id, rc, entry.stop_requested, tail)
+            status = self._finalize(task_id, rc, entry.stop_requested, tail)
             with self._lock:
                 self._runs.pop(task_id, None)
+            try:
+                self._maybe_schedule_restart(task_id, status)
+            except Exception as e:
+                print(f"[runner] task {task_id} 重启调度失败: {e}")
 
     def _update_progress(self, task_id: int, last_line: str, lines: int) -> None:
         progress = {
@@ -352,7 +479,8 @@ class TaskRunner:
             print(f"[runner] task {task_id} 更新进度失败: {e}")
 
     def _finalize(self, task_id: int, rc: int,
-                  stopped: bool, tail: list) -> None:
+                  stopped: bool, tail: list) -> str:
+        """回写终态并返回状态字符串（供循环重启调度判断）。"""
         ts = beijing_now()
         if stopped:
             status, error = "stopped", None
@@ -375,6 +503,7 @@ class TaskRunner:
             )
         except Exception as e:
             print(f"[runner] task {task_id} 回写状态失败: {e}")
+        return status
 
 
 # 模块级单例，由 main.py lifespan 初始化

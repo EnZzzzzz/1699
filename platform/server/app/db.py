@@ -15,10 +15,11 @@ DB_PATH = "/Volumes/DataDrive/proj/public/1699/.cache/1688.db"
 
 
 def migrate() -> None:
-    """幂等迁移：contacts 表补 WhatsApp 查号结果列。
+    """幂等迁移：contacts 表补 WhatsApp 查号结果列 + task_templates 表。
 
     - wa_registered INTEGER NULL：1=已注册 0=未注册 NULL=未查
     - wa_checked_at  TEXT NULL：查号完成时间（北京时间）
+    - task_templates：任务模板（name/type/params_json）
     """
     conn = sqlite3.connect(DB_PATH, timeout=30)
     try:
@@ -30,6 +31,15 @@ def migrate() -> None:
         if "wa_checked_at" not in cols:
             conn.execute(
                 "ALTER TABLE contacts ADD COLUMN wa_checked_at TEXT")
+        # 任务模板表（P2）
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS task_templates ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "name TEXT NOT NULL, "
+            "type TEXT NOT NULL, "
+            "params_json TEXT NOT NULL, "
+            "created_at TEXT, "
+            "updated_at TEXT)")
         conn.commit()
     finally:
         conn.close()

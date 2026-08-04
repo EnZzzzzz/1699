@@ -3,8 +3,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import {
-  api, ApiError, type Task, type TaskParams, type TaskPreview, type TaskType, type WaAccount,
+  api, ApiError, type Task, type TaskParams, type TaskPreview, type TaskTemplate, type TaskType,
+  type WaAccount,
 } from '@/lib/api'
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import {
@@ -19,8 +24,9 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
-import { ChevronDown, Terminal } from 'lucide-react'
-import { TASK_TYPE_OPTIONS } from './task-ui'
+import { Textarea } from '@/components/ui/textarea'
+import { ChevronDown, Save, Terminal, Trash2, Wand2 } from 'lucide-react'
+import { TASK_TYPE_OPTIONS, taskTypeLabel } from './task-ui'
 
 interface NumField {
   key: string
@@ -58,7 +64,17 @@ const RETRY_FIELDS: NumField[] = [
   { key: 'block_rest_max', label: '封禁休息上限（秒）', placeholder: '默认 900' },
 ]
 
-const ALL_NUM_KEYS = [...BASIC_FIELDS, ...RHYTHM_FIELDS, ...RETRY_FIELDS].map((f) => f.key)
+// 高级参数：其他（数字类）
+const MISC_NUM_FIELDS: NumField[] = [
+  { key: 'repeat_interval', label: '循环间隔（秒）', placeholder: '0 = 不循环，如 1800' },
+]
+
+const ALL_NUM_KEYS = [...BASIC_FIELDS, ...RHYTHM_FIELDS, ...RETRY_FIELDS, ...MISC_NUM_FIELDS].map(
+  (f) => f.key,
+)
+
+// 高级区包含的数字键（命令导入 / 模板加载命中时自动展开高级区）
+const ADVANCED_NUM_KEYS = [...RHYTHM_FIELDS, ...RETRY_FIELDS, ...MISC_NUM_FIELDS].map((f) => f.key)
 
 interface TaskFormDialogProps {
   open: boolean
@@ -89,36 +105,59 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
   // 命令预览
   const [preview, setPreview] = useState<TaskPreview | null>(null)
 
+  // 从命令导入
+  const [importOpen, setImportOpen] = useState(false)
+  const [importText, setImportText] = useState('')
+  const [parsing, setParsing] = useState(false)
+
+  // 任务模板
+  const [templates, setTemplates] = useState<TaskTemplate[]>([])
+  const [templateSel, setTemplateSel] = useState('')
+  const [saveTplOpen, setSaveTplOpen] = useState(false)
+  const [tplName, setTplName] = useState('')
+  const [savingTpl, setSavingTpl] = useState(false)
+  const [tplToDelete, setTplToDelete] = useState<TaskTemplate | null>(null)
+  const [deletingTpl, setDeletingTpl] = useState(false)
+
   const isWaCheck = type === 'wa_check'
 
   const setValue = (key: string, v: string) =>
     setValues((prev) => ({ ...prev, [key]: v }))
+
+  // 用一组 params 回填整个表单（编辑初始化 / 命令导入 / 模板加载共用）
+  const fillFromParams = (p: Record<string, unknown>) => {
+    const next: Record<string, string> = {}
+    for (const key of ALL_NUM_KEYS) {
+      if (typeof p[key] === 'number') next[key] = String(p[key])
+    }
+    setValues(next)
+    setChannels(typeof p.channels === 'string' ? (p.channels as string) : '')
+    setUseProxy(p.use_proxy !== false)
+    setHeadless(p.headless !== false)
+    setAutoSolve(p.auto_solve !== false)
+    setRetryFailed(p.retry_failed === true)
+    setWaLimit(typeof p.limit === 'number' ? String(p.limit) : '')
+    setWaInterval(typeof p.interval === 'number' ? String(p.interval) : '')
+    setSelectedAccounts(
+      Array.isArray(p.accounts)
+        ? (p.accounts as unknown[]).filter((a): a is string => typeof a === 'string')
+        : [],
+    )
+    if (ADVANCED_NUM_KEYS.some((k) => typeof p[k] === 'number')) setAdvancedOpen(true)
+  }
 
   // 打开时初始化：编辑模式回填 task.params，新建模式重置为空白默认
   useEffect(() => {
     if (!open) return
     setPreview(null)
     setAdvancedOpen(false)
+    setImportOpen(false)
+    setImportText('')
+    setTemplateSel('')
     if (task) {
-      const p = (task.params ?? {}) as Record<string, unknown>
       setType(task.type as TaskType)
-      const next: Record<string, string> = {}
-      for (const key of ALL_NUM_KEYS) {
-        if (typeof p[key] === 'number') next[key] = String(p[key])
-      }
-      setValues(next)
-      setChannels(typeof p.channels === 'string' ? (p.channels as string) : '')
-      setUseProxy(p.use_proxy !== false)
-      setHeadless(p.headless !== false)
-      setAutoSolve(p.auto_solve !== false)
-      setRetryFailed(p.retry_failed === true)
-      setWaLimit(typeof p.limit === 'number' ? String(p.limit) : '')
-      setWaInterval(typeof p.interval === 'number' ? String(p.interval) : '')
-      setSelectedAccounts(
-        Array.isArray(p.accounts)
-          ? (p.accounts as unknown[]).filter((a): a is string => typeof a === 'string')
-          : [],
-      )
+      fillFromParams((task.params ?? {}) as Record<string, unknown>)
+      setAdvancedOpen(false) // 编辑初始化不强制展开高级区
     } else {
       setType('1688_shop')
       setValues({})
@@ -131,7 +170,16 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
       setWaInterval('')
       setSelectedAccounts([])
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, task])
+
+  // 打开时拉取模板列表
+  useEffect(() => {
+    if (!open) return
+    api.getTaskTemplates()
+      .then(setTemplates)
+      .catch(() => setTemplates([]))
+  }, [open])
 
   // 拉取 WhatsApp 账号列表（仅 logged_in 可选）
   useEffect(() => {
@@ -156,6 +204,10 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
       if (waInterval.trim() !== '' && Number.isFinite(intervalN) && intervalN >= 0) {
         params.interval = intervalN
       }
+      // 循环间隔：由命令导入 / 模板回填时透传（wa 表单不展示该字段）
+      const riRaw = (values.repeat_interval ?? '').trim()
+      const riN = Number(riRaw)
+      if (riRaw !== '' && Number.isInteger(riN) && riN > 0) params.repeat_interval = riN
       return params
     }
     const params: TaskParams = { use_proxy: useProxy, headless, auto_solve: autoSolve }
@@ -164,6 +216,7 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
       if (raw === '') continue
       const n = Number(raw)
       if (!Number.isInteger(n) || n < 0) continue
+      if (key === 'repeat_interval' && n === 0) continue // 0 = 不循环，不传
       ;(params as Record<string, unknown>)[key] = n
     }
     if (channels.trim() !== '') params.channels = channels.trim()
@@ -213,7 +266,7 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
       }
       return true
     }
-    for (const f of [...BASIC_FIELDS, ...RHYTHM_FIELDS, ...RETRY_FIELDS]) {
+    for (const f of [...BASIC_FIELDS, ...RHYTHM_FIELDS, ...RETRY_FIELDS, ...MISC_NUM_FIELDS]) {
       const raw = (values[f.key] ?? '').trim()
       if (raw === '') continue
       const n = Number(raw)
@@ -256,6 +309,91 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
     }
   }
 
+  // 编辑模式类型只读：导入 / 模板类型与当前任务不同时忽略 type，仅回填参数
+  const applyImportedType = (incoming: TaskType): boolean => {
+    if (!editing) {
+      setType(incoming)
+      return true
+    }
+    if (incoming !== task.type) {
+      toast.info(
+        `类型不可修改，已忽略「${taskTypeLabel(incoming)}」，仅回填参数`,
+      )
+      return false
+    }
+    return true
+  }
+
+  // 从命令导入：调 parse 接口，成功回填 type + 全部参数
+  const handleParse = async () => {
+    const command = importText.trim()
+    if (command === '') {
+      toast.warning('请先粘贴命令')
+      return
+    }
+    setParsing(true)
+    try {
+      const res = await api.parseCommand(command)
+      const applied = applyImportedType(res.type)
+      fillFromParams((res.params ?? {}) as Record<string, unknown>)
+      for (const w of res.warnings ?? []) toast.warning(w)
+      toast.success(applied ? '命令解析成功，已回填类型与参数' : '命令解析成功，已回填参数')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '命令解析失败')
+    } finally {
+      setParsing(false)
+    }
+  }
+
+  // 从模板加载：选中即回填
+  const handleLoadTemplate = (idStr: string) => {
+    setTemplateSel('') // 加载动作而非选中态，复位占位
+    const tpl = templates.find((t) => String(t.id) === idStr)
+    if (!tpl) return
+    applyImportedType(tpl.type)
+    fillFromParams((tpl.params ?? {}) as Record<string, unknown>)
+    toast.success(`已加载模板「${tpl.name}」`)
+  }
+
+  const handleDeleteTemplate = async () => {
+    if (!tplToDelete) return
+    setDeletingTpl(true)
+    try {
+      await api.deleteTaskTemplate(tplToDelete.id)
+      setTemplates((prev) => prev.filter((t) => t.id !== tplToDelete.id))
+      toast.success(`模板「${tplToDelete.name}」已删除`)
+      setTplToDelete(null)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '删除模板失败')
+    } finally {
+      setDeletingTpl(false)
+    }
+  }
+
+  const handleSaveTemplate = async () => {
+    const name = tplName.trim()
+    if (name === '') {
+      toast.warning('请输入模板名称')
+      return
+    }
+    setSavingTpl(true)
+    try {
+      const created = await api.createTaskTemplate({
+        name,
+        type: editing ? (task.type as TaskType) : type,
+        params: buildParams(),
+      })
+      setTemplates((prev) => [...prev, created])
+      toast.success(`模板「${created.name}」已保存`)
+      setSaveTplOpen(false)
+      setTplName('')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '保存模板失败')
+    } finally {
+      setSavingTpl(false)
+    }
+  }
+
   const renderNumField = (f: NumField) => (
     <div key={f.key} className="space-y-1.5">
       <Label htmlFor={`tf-${f.key}`} className="text-xs">{f.label}</Label>
@@ -281,6 +419,7 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
   )
 
   return (
+    <>
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-xl">
         <DialogHeader>
@@ -293,6 +432,76 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
         </DialogHeader>
 
         <div className="space-y-4">
+          {/* 从命令导入：折叠区 */}
+          <Collapsible open={importOpen} onOpenChange={setImportOpen}>
+            <CollapsibleTrigger asChild>
+              <Button variant="outline" size="sm" className="w-full justify-between">
+                <span className="flex items-center gap-1.5">
+                  <Wand2 className="h-3.5 w-3.5" />
+                  从命令导入
+                </span>
+                <ChevronDown
+                  className={`h-4 w-4 transition-transform ${importOpen ? 'rotate-180' : ''}`}
+                />
+              </Button>
+            </CollapsibleTrigger>
+            <CollapsibleContent className="space-y-2 pt-2">
+              <Textarea
+                value={importText}
+                onChange={(e) => setImportText(e.target.value)}
+                placeholder="python -m fetcher 1688 company --proxy --headed -n 50 --worker 1"
+                rows={3}
+                className="font-mono text-xs"
+              />
+              <p className="text-xs text-muted-foreground">
+                支持 while 循环 + sleep 写法（解析为循环间隔）
+              </p>
+              <Button size="sm" onClick={handleParse} disabled={parsing}>
+                {parsing ? '解析中…' : '解析'}
+              </Button>
+            </CollapsibleContent>
+          </Collapsible>
+
+          {/* 从模板加载 */}
+          <div className="space-y-2">
+            <Label>从模板加载</Label>
+            <Select value={templateSel} onValueChange={handleLoadTemplate}>
+              <SelectTrigger>
+                <SelectValue
+                  placeholder={templates.length > 0 ? '选择模板，立即回填表单' : '暂无已保存模板'}
+                />
+              </SelectTrigger>
+              <SelectContent>
+                {templates.map((t) => (
+                  <SelectItem key={t.id} value={String(t.id)}>
+                    <span className="flex w-full items-center justify-between gap-4">
+                      <span>
+                        {t.name}
+                        <span className="ml-1.5 text-xs text-muted-foreground">
+                          {taskTypeLabel(t.type)}
+                        </span>
+                      </span>
+                      <span
+                        role="button"
+                        aria-label={`删除模板 ${t.name}`}
+                        title="删除模板"
+                        className="rounded p-0.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          e.preventDefault()
+                          setTplToDelete(t)
+                        }}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </span>
+                    </span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
           <div className="space-y-2">
             <Label>任务类型</Label>
             <Select
@@ -406,6 +615,9 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
 
                   <div className="space-y-2">
                     <p className="text-xs font-medium text-muted-foreground">其他</p>
+                    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                      {MISC_NUM_FIELDS.map(renderNumField)}
+                    </div>
                     <div className="space-y-1.5">
                       <Label htmlFor="tf-channels" className="text-xs">代理通道</Label>
                       <Input
@@ -459,17 +671,76 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
           </div>
         </div>
 
+        <DialogFooter className="gap-2 sm:justify-between">
+          <Button
+            variant="outline"
+            onClick={() => { setTplName(''); setSaveTplOpen(true) }}
+            disabled={submitting}
+          >
+            <Save className="mr-1.5 h-3.5 w-3.5" />
+            保存为模板
+          </Button>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
+              取消
+            </Button>
+            <Button onClick={handleSubmit} disabled={submitting}>
+              {submitting
+                ? editing ? '保存中…' : '创建中…'
+                : editing ? '保存参数' : '创建任务'}
+            </Button>
+          </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    {/* 保存为模板：输入模板名 */}
+    <Dialog open={saveTplOpen} onOpenChange={setSaveTplOpen}>
+      <DialogContent className="sm:max-w-sm">
+        <DialogHeader>
+          <DialogTitle>保存为模板</DialogTitle>
+          <DialogDescription>
+            将当前类型与参数保存为模板，之后可在表单顶部一键回填。
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-2">
+          <Label htmlFor="tpl-name">模板名称</Label>
+          <Input
+            id="tpl-name"
+            value={tplName}
+            placeholder="如：公司采集 · 50/批 · 半小时循环"
+            onChange={(e) => setTplName(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') handleSaveTemplate() }}
+          />
+        </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
+          <Button variant="outline" onClick={() => setSaveTplOpen(false)} disabled={savingTpl}>
             取消
           </Button>
-          <Button onClick={handleSubmit} disabled={submitting}>
-            {submitting
-              ? editing ? '保存中…' : '创建中…'
-              : editing ? '保存参数' : '创建任务'}
+          <Button onClick={handleSaveTemplate} disabled={savingTpl}>
+            {savingTpl ? '保存中…' : '保存'}
           </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
+
+    {/* 删除模板确认 */}
+    <AlertDialog open={tplToDelete != null} onOpenChange={(o) => { if (!o) setTplToDelete(null) }}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>删除模板</AlertDialogTitle>
+          <AlertDialogDescription>
+            确认删除模板「{tplToDelete?.name}」？此操作不可恢复。
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={deletingTpl}>取消</AlertDialogCancel>
+          <AlertDialogAction onClick={handleDeleteTemplate} disabled={deletingTpl}>
+            {deletingTpl ? '删除中…' : '删除'}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    </>
   )
 }
