@@ -76,11 +76,13 @@ export function workerChip(worker: number | string | undefined | null) {
   )
 }
 
-/** 从日志事件取 worker：优先 data.worker，回退解析消息行首 [N] 标记。 */
+/** 从日志事件取 worker：优先 data.worker，回退解析消息（行首 [N] 或 identity=xxx）。 */
 export function eventWorker(ev: { message: string; data?: { worker?: number | string } | null }): number | string | null {
   if (ev.data?.worker !== undefined && ev.data?.worker !== null) return ev.data.worker
-  const m = /^\s*\[(\d+)\]/.exec(ev.message)
-  return m ? Number(m[1]) : null
+  const num = /^\s*\[(\d+)\]/.exec(ev.message)
+  if (num) return Number(num[1])
+  const id = /identity=([^\s)，、]+)/.exec(ev.message)
+  return id ? id[1] : null
 }
 
 // 秒数人性化：>=3600 显小时、>=60 显分钟、否则显秒（最多 1 位小数）

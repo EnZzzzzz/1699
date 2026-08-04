@@ -133,13 +133,21 @@ def _insert_event(task_id: int, level: str, message: str, data=None) -> None:
     )
 
 
-_WORKER_RE = re.compile(r"^\s*\[(\d+)\]")
+_WORKER_NUM_RE = re.compile(r"^\s*\[(\d+)\]")
+_WORKER_IDENTITY_RE = re.compile(r"identity=([^\s)，、]+)")
 
 
 def _extract_worker(line: str):
-    """从日志行首的 worker 标记（如 "[2] ..."）提取 worker 编号，供前端分色。"""
-    m = _WORKER_RE.match(line)
-    return {"worker": int(m.group(1))} if m else None
+    """提取日志的 worker 标识，供前端分色。
+    支持：行首编号标记 "[2] ..."；代理身份 identity=出口IP（每 worker 一个）。
+    """
+    m = _WORKER_NUM_RE.match(line)
+    if m:
+        return {"worker": int(m.group(1))}
+    m = _WORKER_IDENTITY_RE.search(line)
+    if m:
+        return {"worker": m.group(1)}
+    return None
 
 
 class _RunEntry:
