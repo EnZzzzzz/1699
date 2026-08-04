@@ -13,10 +13,15 @@ interface TaskLogSheetProps {
   task: Task | null
   open: boolean
   onOpenChange: (open: boolean) => void
+  onStatus?: (status: string) => void
 }
 
-export function TaskLogSheet({ task, open, onOpenChange }: TaskLogSheetProps) {
-  const { events, status, connected } = useTaskEvents(open ? (task?.id ?? null) : null, open)
+export function TaskLogSheet({ task, open, onOpenChange, onStatus }: TaskLogSheetProps) {
+  const { events, status, connected } = useTaskEvents(
+    open ? (task?.id ?? null) : null,
+    open,
+    (s) => onStatus?.(s),
+  )
   const scrollRef = useRef<HTMLDivElement>(null)
   const autoRef = useRef(true)
   const [autoScroll, setAutoScroll] = useState(true)

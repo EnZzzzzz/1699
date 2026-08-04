@@ -12,12 +12,18 @@ export interface TaskEventsState {
   connected: boolean
 }
 
-export function useTaskEvents(taskId: number | null, open: boolean): TaskEventsState {
+export function useTaskEvents(
+  taskId: number | null,
+  open: boolean,
+  onStatus?: (status: string, finishedAt: string | null) => void,
+): TaskEventsState {
   const [events, setEvents] = useState<TaskEvent[]>([])
   const [status, setStatus] = useState<string | null>(null)
   const [finishedAt, setFinishedAt] = useState<string | null>(null)
   const [connected, setConnected] = useState(false)
   const seenRef = useRef<Set<number>>(new Set())
+  const onStatusRef = useRef(onStatus)
+  onStatusRef.current = onStatus
 
   useEffect(() => {
     if (!open || taskId == null) return
@@ -44,12 +50,13 @@ export function useTaskEvents(taskId: number | null, open: boolean): TaskEventsS
       }
     }
 
-    // 自定义 status 事件：任务状态变更
+    // 自定义 status 事件：任务状态变更（同步通知外层，触发列表即时刷新）
     es.addEventListener('status', (e) => {
       try {
         const data = JSON.parse((e as MessageEvent).data as string) as TaskStatusEvent
         setStatus(data.status)
         setFinishedAt(data.finished_at ?? null)
+        onStatusRef.current?.(data.status, data.finished_at ?? null)
       } catch {
         // 忽略无法解析的状态帧
       }

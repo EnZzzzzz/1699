@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { api, useApiData, formatTime, formatDuration, type Task } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import {
@@ -73,9 +73,15 @@ function TaskRow({
 }
 
 export default function Tasks() {
-  const { data, loading, error, reload } = useApiData(api.tasks, 30_000)
+  // 有任务在跑时加快轮询（5s），空闲时 30s；日志抽屉收到 SSE 状态事件也会即时触发刷新
+  const [hasRunning, setHasRunning] = useState(false)
+  const { data, loading, error, reload } = useApiData(api.tasks, hasRunning ? 5_000 : 30_000)
   const [createOpen, setCreateOpen] = useState(false)
   const [logTask, setLogTask] = useState<Task | null>(null)
+
+  useEffect(() => {
+    setHasRunning((data ?? []).some((t) => t.status === 'running'))
+  }, [data])
 
   return (
     <div className="p-6">
@@ -142,6 +148,7 @@ export default function Tasks() {
         onOpenChange={(open) => {
           if (!open) setLogTask(null)
         }}
+        onStatus={() => reload()}
       />
     </div>
   )
