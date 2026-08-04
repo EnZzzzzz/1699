@@ -64,17 +64,44 @@ export interface Task {
 
 export type TaskType = '1688_shop' | '1688_contact' | 'yiwugo_search' | 'wa_check'
 
+// 采集类参数全量可选键：留空即不传，由 CLI 默认值生效。
+// wa_check 仅使用 limit / interval / accounts。
 export interface TaskParams {
-  batch_num: number
-  max_batches: number
-  limit: number
-  use_proxy: boolean
-  headless: boolean
+  batch_num?: number
+  limit?: number
+  max_batches?: number
+  workers?: number
+  channels?: string
+  batch_rest?: number
+  sample_min?: number
+  sample_max?: number
+  rest_every?: number
+  rest_min?: number
+  rest_max?: number
+  stagger_min?: number
+  stagger_max?: number
+  ip_retry?: number
+  net_retry?: number
+  max_consecutive_fail?: number
+  block_rest_min?: number
+  block_rest_max?: number
+  use_proxy?: boolean
+  headless?: boolean
+  auto_solve?: boolean
+  retry_failed?: boolean // 仅 1688_contact
+  // wa_check 专用
+  interval?: number
+  accounts?: string[]
 }
 
 export interface CreateTaskRequest {
   type: TaskType
   params: TaskParams
+}
+
+export interface TaskPreview {
+  cmd: string[] | null // wa_check 为进程内任务，返回 null
+  cmdline: string // cmd 拼接的命令行，或 wa_check 的说明文案
 }
 
 export interface StartTaskResult {
@@ -177,14 +204,30 @@ function normalizeProvider(p: any): Provider {
   }
 }
 
+// 后端 task 原始结构（params_json / progress_json）归一化为前端契约
+// （params / progress），单点适配。
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function normalizeTask(t: any): Task {
+  return {
+    ...t,
+    params: t.params ?? t.params_json ?? {},
+    progress: t.progress ?? t.progress_json ?? null,
+  }
+}
+
 export const api = {
   health: () => request<{ ok: boolean }>('/health'),
   overview: () => request<Overview>('/dashboard/overview'),
   pipeline: (hours = 12) => request<Pipeline>(`/dashboard/pipeline?hours=${hours}`),
-  tasks: () => request<Task[]>('/tasks'),
-  createTask: (body: CreateTaskRequest) =>
-    request<Task>('/tasks', { method: 'POST', body: JSON.stringify(body) }),
-  getTask: (id: number) => request<Task>(`/tasks/${id}`),
+  tasks: async () => (await request<unknown[]>('/tasks')).map(normalizeTask),
+  createTask: async (body: CreateTaskRequest) =>
+    normalizeTask(await request<unknown>('/tasks', { method: 'POST', body: JSON.stringify(body) })),
+  previewTask: (body: CreateTaskRequest) =>
+    request<TaskPreview>('/tasks/preview', { method: 'POST', body: JSON.stringify(body) }),
+  putTask: async (id: number, params: TaskParams) =>
+    normalizeTask(
+      await request<unknown>(`/tasks/${id}`, { method: 'PUT', body: JSON.stringify({ params }) })),
+  getTask: async (id: number) => normalizeTask(await request<unknown>(`/tasks/${id}`)),
   startTask: (id: number) => request<StartTaskResult>(`/tasks/${id}/start`, { method: 'POST' }),
   stopTask: (id: number) => request<{ ok: boolean }>(`/tasks/${id}/stop`, { method: 'POST' }),
   providers: async () => (await request<unknown[]>('/providers')).map(normalizeProvider),

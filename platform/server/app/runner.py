@@ -58,24 +58,56 @@ def classify_line(line: str) -> str:
     return "info"
 
 
+# params 键 → CLI 数值/时长参数（值非 None 才输出，缺省=CLI 自带默认值）
+_NUMERIC_FLAGS = (
+    ("batch_num", "-n"),
+    ("limit", "--limit"),
+    ("max_batches", "--max-batches"),
+    ("workers", "--workers"),
+    ("channels", "--channels"),
+    ("batch_rest", "--batch-rest"),
+    ("sample_min", "--sample-min"),
+    ("sample_max", "--sample-max"),
+    ("rest_every", "--rest-every"),
+    ("rest_min", "--rest-min"),
+    ("rest_max", "--rest-max"),
+    ("stagger_min", "--stagger-min"),
+    ("stagger_max", "--stagger-max"),
+    ("ip_retry", "--ip-retry"),
+    ("net_retry", "--net-retry"),
+    ("max_consecutive_fail", "--max-consecutive-fail"),
+    ("block_rest_min", "--block-rest-min"),
+    ("block_rest_max", "--block-rest-max"),
+)
+
+
 def build_command(task_type: str, params: dict) -> list:
+    """任务类型 + params → fetcher CLI 命令列表（subprocess 直接 Popen）。
+
+    规则：
+    - 数值/时长参数值非 None 才输出（缺省=CLI 自带默认值，保持命令干净）；
+    - 开关：use_proxy=true→--proxy；headless=false→--headed；
+      auto_solve=false→--no-auto-solve；
+      retry_failed=true 且 1688_contact→--retry-failed；
+    - wa_check 等进程内类型不走这里。
+    """
     sub = TASK_COMMANDS.get(task_type)
     if not sub:
         raise ValueError(f"未知任务类型: {task_type}")
     params = params or {}
     cmd = [PYTHON_BIN, "-m", "fetcher"] + sub
-    if params.get("use_proxy", True):
+    for key, flag in _NUMERIC_FLAGS:
+        val = params.get(key)
+        if val is not None:
+            cmd += [flag, str(val)]
+    if params.get("use_proxy") is True:
         cmd.append("--proxy")
-    batch_num = int(params.get("batch_num") or 10)
-    cmd += ["-n", str(batch_num)]
-    max_batches = int(params.get("max_batches") or 0)
-    if max_batches > 0:
-        cmd += ["--max-batches", str(max_batches)]
-    limit = int(params.get("limit") or 0)
-    if limit > 0:
-        cmd += ["--limit", str(limit)]
-    if not params.get("headless", True):
+    if params.get("headless") is False:
         cmd.append("--headed")
+    if params.get("auto_solve") is False:
+        cmd.append("--no-auto-solve")
+    if task_type == "1688_contact" and params.get("retry_failed") is True:
+        cmd.append("--retry-failed")
     return cmd
 
 

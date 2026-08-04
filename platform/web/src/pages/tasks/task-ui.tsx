@@ -51,3 +51,37 @@ export const TASK_TYPE_OPTIONS: { value: TaskType; label: string }[] = [
 export function taskTypeLabel(type: string): string {
   return TASK_TYPE_OPTIONS.find((o) => o.value === type)?.label ?? type
 }
+
+// 任务参数摘要：表格 params 列的小字展示
+// 采集类示例：n=10 批=4 代理 无头；wa_check：上限=500 账号=a,b
+export function paramsSummary(task: { type: string; params: Record<string, unknown> }): string {
+  const p = task.params ?? {}
+  const num = (k: string): number | null =>
+    typeof p[k] === 'number' && Number.isFinite(p[k] as number) ? (p[k] as number) : null
+
+  if (task.type === 'wa_check') {
+    const parts: string[] = []
+    const limit = num('limit')
+    if (limit !== null) parts.push(limit > 0 ? `上限=${limit}` : '全部未查')
+    const accs = Array.isArray(p.accounts) ? (p.accounts as unknown[]).filter((a) => typeof a === 'string') : []
+    if (accs.length > 0) parts.push(`账号=${accs.join(',')}`)
+    const interval = num('interval')
+    if (interval !== null) parts.push(`间隔=${interval}s`)
+    return parts.length > 0 ? parts.join(' ') : '默认参数'
+  }
+
+  const parts: string[] = []
+  const batchNum = num('batch_num')
+  if (batchNum !== null) parts.push(`n=${batchNum}`)
+  const maxBatches = num('max_batches')
+  if (maxBatches !== null) parts.push(maxBatches > 0 ? `批=${maxBatches}` : '批=∞')
+  const limit = num('limit')
+  if (limit !== null && limit > 0) parts.push(`上限=${limit}`)
+  const workers = num('workers')
+  if (workers !== null) parts.push(`w=${workers}`)
+  if (p.use_proxy === true) parts.push('代理')
+  if (p.headless === true) parts.push('无头')
+  else if (p.headless === false) parts.push('有头')
+  if (p.retry_failed === true) parts.push('重试失败')
+  return parts.length > 0 ? parts.join(' ') : '默认参数'
+}

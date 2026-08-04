@@ -9,8 +9,8 @@ import {
 } from '@/components/ui/tooltip'
 import { PageHeader, LoadingState, ErrorState, EmptyState } from '@/components/PageState'
 import { Plus, RefreshCw } from 'lucide-react'
-import { statusBadge, taskTypeLabel } from './tasks/task-ui'
-import { CreateTaskDialog } from './tasks/CreateTaskDialog'
+import { statusBadge, taskTypeLabel, paramsSummary } from './tasks/task-ui'
+import { TaskFormDialog } from './tasks/TaskFormDialog'
 import { TaskActions } from './tasks/TaskActions'
 import { TaskLogSheet } from './tasks/TaskLogSheet'
 
@@ -34,6 +34,11 @@ function TaskRow({
     <TableRow>
       <TableCell className="font-mono text-xs text-muted-foreground">#{task.id}</TableCell>
       <TableCell className="font-medium">{taskTypeLabel(task.type)}</TableCell>
+      <TableCell className="max-w-40">
+        <span className="block truncate text-xs text-muted-foreground" title={paramsSummary(task)}>
+          {paramsSummary(task)}
+        </span>
+      </TableCell>
       <TableCell>
         {statusBadge(task.status)}
         {line && (
@@ -104,11 +109,12 @@ export default function Tasks() {
               <TableRow>
                 <TableHead className="w-16">ID</TableHead>
                 <TableHead>类型</TableHead>
+                <TableHead>参数</TableHead>
                 <TableHead>状态</TableHead>
                 <TableHead>创建时间</TableHead>
                 <TableHead>耗时</TableHead>
                 <TableHead>错误</TableHead>
-                <TableHead className="w-44">操作</TableHead>
+                <TableHead className="w-60">操作</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -125,10 +131,10 @@ export default function Tasks() {
         </div>
       )}
 
-      <CreateTaskDialog
+      <TaskFormDialog
         open={createOpen}
         onOpenChange={setCreateOpen}
-        onCreated={reload}
+        onSaved={reload}
       />
       <TaskLogSheet
         task={logTask}

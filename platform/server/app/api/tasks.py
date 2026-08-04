@@ -8,7 +8,8 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.db import DB_PATH, connect
-from app.runner import IN_PROCESS_TYPES, TASK_COMMANDS, beijing_now, runner
+from app.runner import (IN_PROCESS_TYPES, PYTHON_BIN, TASK_COMMANDS,
+                        beijing_now, build_command, runner)
 
 router = APIRouter()
 
@@ -51,14 +52,33 @@ def list_tasks():
 
 
 class TaskParams(BaseModel):
-    batch_num: int = 10
-    max_batches: int = 0
-    limit: int = 0
-    use_proxy: bool = True
-    headless: bool = True
+    """任务参数：全部可选，None=缺省（CLI 自带默认值，不输出对应参数）。"""
+    batch_num: int | None = None            # → -n
+    max_batches: int | None = None          # → --max-batches
+    limit: int | None = None                # → --limit
+    workers: int | None = None              # → --workers
+    channels: int | None = None             # → --channels
+    batch_rest: float | None = None         # → --batch-rest
+    sample_min: float | None = None         # → --sample-min
+    sample_max: float | None = None         # → --sample-max
+    rest_every: int | None = None           # → --rest-every
+    rest_min: float | None = None           # → --rest-min
+    rest_max: float | None = None           # → --rest-max
+    stagger_min: float | None = None        # → --stagger-min
+    stagger_max: float | None = None        # → --stagger-max
+    ip_retry: int | None = None             # → --ip-retry
+    net_retry: int | None = None            # → --net-retry
+    max_consecutive_fail: int | None = None  # → --max-consecutive-fail
+    block_rest_min: float | None = None     # → --block-rest-min
+    block_rest_max: float | None = None     # → --block-rest-max
+    # 开关
+    use_proxy: bool | None = None           # true → --proxy
+    headless: bool | None = None            # false → --headed
+    auto_solve: bool | None = None          # false → --no-auto-solve
+    retry_failed: bool | None = None        # true 且 1688_contact → --retry-failed
     # wa_check（进程内 WhatsApp 查号）专用：
-    interval: float = 2.0       # 批间间隔秒
-    accounts: list[str] = []    # 账号池，空 = 仅默认账号
+    interval: float | None = None           # 批间间隔秒
+    accounts: list[str] | None = None       # 账号池，空 = 仅默认账号
 
 
 class TaskCreate(BaseModel):
@@ -98,6 +118,46 @@ def _get_task_row(task_id: int):
     if not row:
         raise HTTPException(status_code=404, detail=f"任务 {task_id} 不存在")
     return row
+
+
+# ---------------- 命令预览 / 参数修改 ----------------
+
+@router.post("/tasks/preview")
+def preview_task(body: TaskCreate):
+    """按 type + params 预览实际将执行的 fetcher CLI 命令（不落库）。"""
+    if body.type not in TASK_TYPES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"未知任务类型 {body.type!r}，可选: {TASK_TYPES}")
+    params = body.params.model_dump()
+    if body.type in IN_PROCESS_TYPES:
+        return {"cmd": None, "cmdline": "进程内执行（CheckWhatsApp 原子）"}
+    try:
+        cmd = build_command(body.type, params)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    # 展示串：绝对路径 python 换成 python，保持真实可读
+    cmdline = " ".join("python" if p == PYTHON_BIN else p for p in cmd)
+    return {"cmd": cmd, "cmdline": cmdline}
+
+
+class TaskUpdate(BaseModel):
+    params: TaskParams = Field(...)
+
+
+@router.put("/tasks/{task_id}")
+def update_task(task_id: int, body: TaskUpdate):
+    """修改任务参数：仅 pending/failed/stopped 可改，否则 409。"""
+    row = _get_task_row(task_id)
+    status = row["status"]
+    if status not in ("pending", "failed", "stopped"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"当前状态 {status!r} 不可修改参数（仅 pending/failed/stopped）")
+    params_json = json.dumps(body.params.model_dump(), ensure_ascii=False)
+    _write("UPDATE tasks SET params_json=? WHERE id=?",
+           (params_json, task_id))
+    return _row_to_task(_get_task_row(task_id))
 
 
 @router.post("/tasks/{task_id}/start")

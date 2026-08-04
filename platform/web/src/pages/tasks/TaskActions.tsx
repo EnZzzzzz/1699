@@ -1,4 +1,4 @@
-// 任务行操作按钮：启动 / 停止（二次确认）/ 日志
+// 任务行操作按钮：启动 / 停止（二次确认）/ 编辑参数 / 日志
 import { useState } from 'react'
 import { toast } from 'sonner'
 import { api, ApiError, type Task } from '@/lib/api'
@@ -8,7 +8,8 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
-import { Play, ScrollText, Square } from 'lucide-react'
+import { Pencil, Play, ScrollText, Square } from 'lucide-react'
+import { TaskFormDialog } from './TaskFormDialog'
 
 interface TaskActionsProps {
   task: Task
@@ -18,6 +19,7 @@ interface TaskActionsProps {
 
 export function TaskActions({ task, onChanged, onShowLogs }: TaskActionsProps) {
   const [busy, setBusy] = useState(false)
+  const [editOpen, setEditOpen] = useState(false)
 
   const run = async (fn: () => Promise<unknown>, okMsg: string) => {
     setBusy(true)
@@ -39,6 +41,7 @@ export function TaskActions({ task, onChanged, onShowLogs }: TaskActionsProps) {
 
   const canStop = task.status === 'running'
   const canStart = task.status === 'pending' || task.status === 'failed' || task.status === 'stopped'
+  const canEdit = canStart // pending / failed / stopped 可编辑参数
 
   return (
     <div className="flex items-center gap-1">
@@ -82,10 +85,24 @@ export function TaskActions({ task, onChanged, onShowLogs }: TaskActionsProps) {
         </Button>
       )}
 
+      {canEdit && (
+        <Button variant="ghost" size="sm" disabled={busy} onClick={() => setEditOpen(true)}>
+          <Pencil className="mr-1 h-3.5 w-3.5" />
+          编辑
+        </Button>
+      )}
+
       <Button variant="ghost" size="sm" onClick={onShowLogs}>
         <ScrollText className="mr-1 h-3.5 w-3.5" />
         日志
       </Button>
+
+      <TaskFormDialog
+        open={editOpen}
+        onOpenChange={setEditOpen}
+        task={task}
+        onSaved={onChanged}
+      />
     </div>
   )
 }

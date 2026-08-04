@@ -1,0 +1,476 @@
+// 任务表单对话框：新建 / 编辑双模式（task 为空 = 新建，否则编辑其 params）
+// 数字输入留空 = 不传该参数（CLI 默认值生效）；底部实时预览将执行的命令（防抖 500ms）
+import { useEffect, useMemo, useState } from 'react'
+import { toast } from 'sonner'
+import {
+  api, ApiError, type Task, type TaskParams, type TaskPreview, type TaskType, type WaAccount,
+} from '@/lib/api'
+import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
+import {
+  Collapsible, CollapsibleContent, CollapsibleTrigger,
+} from '@/components/ui/collapsible'
+import {
+  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
+} from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
+import { ChevronDown, Terminal } from 'lucide-react'
+import { TASK_TYPE_OPTIONS } from './task-ui'
+
+interface NumField {
+  key: string
+  label: string
+  placeholder: string
+  hint?: string
+}
+
+// 基础区常用数字参数
+const BASIC_FIELDS: NumField[] = [
+  { key: 'batch_num', label: '每批数量', placeholder: '默认 10' },
+  { key: 'limit', label: '采集上限', placeholder: '0 = 不限', hint: '0 = 不限' },
+  { key: 'max_batches', label: '最大批数', placeholder: '0 = 不限', hint: '0 = 不限' },
+  { key: 'workers', label: '并发数', placeholder: '留空 = 默认' },
+]
+
+// 高级参数：节奏
+const RHYTHM_FIELDS: NumField[] = [
+  { key: 'batch_rest', label: '批间休息（秒）', placeholder: '默认 900' },
+  { key: 'sample_min', label: '取样下限', placeholder: '默认 13' },
+  { key: 'sample_max', label: '取样上限', placeholder: '默认 20' },
+  { key: 'rest_every', label: '每隔 N 次休息', placeholder: '留空 = 默认' },
+  { key: 'rest_min', label: '休息下限（秒）', placeholder: '默认 60' },
+  { key: 'rest_max', label: '休息上限（秒）', placeholder: '默认 180' },
+  { key: 'stagger_min', label: '错开下限（秒）', placeholder: '默认 15' },
+  { key: 'stagger_max', label: '错开上限（秒）', placeholder: '默认 60' },
+]
+
+// 高级参数：重试与风控
+const RETRY_FIELDS: NumField[] = [
+  { key: 'ip_retry', label: 'IP 重试次数', placeholder: '默认 3' },
+  { key: 'net_retry', label: '网络重试次数', placeholder: '默认 5' },
+  { key: 'max_consecutive_fail', label: '最大连续失败', placeholder: '默认 5' },
+  { key: 'block_rest_min', label: '封禁休息下限（秒）', placeholder: '默认 600' },
+  { key: 'block_rest_max', label: '封禁休息上限（秒）', placeholder: '默认 900' },
+]
+
+const ALL_NUM_KEYS = [...BASIC_FIELDS, ...RHYTHM_FIELDS, ...RETRY_FIELDS].map((f) => f.key)
+
+interface TaskFormDialogProps {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  onSaved: () => void
+  task?: Task | null // 传入 = 编辑模式（type 只读，回填 params）
+}
+
+export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDialogProps) {
+  const editing = task != null
+
+  const [type, setType] = useState<TaskType>('1688_shop')
+  const [values, setValues] = useState<Record<string, string>>({})
+  const [channels, setChannels] = useState('')
+  const [useProxy, setUseProxy] = useState(true)
+  const [headless, setHeadless] = useState(true)
+  const [autoSolve, setAutoSolve] = useState(false)
+  const [retryFailed, setRetryFailed] = useState(false)
+  const [advancedOpen, setAdvancedOpen] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+
+  // wa_check 专用表单状态
+  const [waLimit, setWaLimit] = useState('')
+  const [waInterval, setWaInterval] = useState('')
+  const [waAccounts, setWaAccounts] = useState<WaAccount[]>([])
+  const [selectedAccounts, setSelectedAccounts] = useState<string[]>([])
+
+  // 命令预览
+  const [preview, setPreview] = useState<TaskPreview | null>(null)
+
+  const isWaCheck = type === 'wa_check'
+
+  const setValue = (key: string, v: string) =>
+    setValues((prev) => ({ ...prev, [key]: v }))
+
+  // 打开时初始化：编辑模式回填 task.params，新建模式重置为空白默认
+  useEffect(() => {
+    if (!open) return
+    setPreview(null)
+    setAdvancedOpen(false)
+    if (task) {
+      const p = (task.params ?? {}) as Record<string, unknown>
+      setType(task.type as TaskType)
+      const next: Record<string, string> = {}
+      for (const key of ALL_NUM_KEYS) {
+        if (typeof p[key] === 'number') next[key] = String(p[key])
+      }
+      setValues(next)
+      setChannels(typeof p.channels === 'string' ? (p.channels as string) : '')
+      setUseProxy(p.use_proxy !== false)
+      setHeadless(p.headless !== false)
+      setAutoSolve(p.auto_solve === true)
+      setRetryFailed(p.retry_failed === true)
+      setWaLimit(typeof p.limit === 'number' ? String(p.limit) : '')
+      setWaInterval(typeof p.interval === 'number' ? String(p.interval) : '')
+      setSelectedAccounts(
+        Array.isArray(p.accounts)
+          ? (p.accounts as unknown[]).filter((a): a is string => typeof a === 'string')
+          : [],
+      )
+    } else {
+      setType('1688_shop')
+      setValues({})
+      setChannels('')
+      setUseProxy(true)
+      setHeadless(true)
+      setAutoSolve(false)
+      setRetryFailed(false)
+      setWaLimit('')
+      setWaInterval('')
+      setSelectedAccounts([])
+    }
+  }, [open, task])
+
+  // 拉取 WhatsApp 账号列表（仅 logged_in 可选）
+  useEffect(() => {
+    if (!open) return
+    api.waAccounts()
+      .then((accs) => setWaAccounts(accs.filter((a) => a.logged_in)))
+      .catch(() => setWaAccounts([]))
+  }, [open])
+
+  const toggleAccount = (name: string, checked: boolean) => {
+    setSelectedAccounts((prev) =>
+      checked ? [...prev, name] : prev.filter((n) => n !== name))
+  }
+
+  // 由当前表单构造 params（宽松模式：无法解析的数字直接跳过，供预览使用）
+  const buildParams = (): TaskParams => {
+    if (isWaCheck) {
+      const params: TaskParams = { accounts: selectedAccounts }
+      const limitN = Number(waLimit)
+      if (waLimit.trim() !== '' && Number.isInteger(limitN) && limitN >= 0) params.limit = limitN
+      const intervalN = Number(waInterval)
+      if (waInterval.trim() !== '' && Number.isFinite(intervalN) && intervalN >= 0) {
+        params.interval = intervalN
+      }
+      return params
+    }
+    const params: TaskParams = { use_proxy: useProxy, headless }
+    for (const key of ALL_NUM_KEYS) {
+      const raw = (values[key] ?? '').trim()
+      if (raw === '') continue
+      const n = Number(raw)
+      if (!Number.isInteger(n) || n < 0) continue
+      ;(params as Record<string, unknown>)[key] = n
+    }
+    if (channels.trim() !== '') params.channels = channels.trim()
+    if (autoSolve) params.auto_solve = true
+    if (retryFailed && type === '1688_contact') params.retry_failed = true
+    return params
+  }
+
+  // 参数签名：内容变化时触发防抖预览
+  const paramsKey = useMemo(
+    () =>
+      JSON.stringify({
+        type, values, channels, useProxy, headless, autoSolve, retryFailed,
+        waLimit, waInterval, selectedAccounts,
+      }),
+    [type, values, channels, useProxy, headless, autoSolve, retryFailed,
+      waLimit, waInterval, selectedAccounts],
+  )
+
+  // 命令预览：防抖 500ms 调 preview 接口，失败静默不阻塞
+  useEffect(() => {
+    if (!open) return
+    const timer = setTimeout(() => {
+      api.previewTask({ type, params: buildParams() })
+        .then((res) => setPreview(res))
+        .catch(() => setPreview(null))
+    }, 500)
+    return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, paramsKey])
+
+  // 严格校验（提交时）：已填写的数字必须是合法的非负整数
+  const validate = (): boolean => {
+    if (isWaCheck) {
+      if (waLimit.trim() !== '') {
+        const n = Number(waLimit)
+        if (!Number.isInteger(n) || n < 0) {
+          toast.error('查号上限需为不小于 0 的整数（0 = 全部未查）')
+          return false
+        }
+      }
+      if (waInterval.trim() !== '') {
+        const n = Number(waInterval)
+        if (!Number.isFinite(n) || n < 0) {
+          toast.error('批间间隔需为不小于 0 的数字（秒）')
+          return false
+        }
+      }
+      return true
+    }
+    for (const f of [...BASIC_FIELDS, ...RHYTHM_FIELDS, ...RETRY_FIELDS]) {
+      const raw = (values[f.key] ?? '').trim()
+      if (raw === '') continue
+      const n = Number(raw)
+      if (!Number.isInteger(n) || n < 0) {
+        toast.error(`「${f.label}」需为不小于 0 的整数，或留空使用默认值`)
+        return false
+      }
+    }
+    const batchNum = Number(values.batch_num)
+    if ((values.batch_num ?? '').trim() !== '' && batchNum < 1) {
+      toast.error('每批数量需为不小于 1 的整数')
+      return false
+    }
+    return true
+  }
+
+  const handleSubmit = async () => {
+    if (!validate()) return
+    setSubmitting(true)
+    try {
+      const params = buildParams()
+      if (editing) {
+        const saved = await api.putTask(task.id, params)
+        toast.success(`任务 #${saved.id} 参数已保存`)
+      } else {
+        const created = await api.createTask({ type, params })
+        toast.success(`任务 #${created.id} 创建成功`)
+      }
+      onOpenChange(false)
+      onSaved()
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409) {
+        toast.warning('任务状态已变化，当前状态不允许修改参数')
+        onSaved() // 刷新列表反映最新状态
+      } else {
+        toast.error(e instanceof Error ? e.message : editing ? '保存参数失败' : '创建任务失败')
+      }
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const renderNumField = (f: NumField) => (
+    <div key={f.key} className="space-y-1.5">
+      <Label htmlFor={`tf-${f.key}`} className="text-xs">{f.label}</Label>
+      <Input
+        id={`tf-${f.key}`}
+        type="number"
+        min={0}
+        value={values[f.key] ?? ''}
+        placeholder={f.placeholder}
+        onChange={(e) => setValue(f.key, e.target.value)}
+      />
+      {f.hint && <p className="text-xs text-muted-foreground">{f.hint}</p>}
+    </div>
+  )
+
+  const renderGroup = (title: string, fields: NumField[]) => (
+    <div className="space-y-2">
+      <p className="text-xs font-medium text-muted-foreground">{title}</p>
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+        {fields.map(renderNumField)}
+      </div>
+    </div>
+  )
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-xl">
+        <DialogHeader>
+          <DialogTitle>{editing ? `编辑任务 #${task.id} 参数` : '新建任务'}</DialogTitle>
+          <DialogDescription>
+            {editing
+              ? '任务类型不可修改；留空的参数将使用 CLI 默认值。'
+              : '选择任务类型并配置参数，留空即使用 CLI 默认值，创建后进入排队。'}
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <Label>任务类型</Label>
+            <Select
+              value={type}
+              onValueChange={(v) => setType(v as TaskType)}
+              disabled={editing}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="选择任务类型" />
+              </SelectTrigger>
+              <SelectContent>
+                {TASK_TYPE_OPTIONS.map((o) => (
+                  <SelectItem key={o.value} value={o.value}>
+                    {o.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {isWaCheck ? (
+            <>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-2">
+                  <Label htmlFor="wa-limit">查号上限</Label>
+                  <Input
+                    id="wa-limit"
+                    type="number"
+                    min={0}
+                    value={waLimit}
+                    placeholder="0 = 全部未查"
+                    onChange={(e) => setWaLimit(e.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground">0 = 全部未查</p>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="wa-interval">批间间隔（秒）</Label>
+                  <Input
+                    id="wa-interval"
+                    type="number"
+                    min={0}
+                    step={0.5}
+                    value={waInterval}
+                    placeholder="默认 2.0"
+                    onChange={(e) => setWaInterval(e.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground">默认 2.0 秒</p>
+                </div>
+              </div>
+
+              <div className="space-y-2 rounded-md border border-border px-3 py-2">
+                <Label>查号账号</Label>
+                {waAccounts.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    暂无已登录账号，将使用默认账号
+                  </p>
+                ) : (
+                  <div className="space-y-2">
+                    {waAccounts.map((a) => (
+                      <div key={a.name} className="flex items-center gap-2">
+                        <Checkbox
+                          id={`wa-acc-${a.name}`}
+                          checked={selectedAccounts.includes(a.name)}
+                          onCheckedChange={(c) => toggleAccount(a.name, c === true)}
+                        />
+                        <Label htmlFor={`wa-acc-${a.name}`} className="cursor-pointer font-normal">
+                          {a.name}
+                          {a.phone ? `（+${a.phone}）` : ''}
+                        </Label>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <p className="text-xs text-muted-foreground">全不选 = 仅默认账号；多选按批轮换</p>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                {BASIC_FIELDS.map(renderNumField)}
+              </div>
+
+              <div className="flex items-center justify-between rounded-md border border-border px-3 py-2">
+                <div>
+                  <Label htmlFor="use-proxy" className="cursor-pointer">使用代理</Label>
+                  <p className="text-xs text-muted-foreground">通过代理通道发起请求</p>
+                </div>
+                <Switch id="use-proxy" checked={useProxy} onCheckedChange={setUseProxy} />
+              </div>
+
+              <div className="flex items-center justify-between rounded-md border border-border px-3 py-2">
+                <div>
+                  <Label htmlFor="headless" className="cursor-pointer">无头浏览器</Label>
+                  <p className="text-xs text-muted-foreground">后台运行，不弹出浏览器窗口</p>
+                </div>
+                <Switch id="headless" checked={headless} onCheckedChange={setHeadless} />
+              </div>
+
+              <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
+                <CollapsibleTrigger asChild>
+                  <Button variant="outline" size="sm" className="w-full justify-between">
+                    高级参数
+                    <ChevronDown
+                      className={`h-4 w-4 transition-transform ${advancedOpen ? 'rotate-180' : ''}`}
+                    />
+                  </Button>
+                </CollapsibleTrigger>
+                <CollapsibleContent className="space-y-4 pt-3">
+                  {renderGroup('节奏', RHYTHM_FIELDS)}
+                  {renderGroup('重试与风控', RETRY_FIELDS)}
+
+                  <div className="space-y-2">
+                    <p className="text-xs font-medium text-muted-foreground">其他</p>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="tf-channels" className="text-xs">代理通道</Label>
+                      <Input
+                        id="tf-channels"
+                        value={channels}
+                        placeholder="留空 = 全部通道"
+                        onChange={(e) => setChannels(e.target.value)}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between rounded-md border border-border px-3 py-2">
+                      <div>
+                        <Label htmlFor="auto-solve" className="cursor-pointer">自动过验证码</Label>
+                        <p className="text-xs text-muted-foreground">遇到滑块时自动尝试求解</p>
+                      </div>
+                      <Switch id="auto-solve" checked={autoSolve} onCheckedChange={setAutoSolve} />
+                    </div>
+                    {type === '1688_contact' && (
+                      <div className="flex items-center justify-between rounded-md border border-border px-3 py-2">
+                        <div>
+                          <Label htmlFor="retry-failed" className="cursor-pointer">重试失败记录</Label>
+                          <p className="text-xs text-muted-foreground">重新采集此前失败的店铺</p>
+                        </div>
+                        <Switch
+                          id="retry-failed"
+                          checked={retryFailed}
+                          onCheckedChange={setRetryFailed}
+                        />
+                      </div>
+                    )}
+                  </div>
+                </CollapsibleContent>
+              </Collapsible>
+            </>
+          )}
+
+          {/* 命令预览：wa_check 返回 cmd=null + 说明文案 */}
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+              <Terminal className="h-3.5 w-3.5" />
+              命令预览
+            </div>
+            <div className="min-h-12 rounded-md border border-border bg-muted/50 px-3 py-2">
+              {preview ? (
+                <code className="block whitespace-pre-wrap break-all font-mono text-xs text-foreground">
+                  {preview.cmdline}
+                </code>
+              ) : (
+                <span className="text-xs text-muted-foreground">预览不可用</span>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
+            取消
+          </Button>
+          <Button onClick={handleSubmit} disabled={submitting}>
+            {submitting
+              ? editing ? '保存中…' : '创建中…'
+              : editing ? '保存参数' : '创建任务'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}

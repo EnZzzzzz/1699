@@ -106,6 +106,10 @@ def main() -> None:
     start = now - timedelta(hours=args.hours)
     start_str = start.strftime("%Y-%m-%d %H:%M:%S")
 
+    # ---- 总量 ----
+    total_shops = cur.execute("SELECT COUNT(*) FROM shops").fetchone()[0]
+    total_contacts = cur.execute("SELECT COUNT(*) FROM contacts").fetchone()[0]
+
     # ---- 当前状态分布（pending 存量即 backlog）----
     status_now = dict(cur.execute(
         "SELECT status, COUNT(*) FROM shops GROUP BY status").fetchall())
@@ -165,7 +169,8 @@ def main() -> None:
     print(f"窗口：{start.strftime('%Y-%m-%d %H:%M')} ~ "
           f"{now.strftime('%Y-%m-%d %H:%M')}（北京时间，共 {args.hours} 小时）\n")
 
-    # ① 当前 pending 存量
+    # ① 总量 + 当前 pending 存量
+    print(f"shops 总量：{total_shops}  |  contacts 总量：{total_contacts}")
     dist_now = "  ".join(f"{k} {v}" for k, v in
                          sorted(status_now.items(),
                                 key=lambda kv: kv[1], reverse=True))
