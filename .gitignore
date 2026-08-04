@@ -23,3 +23,8 @@ logs/
 *.log
 *.mov
 *.jpg
+
+# wa-check（WhatsApp 查号）：会话凭证与本地产物
+wa-check/auth_info/
+wa-check/tmp/
+wa-check/results.json

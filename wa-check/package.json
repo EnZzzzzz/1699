@@ -1,0 +1,15 @@
+{
+  "name": "wa-check",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Check if phone numbers are registered on WhatsApp via Baileys",
+  "main": "check.js",
+  "scripts": {
+    "check": "node check.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^7.0.0-rc14",
+    "qrcode": "^1.5.4",
+    "qrcode-terminal": "^0.12.0"
+  }
+}

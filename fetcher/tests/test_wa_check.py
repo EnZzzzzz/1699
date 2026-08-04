@@ -1,0 +1,146 @@
+# -*- coding: utf-8 -*-
+"""CheckWhatsApp 原子单测：纯逻辑路径，不依赖 node / wa-check 真跑。"""
+
+from __future__ import annotations
+
+import tempfile
+import threading
+import unittest
+from pathlib import Path
+
+from fetcher.atoms.wa_check import CheckWhatsApp, normalize_numbers, resolve_wa_dir
+from fetcher.core.types import Outcome
+
+
+class FakeCtx:
+    def __init__(self, stopped=False):
+        self.stop = threading.Event()
+        if stopped:
+            self.stop.set()
+        self.logs = []
+
+    def log(self, msg):
+        self.logs.append(msg)
+
+    def wait(self, seconds):
+        return self.stop.wait(seconds)
+
+    def stopped(self):
+        return self.stop.is_set()
+
+
+class TestNormalize(unittest.TestCase):
+    def test_strip_non_digits(self):
+        self.assertEqual(normalize_numbers(["+86 151-5666-7272"]), ["8615156667272"])
+
+    def test_default_cc_for_cn_mobile(self):
+        self.assertEqual(
+            normalize_numbers(["15156667272"], default_cc="86"), ["8615156667272"])
+
+    def test_no_default_cc_keeps_bare_mobile(self):
+        self.assertEqual(normalize_numbers(["15156667272"]), ["15156667272"])
+
+    def test_filter_invalid_and_dedup(self):
+        self.assertEqual(
+            normalize_numbers(["123", "8615156667272", "8615156667272", "9" * 20]),
+            ["8615156667272"])
+
+    def test_empty(self):
+        self.assertEqual(normalize_numbers([]), [])
+        self.assertEqual(normalize_numbers(None), [])
+
+
+class TestResolveDir(unittest.TestCase):
+    def test_params_win(self):
+        self.assertEqual(resolve_wa_dir({"wa_check_dir": "/tmp/x"}), Path("/tmp/x"))
+
+    def test_default_under_project_root(self):
+        self.assertEqual(resolve_wa_dir({}).name, "wa-check")
+
+
+class TestAtomOutcomes(unittest.TestCase):
+    def setUp(self):
+        self.atom = CheckWhatsApp()
+
+    def test_stopped(self):
+        r = self.atom.run(FakeCtx(stopped=True), {"numbers": ["8615156667272"]})
+        self.assertIs(r.outcome, Outcome.SKIPPED)
+
+    def test_empty_numbers(self):
+        r = self.atom.run(FakeCtx(), {"numbers": ["abc", "123"]})
+        self.assertIs(r.outcome, Outcome.EMPTY)
+
+    def test_missing_cli(self):
+        r = self.atom.run(FakeCtx(), {
+            "numbers": ["8615156667272"], "wa_check_dir": tempfile.gettempdir()})
+        self.assertIs(r.outcome, Outcome.FATAL)
+        self.assertIn("check.js", r.detail)
+
+    def _fake_wa_dir(self, with_auth=True):
+        d = Path(tempfile.mkdtemp(prefix="wa_fake_"))
+        (d / "check.js").write_text("// stub", encoding="utf-8")
+        (d / "node_modules").mkdir()
+        if with_auth:
+            (d / "auth_info").mkdir()
+        return d
+
+    def test_missing_auth(self):
+        d = self._fake_wa_dir(with_auth=False)
+        r = self.atom.run(FakeCtx(), {"numbers": ["8615156667272"], "wa_check_dir": d})
+        self.assertIs(r.outcome, Outcome.FATAL)
+        self.assertIn("未登录", r.detail)
+
+    def test_success_path_with_stubbed_node(self):
+        d = self._fake_wa_dir()
+        results = [
+            {"number": "8615156667272", "registered": False, "jid": None},
+            {"number": "8613404221971", "registered": True,
+             "jid": "8613404221971@s.whatsapp.net"},
+        ]
+
+        def fake_run(cmd, ctx, timeout, *, cwd, results_path):
+            Path(results_path).write_text(
+                '{"checkedAt": "t", "results": ' +
+                '[{"number": "8615156667272", "registered": false, "jid": null},'
+                ' {"number": "8613404221971", "registered": true,'
+                ' "jid": "8613404221971@s.whatsapp.net"}]}',
+                encoding="utf-8")
+            return 0, ""
+
+        self.atom._run_node = fake_run  # type: ignore[assignment]
+        r = self.atom.run(FakeCtx(), {
+            "numbers": ["15156667272", "13404221971"],
+            "default_cc": "86", "wa_check_dir": d})
+        self.assertIs(r.outcome, Outcome.OK)
+        self.assertEqual(r.data["checked"], 2)
+        self.assertEqual(r.data["registered"], 1)
+        self.assertEqual(r.data["results"], results)
+
+    def test_net_error_on_retry_exhausted(self):
+        d = self._fake_wa_dir()
+        self.atom._run_node = lambda *a, **k: (1, "错误: 多次重连失败，请稍后重试。")  # type: ignore[assignment]
+        r = self.atom.run(FakeCtx(), {"numbers": ["8615156667272"], "wa_check_dir": d})
+        self.assertIs(r.outcome, Outcome.NET_ERROR)
+
+    def test_logged_out_is_fatal(self):
+        d = self._fake_wa_dir()
+        self.atom._run_node = lambda *a, **k: (1, "错误: 已登出。请删除 auth_info 目录")  # type: ignore[assignment]
+        r = self.atom.run(FakeCtx(), {"numbers": ["8615156667272"], "wa_check_dir": d})
+        self.assertIs(r.outcome, Outcome.FATAL)
+        self.assertIn("已登出", r.detail)
+
+    def test_timeout_is_net_error(self):
+        d = self._fake_wa_dir()
+        self.atom._run_node = lambda *a, **k: (-1, "")  # type: ignore[assignment]
+        r = self.atom.run(FakeCtx(), {"numbers": ["8615156667272"], "wa_check_dir": d})
+        self.assertIs(r.outcome, Outcome.NET_ERROR)
+
+    def test_interrupted_is_skipped(self):
+        d = self._fake_wa_dir()
+        self.atom._run_node = lambda *a, **k: (None, "")  # type: ignore[assignment]
+        r = self.atom.run(FakeCtx(), {"numbers": ["8615156667272"], "wa_check_dir": d})
+        self.assertIs(r.outcome, Outcome.SKIPPED)
+
+
+if __name__ == "__main__":
+    unittest.main()

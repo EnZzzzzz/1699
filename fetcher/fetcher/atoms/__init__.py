@@ -13,11 +13,13 @@ from fetcher.atoms.identity_ops import ClearIdentity
 from fetcher.atoms.refresh import Refresh
 from fetcher.atoms.sleep import BackoffSleep, Sleep, human_pause_duration
 from fetcher.atoms.slider import SolveSlider, make_auto_solve, solve_all_sliders
+from fetcher.atoms.wa_check import CheckWhatsApp
 
 __all__ = [
     "Atom",
     "BackoffSleep",
     "CheckIPFresh",
+    "CheckWhatsApp",
     "ClearIdentity",
     "ColdStart",
     "Refresh",
