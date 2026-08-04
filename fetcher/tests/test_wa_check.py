@@ -100,7 +100,7 @@ class TestAtomOutcomes(unittest.TestCase):
              "jid": "8613404221971@s.whatsapp.net"},
         ]
 
-        def fake_run(cmd, ctx, timeout, *, cwd, results_path):
+        def fake_run(cmd, ctx, timeout, *, cwd, results_path, auth_dir=None):
             Path(results_path).write_text(
                 '{"checkedAt": "t", "results": ' +
                 '[{"number": "8615156667272", "registered": false, "jid": null},'
@@ -142,6 +142,31 @@ class TestAtomOutcomes(unittest.TestCase):
         self.atom._run_node = lambda *a, **k: (None, "")  # type: ignore[assignment]
         r = self.atom.run(FakeCtx(), {"numbers": ["8615156667272"], "wa_check_dir": d})
         self.assertIs(r.outcome, Outcome.SKIPPED)
+
+    def test_named_account_auth_dir(self):
+        """account 参数：会话目录切换为 auth_info-<account>/ 并经 WA_AUTH_DIR 传递。"""
+        d = self._fake_wa_dir()
+        (d / "auth_info-b").mkdir()
+        seen = {}
+
+        def fake_run(cmd, ctx, timeout, *, cwd, results_path, auth_dir=None):
+            seen["auth_dir"] = auth_dir
+            Path(results_path).write_text('{"results": []}', encoding="utf-8")
+            return 0, ""
+
+        self.atom._run_node = fake_run  # type: ignore[assignment]
+        r = self.atom.run(FakeCtx(), {
+            "numbers": ["8615156667272"], "wa_check_dir": d, "account": "b"})
+        self.assertIs(r.outcome, Outcome.OK)
+        self.assertEqual(seen["auth_dir"], d / "auth_info-b")
+
+    def test_named_account_missing_auth(self):
+        """account 未登录：FATAL 且提示带 --auth 的登录命令。"""
+        d = self._fake_wa_dir()
+        r = self.atom.run(FakeCtx(), {
+            "numbers": ["8615156667272"], "wa_check_dir": d, "account": "b"})
+        self.assertIs(r.outcome, Outcome.FATAL)
+        self.assertIn("--auth=b", r.detail)
 
 
 if __name__ == "__main__":

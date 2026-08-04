@@ -16,12 +16,27 @@ const {
   fetchLatestBaileysVersion,
 } = require('@whiskeysockets/baileys');
 
-const AUTH_DIR = path.join(__dirname, 'auth_info');
+// 多账号支持：每个账号一个独立会话目录，凭证完全隔离
+//   默认:            auth_info/
+//   --auth=<名字>:   auth_info-<名字>/       （CLI 便捷方式）
+//   WA_AUTH_DIR:     任意目录（绝对路径，或相对 wa-check 目录；Python 原子用）
+function resolveAuthDir(argv) {
+  const envDir = process.env.WA_AUTH_DIR;
+  if (envDir) return path.isAbsolute(envDir) ? envDir : path.join(__dirname, envDir);
+  const flag = argv.find((a) => a.startsWith('--auth='));
+  if (flag) {
+    const name = flag.slice('--auth='.length).trim();
+    if (name) return path.join(__dirname, `auth_info-${name}`);
+  }
+  return path.join(__dirname, 'auth_info');
+}
+
+const AUTH_DIR = resolveAuthDir(process.argv);
 
 function collectNumbers(argv) {
-  const args = argv.slice(2);
+  const args = argv.slice(2).filter((a) => !a.startsWith('--auth='));
   if (args.length === 0) {
-    console.error('用法: node check.js <号码1> [号码2 ...] 或 node check.js <号码文件.txt>');
+    console.error('用法: node check.js [--auth=<名字>] <号码1> [号码2 ...] 或 node check.js <号码文件.txt>');
     process.exit(1);
   }
   let raw = [];
@@ -52,7 +67,10 @@ async function connectWithRetry(state, saveCreds, version, maxRetries = 5) {
         if (qr) {
           console.log('\n请用手机 WhatsApp → 设置 → 已链接的设备 → 链接设备，扫描下方二维码：\n');
           qrcode.generate(qr, { small: true });
-          const png = path.join(__dirname, 'qr.png');
+          // 按账号隔离二维码文件，多账号并发登录互不覆盖
+          const suffix = AUTH_DIR === path.join(__dirname, 'auth_info')
+            ? '' : `-${path.basename(AUTH_DIR)}`;
+          const png = path.join(__dirname, `qr${suffix}.png`);
           QRCode.toFile(png, qr, { width: 512 }).then(() => {
             console.log(`\n二维码已保存为图片: ${png}（可用手机扫码）\n`);
           });
@@ -61,7 +79,7 @@ async function connectWithRetry(state, saveCreds, version, maxRetries = 5) {
         if (connection === 'close') {
           const code = lastDisconnect?.error?.output?.statusCode;
           if (code === DisconnectReason.loggedOut) {
-            resolve({ ok: false, fatal: `已登出 (code=${code})。请删除 auth_info 目录后重新扫码登录。` });
+            resolve({ ok: false, fatal: `已登出 (code=${code})。请删除 ${AUTH_DIR} 目录后重新扫码登录。` });
           } else {
             resolve({ ok: false, retry: true, code });
           }

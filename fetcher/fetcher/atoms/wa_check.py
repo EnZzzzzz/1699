@@ -13,6 +13,9 @@ CLI（``check.js``）。Baileys 以「已链接设备」身份走 WhatsApp 协�
         "wa_check_dir": str | Path   可选，wa-check 目录；缺省读环境变量
                                      WA_CHECK_DIR，再缺省仓库内置 vendor/wa-check
         "timeout":      float        可选，子进程总超时秒数（缺省 600）
+        "account":      str          可选，账号名；各账号会话存于
+                                     auth_info-<account>/，凭证完全隔离，
+                                     缺省用 auth_info/（单账号）
     }
 
 返回：
@@ -101,10 +104,18 @@ class CheckWhatsApp:
         node = shutil.which("node")
         if not node:
             return ActionResult.fatal("未找到 node 可执行文件（需 Node.js >= 18）")
-        if not (wa_dir / "auth_info").is_dir():
+
+        # 多账号：account 参数选择会话目录 auth_info-<account>/，
+        # 缺省用 auth_info/（各账号凭证完全隔离，可并发查号分摊风控压力）
+        account = str(params.get("account") or "").strip()
+        auth_dir = wa_dir / (f"auth_info-{account}" if account else "auth_info")
+        if not auth_dir.is_dir():
+            login_hint = (f"cd {wa_dir} && node check.js --auth={account} <任意号码>"
+                          if account else
+                          f"cd {wa_dir} && node check.js <任意号码>")
             return ActionResult.fatal(
-                f"wa-check 未登录：cd {wa_dir} && node check.js <任意号码>，"
-                "手机扫码完成首次登录后重试")
+                f"wa-check 账号{f'「{account}」' if account else ''}未登录："
+                f"{login_hint}，手机扫码完成首次登录后重试")
 
         timeout = float(params.get("timeout", 600))
         ctx.log(f"    ...WhatsApp 查号 {len(numbers)} 个（{wa_dir.name}）")
@@ -116,7 +127,7 @@ class CheckWhatsApp:
                 f.write("\n".join(numbers))
             rc, out = self._run_node(
                 [node, str(cli), list_path], ctx, timeout,
-                cwd=wa_dir, results_path=results_path)
+                cwd=wa_dir, results_path=results_path, auth_dir=auth_dir)
             if rc is None:
                 return ActionResult.skipped("被停止信号中断（已终止子进程）")
             if rc == -1:
@@ -125,7 +136,7 @@ class CheckWhatsApp:
             if rc != 0:
                 if "已登出" in out:
                     return ActionResult.fatal(
-                        "wa-check 会话已登出：删除 wa-check/auth_info 后重新扫码登录")
+                        f"wa-check 会话已登出：删除 {auth_dir} 后重新扫码登录")
                 if "重连失败" in out or "连接关闭" in out:
                     return ActionResult.net_error("无法连接 WhatsApp（多次重连失败）")
                 return ActionResult.net_error(
@@ -149,12 +160,16 @@ class CheckWhatsApp:
     # ---- 内部：子进程与结果读取（独立成方法便于单测替换） ----
 
     def _run_node(self, cmd, ctx, timeout: float, *,
-                  cwd: Path, results_path: str) -> tuple[int | None, str]:
+                  cwd: Path, results_path: str,
+                  auth_dir: Path | None = None) -> tuple[int | None, str]:
         """跑 node check.js；轮询停止信号。返回 (退出码, 合并输出)。
 
         退出码 None = 被中断已终止；-1 = 超时已终止。
+        auth_dir 非空时经 WA_AUTH_DIR 指定账号会话目录（多账号隔离）。
         """
         env = dict(os.environ, WA_RESULTS=results_path)
+        if auth_dir is not None:
+            env["WA_AUTH_DIR"] = str(auth_dir)
         proc = subprocess.Popen(
             cmd, cwd=str(cwd), env=env,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
