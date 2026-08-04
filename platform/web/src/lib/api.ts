@@ -110,8 +110,37 @@ export interface Provider {
   kind: string
   name: string
   enabled: number
+  config: Record<string, unknown>
   channels: ProviderChannel[]
 }
+
+export interface CreateProviderRequest {
+  kind: string
+  name: string
+  config: Record<string, unknown>
+  enabled: boolean
+}
+
+export interface UpdateProviderRequest {
+  name?: string
+  config?: Record<string, unknown>
+  enabled?: boolean
+}
+
+export interface ProbeChannelResult {
+  tunnel: string
+  ok: boolean
+  exit_ip?: string
+  error?: string
+}
+
+export interface ProbeResult {
+  ok: number
+  fail: number
+  results: ProbeChannelResult[]
+}
+
+export type ProviderConfigSchema = Record<string, string>
 
 export interface WaAccount {
   name: string
@@ -120,7 +149,33 @@ export interface WaAccount {
   phone: string | null
 }
 
+export type WaLoginState = 'waiting_scan' | 'connected' | 'failed' | 'expired'
+
+export interface WaAccountCreateResult {
+  ok: boolean
+  name: string
+  state: WaLoginState
+}
+
+export interface WaLoginStatus {
+  name: string
+  state: WaLoginState
+  qr_url: string | null
+  qr_mtime: number | null
+}
+
 // ---------- 接口方法 ----------
+
+// 后端 provider 原始结构（config_json / proxy_channels）归一化为前端
+// 契约（config / channels），单点适配，页面层不感知字段名差异。
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function normalizeProvider(p: any): Provider {
+  return {
+    ...p,
+    config: p.config ?? p.config_json ?? {},
+    channels: p.channels ?? p.proxy_channels ?? [],
+  }
+}
 
 export const api = {
   health: () => request<{ ok: boolean }>('/health'),
@@ -132,8 +187,28 @@ export const api = {
   getTask: (id: number) => request<Task>(`/tasks/${id}`),
   startTask: (id: number) => request<StartTaskResult>(`/tasks/${id}/start`, { method: 'POST' }),
   stopTask: (id: number) => request<{ ok: boolean }>(`/tasks/${id}/stop`, { method: 'POST' }),
-  providers: () => request<Provider[]>('/providers'),
+  providers: async () => (await request<unknown[]>('/providers')).map(normalizeProvider),
+  createProvider: async (body: CreateProviderRequest) =>
+    normalizeProvider(
+      await request<unknown>('/providers', { method: 'POST', body: JSON.stringify(body) })),
+  updateProvider: async (id: number, body: UpdateProviderRequest) =>
+    normalizeProvider(
+      await request<unknown>(`/providers/${id}`, { method: 'PUT', body: JSON.stringify(body) })),
+  probeProvider: (id: number) => request<ProbeResult>(`/providers/${id}/probe`, { method: 'POST' }),
+  refreshProviderChannels: async (id: number) =>
+    normalizeProvider(
+      await request<unknown>(`/providers/${id}/channels/refresh`, { method: 'POST' })),
+  providerConfigSchema: () => request<ProviderConfigSchema>('/providers/config-schema'),
   waAccounts: () => request<WaAccount[]>('/wa/accounts'),
+  createWaAccount: (name: string) =>
+    request<WaAccountCreateResult>('/wa/accounts', {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    }),
+  waAccountLogin: (name: string) =>
+    request<WaLoginStatus>(`/wa/accounts/${encodeURIComponent(name)}/login`),
+  deleteWaAccount: (name: string) =>
+    request<{ ok: boolean }>(`/wa/accounts/${encodeURIComponent(name)}`, { method: 'DELETE' }),
 }
 
 // ---------- 通用数据加载 Hook（加载态 / 错误态 / 自动刷新） ----------
