@@ -1,4 +1,4 @@
-// 任务行操作按钮：启动 / 停止（二次确认）/ 编辑参数 / 日志
+// 任务行操作按钮：启动 / 停止（二次确认）/ 编辑参数 / 删除（二次确认）/ 日志
 import { useState } from 'react'
 import { toast } from 'sonner'
 import { api, ApiError, type Task } from '@/lib/api'
@@ -8,7 +8,7 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
-import { Pencil, Play, ScrollText, Square } from 'lucide-react'
+import { Pencil, Play, ScrollText, Square, Trash2 } from 'lucide-react'
 import { TaskFormDialog } from './TaskFormDialog'
 
 interface TaskActionsProps {
@@ -42,6 +42,7 @@ export function TaskActions({ task, onChanged, onShowLogs }: TaskActionsProps) {
   const canStop = task.status === 'running'
   const canStart = task.status === 'pending' || task.status === 'failed' || task.status === 'stopped'
   const canEdit = canStart // pending / failed / stopped 可编辑参数
+  const canDelete = !canStop // 非运行中可删除（会连带清除全部日志事件）
 
   return (
     <div className="flex items-center gap-1">
@@ -96,6 +97,34 @@ export function TaskActions({ task, onChanged, onShowLogs }: TaskActionsProps) {
         <ScrollText className="mr-1 h-3.5 w-3.5" />
         日志
       </Button>
+
+      {canDelete && (
+        <AlertDialog>
+          <AlertDialogTrigger asChild>
+            <Button variant="ghost" size="sm" disabled={busy} className="text-destructive hover:text-destructive">
+              <Trash2 className="mr-1 h-3.5 w-3.5" />
+              删除
+            </Button>
+          </AlertDialogTrigger>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>删除任务 #{task.id}？</AlertDialogTitle>
+              <AlertDialogDescription>
+                任务记录与全部日志事件将被永久清除，已采集到库里的业务数据不受影响。该操作不可撤销。
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>取消</AlertDialogCancel>
+              <AlertDialogAction
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                onClick={() => run(() => api.deleteTask(task.id), `任务 #${task.id} 已删除`)}
+              >
+                确认删除
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      )}
 
       <TaskFormDialog
         open={editOpen}

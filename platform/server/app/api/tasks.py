@@ -160,6 +160,20 @@ def update_task(task_id: int, body: TaskUpdate):
     return _row_to_task(_get_task_row(task_id))
 
 
+@router.delete("/tasks/{task_id}")
+def delete_task(task_id: int):
+    """删除任务及其全部日志事件：running 不可删（先停止），否则 409。"""
+    row = _get_task_row(task_id)
+    status = row["status"]
+    if status == "running" or runner.is_running(task_id):
+        raise HTTPException(
+            status_code=409,
+            detail="任务运行中，请先停止再删除")
+    _write("DELETE FROM task_events WHERE task_id=?", (task_id,))
+    _write("DELETE FROM tasks WHERE id=?", (task_id,))
+    return {"ok": True}
+
+
 @router.post("/tasks/{task_id}/start")
 def start_task(task_id: int):
     row = _get_task_row(task_id)

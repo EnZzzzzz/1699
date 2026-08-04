@@ -230,6 +230,7 @@ export const api = {
   getTask: async (id: number) => normalizeTask(await request<unknown>(`/tasks/${id}`)),
   startTask: (id: number) => request<StartTaskResult>(`/tasks/${id}/start`, { method: 'POST' }),
   stopTask: (id: number) => request<{ ok: boolean }>(`/tasks/${id}/stop`, { method: 'POST' }),
+  deleteTask: (id: number) => request<{ ok: boolean }>(`/tasks/${id}`, { method: 'DELETE' }),
   providers: async () => (await request<unknown[]>('/providers')).map(normalizeProvider),
   createProvider: async (body: CreateProviderRequest) =>
     normalizeProvider(
