@@ -1,5 +1,5 @@
+import { useState } from 'react'
 import { api, useApiData, formatTime, formatDuration, type Task } from '@/lib/api'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
@@ -7,30 +7,42 @@ import {
 import {
   Tooltip, TooltipContent, TooltipProvider, TooltipTrigger,
 } from '@/components/ui/tooltip'
+import { Toaster } from '@/components/ui/sonner'
 import { PageHeader, LoadingState, ErrorState, EmptyState } from '@/components/PageState'
-import { RefreshCw, Play, Square, Eye } from 'lucide-react'
+import { Plus, RefreshCw } from 'lucide-react'
+import { statusBadge, taskTypeLabel } from './tasks/task-ui'
+import { CreateTaskDialog } from './tasks/CreateTaskDialog'
+import { TaskActions } from './tasks/TaskActions'
+import { TaskLogSheet } from './tasks/TaskLogSheet'
 
-function statusBadge(status: string) {
-  switch (status) {
-    case 'running':
-      return <Badge className="bg-sky-600 hover:bg-sky-600">运行中</Badge>
-    case 'pending':
-      return <Badge variant="secondary">排队中</Badge>
-    case 'done':
-      return <Badge className="bg-emerald-600 hover:bg-emerald-600">已完成</Badge>
-    case 'failed':
-      return <Badge variant="destructive">失败</Badge>
-    default:
-      return <Badge variant="outline">{status}</Badge>
-  }
+function lastLine(task: Task): string | null {
+  const v = task.progress?.last_line
+  if (typeof v !== 'string' || v.length === 0) return null
+  return v.length > 60 ? `${v.slice(0, 60)}…` : v
 }
 
-function TaskRow({ task }: { task: Task }) {
+function TaskRow({
+  task,
+  onChanged,
+  onShowLogs,
+}: {
+  task: Task
+  onChanged: () => void
+  onShowLogs: () => void
+}) {
+  const line = lastLine(task)
   return (
     <TableRow>
       <TableCell className="font-mono text-xs text-muted-foreground">#{task.id}</TableCell>
-      <TableCell className="font-medium">{task.type}</TableCell>
-      <TableCell>{statusBadge(task.status)}</TableCell>
+      <TableCell className="font-medium">{taskTypeLabel(task.type)}</TableCell>
+      <TableCell>
+        {statusBadge(task.status)}
+        {line && (
+          <div className="mt-1 max-w-64 truncate text-xs text-muted-foreground" title={line}>
+            {line}
+          </div>
+        )}
+      </TableCell>
       <TableCell className="text-sm">{formatTime(task.created_at)}</TableCell>
       <TableCell className="text-sm">{formatDuration(task.started_at, task.finished_at)}</TableCell>
       <TableCell className="max-w-56">
@@ -49,19 +61,8 @@ function TaskRow({ task }: { task: Task }) {
           <span className="text-sm text-muted-foreground">—</span>
         )}
       </TableCell>
-      {/* 操作列：P0 只读，占位按钮 */}
       <TableCell>
-        <div className="flex gap-1">
-          <Button variant="ghost" size="icon" disabled title="查看详情（即将上线）">
-            <Eye className="h-4 w-4" />
-          </Button>
-          <Button variant="ghost" size="icon" disabled title="重跑（即将上线）">
-            <Play className="h-4 w-4" />
-          </Button>
-          <Button variant="ghost" size="icon" disabled title="终止（即将上线）">
-            <Square className="h-4 w-4" />
-          </Button>
-        </div>
+        <TaskActions task={task} onChanged={onChanged} onShowLogs={onShowLogs} />
       </TableCell>
     </TableRow>
   )
@@ -69,17 +70,25 @@ function TaskRow({ task }: { task: Task }) {
 
 export default function Tasks() {
   const { data, loading, error, reload } = useApiData(api.tasks, 30_000)
+  const [createOpen, setCreateOpen] = useState(false)
+  const [logTask, setLogTask] = useState<Task | null>(null)
 
   return (
     <div className="p-6">
       <PageHeader
         title="任务管理"
-        desc="采集与处理任务的运行记录（P0 只读）"
+        desc="采集与处理任务的创建、启停与实时日志"
         extra={
-          <Button variant="outline" size="sm" onClick={reload}>
-            <RefreshCw className="mr-2 h-4 w-4" />
-            刷新
-          </Button>
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" onClick={reload}>
+              <RefreshCw className="mr-2 h-4 w-4" />
+              刷新
+            </Button>
+            <Button size="sm" onClick={() => setCreateOpen(true)}>
+              <Plus className="mr-2 h-4 w-4" />
+              新建任务
+            </Button>
+          </div>
         }
       />
 
@@ -100,17 +109,36 @@ export default function Tasks() {
                 <TableHead>创建时间</TableHead>
                 <TableHead>耗时</TableHead>
                 <TableHead>错误</TableHead>
-                <TableHead className="w-32">操作</TableHead>
+                <TableHead className="w-44">操作</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {data.map((t) => (
-                <TaskRow key={t.id} task={t} />
+                <TaskRow
+                  key={t.id}
+                  task={t}
+                  onChanged={reload}
+                  onShowLogs={() => setLogTask(t)}
+                />
               ))}
             </TableBody>
           </Table>
         </div>
       )}
+
+      <CreateTaskDialog
+        open={createOpen}
+        onOpenChange={setCreateOpen}
+        onCreated={reload}
+      />
+      <TaskLogSheet
+        task={logTask}
+        open={logTask !== null}
+        onOpenChange={(open) => {
+          if (!open) setLogTask(null)
+        }}
+      />
+      <Toaster />
     </div>
   )
 }

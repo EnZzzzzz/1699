@@ -1,0 +1,133 @@
+/**
+ * 设计 Token 集中定义（唯一来源）
+ * ------------------------------------------------------------------
+ * 命名规范：
+ *   1. shadcn 语义色：--{role} 与 --{role}-foreground 配对，
+ *      值一律为「H S% L%」三段 HSL 通道（不含 hsl() 括号），
+ *      与 tailwind.config.js 中 hsl(var(--xxx)) 的用法配套。
+ *   2. 业务状态色：--status-{success|warning|info|danger|neutral} 及 -foreground 配对。
+ *   3. 积压高亮：--backlog / --backlog-foreground（用于积压任务卡片、徽标等）。
+ *   4. 图表色：--chart-{collected|consumed|grid|axis|tooltip-bg|tooltip-border}，
+ *      供 recharts 通过 var() 读取（Dashboard 图表专用）。
+ *   5. 布局尺寸：--{region}-{property}，如 --sidebar-width；--radius 为全局圆角基准。
+ *   6. 双主题：:root 为 light，.dark 为 dark；两组 token 必须一一对应、成对新增。
+ *
+ * ⚠️ 约定：新增任何颜色一律先在这里加 token，再在 tailwind.config.js 映射
+ *    或通过 hsl(var(--xxx)) 使用；禁止在组件中散落硬编码色值。
+ */
+
+:root {
+  /* ---------- shadcn 语义色（light） ---------- */
+  --background: 0 0% 100%;
+  --foreground: 240 10% 3.9%;
+  --card: 0 0% 100%;
+  --card-foreground: 240 10% 3.9%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 240 10% 3.9%;
+  --primary: 240 5.9% 10%;
+  --primary-foreground: 0 0% 98%;
+  --secondary: 240 4.8% 95.9%;
+  --secondary-foreground: 240 5.9% 10%;
+  --muted: 240 4.8% 95.9%;
+  --muted-foreground: 240 3.8% 46.1%;
+  --accent: 240 4.8% 95.9%;
+  --accent-foreground: 240 5.9% 10%;
+  --destructive: 0 84.2% 60.2%;
+  --destructive-foreground: 0 0% 98%;
+  --border: 240 5.9% 90%;
+  --input: 240 5.9% 90%;
+  --ring: 240 5.9% 10%;
+
+  --sidebar-background: 0 0% 98%;
+  --sidebar-foreground: 240 5.3% 26.1%;
+  --sidebar-primary: 240 5.9% 10%;
+  --sidebar-primary-foreground: 0 0% 98%;
+  --sidebar-accent: 240 4.8% 95.9%;
+  --sidebar-accent-foreground: 240 5.9% 10%;
+  --sidebar-border: 220 13% 91%;
+  --sidebar-ring: 217.2 91.2% 59.8%;
+
+  /* ---------- 业务状态色（light） ---------- */
+  --status-success: 160 84% 39%;
+  --status-success-foreground: 0 0% 100%;
+  --status-warning: 32 95% 40%;
+  --status-warning-foreground: 0 0% 100%;
+  --status-info: 199 89% 44%;
+  --status-info-foreground: 0 0% 100%;
+  --status-danger: 0 72% 48%;
+  --status-danger-foreground: 0 0% 100%;
+  --status-neutral: 240 4% 46%;
+  --status-neutral-foreground: 0 0% 98%;
+
+  /* ---------- 积压高亮（light） ---------- */
+  --backlog: 38 92% 50%;
+  --backlog-foreground: 240 10% 10%;
+
+  /* ---------- 图表色（light） ---------- */
+  --chart-collected: 199 89% 48%;
+  --chart-consumed: 160 84% 39%;
+  --chart-grid: 240 6% 90%;
+  --chart-axis: 240 4% 46%;
+  --chart-tooltip-bg: 0 0% 100%;
+  --chart-tooltip-border: 240 6% 90%;
+
+  /* ---------- 布局尺寸（双主题共用，仅 :root 定义） ---------- */
+  --radius: 0.625rem;
+  --sidebar-width: 14rem;
+}
+
+.dark {
+  /* ---------- shadcn 语义色（dark） ---------- */
+  --background: 240 10% 3.9%;
+  --foreground: 0 0% 98%;
+  --card: 240 10% 3.9%;
+  --card-foreground: 0 0% 98%;
+  --popover: 240 10% 3.9%;
+  --popover-foreground: 0 0% 98%;
+  --primary: 0 0% 98%;
+  --primary-foreground: 240 5.9% 10%;
+  --secondary: 240 3.7% 15.9%;
+  --secondary-foreground: 0 0% 98%;
+  --muted: 240 3.7% 15.9%;
+  --muted-foreground: 240 5% 64.9%;
+  --accent: 240 3.7% 15.9%;
+  --accent-foreground: 0 0% 98%;
+  --destructive: 0 62.8% 30.6%;
+  --destructive-foreground: 0 0% 98%;
+  --border: 240 3.7% 15.9%;
+  --input: 240 3.7% 15.9%;
+  --ring: 240 4.9% 83.9%;
+
+  --sidebar-background: 240 5.9% 10%;
+  --sidebar-foreground: 240 4.8% 95.9%;
+  --sidebar-primary: 224.3 76.3% 48%;
+  --sidebar-primary-foreground: 0 0% 100%;
+  --sidebar-accent: 240 3.7% 15.9%;
+  --sidebar-accent-foreground: 240 4.8% 95.9%;
+  --sidebar-border: 240 3.7% 15.9%;
+  --sidebar-ring: 217.2 91.2% 59.8%;
+
+  /* ---------- 业务状态色（dark） ---------- */
+  --status-success: 158 64% 52%;
+  --status-success-foreground: 240 10% 6%;
+  --status-warning: 43 96% 56%;
+  --status-warning-foreground: 240 10% 6%;
+  --status-info: 199 93% 60%;
+  --status-info-foreground: 240 10% 6%;
+  --status-danger: 0 84% 65%;
+  --status-danger-foreground: 240 10% 6%;
+  --status-neutral: 240 5% 65%;
+  --status-neutral-foreground: 240 10% 6%;
+
+  /* ---------- 积压高亮（dark） ---------- */
+  --backlog: 43 96% 56%;
+  --backlog-foreground: 240 10% 10%;
+
+  /* ---------- 图表色（dark） ---------- */
+  --chart-collected: 199 93% 60%;
+  --chart-consumed: 158 64% 52%;
+  --chart-grid: 240 4% 16%;
+  --chart-axis: 240 5% 65%;
+  --chart-tooltip-bg: 240 10% 6%;
+  --chart-tooltip-border: 240 4% 16%;
+}

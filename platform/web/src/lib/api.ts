@@ -11,15 +11,25 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string): Promise<T> {
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response
   try {
-    res = await fetch(`${BASE}${path}`, { headers: { Accept: 'application/json' } })
+    res = await fetch(`${BASE}${path}`, {
+      ...init,
+      headers: {
+        Accept: 'application/json',
+        ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
+        ...init?.headers,
+      },
+    })
   } catch {
     throw new ApiError('无法连接后端服务（http://127.0.0.1:8765）')
   }
   if (!res.ok) {
     throw new ApiError(`请求失败：${res.status} ${res.statusText}`, res.status)
+  }
+  if (res.status === 204) {
+    return undefined as T
   }
   return (await res.json()) as T
 }
@@ -49,6 +59,40 @@ export interface Task {
   error: string | null
   created_at: string
   started_at: string | null
+  finished_at: string | null
+}
+
+export type TaskType = '1688_shop' | '1688_contact' | 'yiwugo_search'
+
+export interface TaskParams {
+  batch_num: number
+  max_batches: number
+  limit: number
+  use_proxy: boolean
+  headless: boolean
+}
+
+export interface CreateTaskRequest {
+  type: TaskType
+  params: TaskParams
+}
+
+export interface StartTaskResult {
+  ok: boolean
+  pid: number
+}
+
+export type TaskEventLevel = 'info' | 'success' | 'warning' | 'error'
+
+export interface TaskEvent {
+  id: number
+  ts: string
+  level: TaskEventLevel
+  message: string
+}
+
+export interface TaskStatusEvent {
+  status: string
   finished_at: string | null
 }
 
@@ -83,6 +127,11 @@ export const api = {
   overview: () => request<Overview>('/dashboard/overview'),
   pipeline: (hours = 12) => request<Pipeline>(`/dashboard/pipeline?hours=${hours}`),
   tasks: () => request<Task[]>('/tasks'),
+  createTask: (body: CreateTaskRequest) =>
+    request<Task>('/tasks', { method: 'POST', body: JSON.stringify(body) }),
+  getTask: (id: number) => request<Task>(`/tasks/${id}`),
+  startTask: (id: number) => request<StartTaskResult>(`/tasks/${id}/start`, { method: 'POST' }),
+  stopTask: (id: number) => request<{ ok: boolean }>(`/tasks/${id}/stop`, { method: 'POST' }),
   providers: () => request<Provider[]>('/providers'),
   waAccounts: () => request<WaAccount[]>('/wa/accounts'),
 }

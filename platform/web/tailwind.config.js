@@ -38,6 +38,36 @@ module.exports = {
           DEFAULT: "hsl(var(--card))",
           foreground: "hsl(var(--card-foreground))",
         },
+        /* 业务状态色（token 见 src/styles/tokens.css） */
+        success: {
+          DEFAULT: "hsl(var(--status-success) / <alpha-value>)",
+          foreground: "hsl(var(--status-success-foreground) / <alpha-value>)",
+        },
+        warning: {
+          DEFAULT: "hsl(var(--status-warning) / <alpha-value>)",
+          foreground: "hsl(var(--status-warning-foreground) / <alpha-value>)",
+        },
+        info: {
+          DEFAULT: "hsl(var(--status-info) / <alpha-value>)",
+          foreground: "hsl(var(--status-info-foreground) / <alpha-value>)",
+        },
+        danger: {
+          DEFAULT: "hsl(var(--status-danger) / <alpha-value>)",
+          foreground: "hsl(var(--status-danger-foreground) / <alpha-value>)",
+        },
+        backlog: {
+          DEFAULT: "hsl(var(--backlog) / <alpha-value>)",
+          foreground: "hsl(var(--backlog-foreground) / <alpha-value>)",
+        },
+        /* 图表色（recharts 亦可直接 hsl(var(--chart-*))） */
+        chart: {
+          collected: "hsl(var(--chart-collected) / <alpha-value>)",
+          consumed: "hsl(var(--chart-consumed) / <alpha-value>)",
+          grid: "hsl(var(--chart-grid) / <alpha-value>)",
+          axis: "hsl(var(--chart-axis) / <alpha-value>)",
+          "tooltip-bg": "hsl(var(--chart-tooltip-bg) / <alpha-value>)",
+          "tooltip-border": "hsl(var(--chart-tooltip-border) / <alpha-value>)",
+        },
         sidebar: {
           DEFAULT: "hsl(var(--sidebar-background))",
           foreground: "hsl(var(--sidebar-foreground))",
@@ -48,6 +78,9 @@ module.exports = {
           border: "hsl(var(--sidebar-border))",
           ring: "hsl(var(--sidebar-ring))",
         },
+      },
+      spacing: {
+        sidebar: "var(--sidebar-width)",
       },
       borderRadius: {
         xl: "calc(var(--radius) + 4px)",
