@@ -9,8 +9,10 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
 import { PageHeader, LoadingState, ErrorState, EmptyState } from '@/components/PageState'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Activity, Loader2, Network, Pencil, Plus, RefreshCw } from 'lucide-react'
 import { ProviderFormDialog } from './providers/ProviderFormDialog'
+import WaAccounts from './WaAccounts'
 
 function channelStatusBadge(status: string) {
   switch (status) {
@@ -198,30 +200,44 @@ export default function Providers() {
 
   return (
     <div className="p-6">
-      <PageHeader
-        title="供应商"
-        desc="代理供应商（青果等）与通道状态"
-        extra={
-          <Button size="sm" onClick={openAdd}>
-            <Plus className="mr-2 h-4 w-4" />
-            添加供应商
-          </Button>
-        }
-      />
+      <PageHeader title="供应商" desc="代理池与 WhatsApp 账号池管理" />
 
-      {loading && !data ? (
-        <LoadingState />
-      ) : error && !data ? (
-        <ErrorState message={error} onRetry={reload} />
-      ) : !data || data.length === 0 ? (
-        <EmptyState text="暂无供应商配置，点击右上角「添加供应商」开始" />
-      ) : (
-        <div className="space-y-4">
-          {data.map((p) => (
-            <ProviderCard key={p.id} provider={p} onEdit={openEdit} onChanged={reload} />
-          ))}
-        </div>
-      )}
+      <Tabs defaultValue="proxy">
+        <TabsList>
+          <TabsTrigger value="proxy">代理池</TabsTrigger>
+          <TabsTrigger value="wa">WhatsApp 账号池</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="proxy" className="mt-4 space-y-4">
+          <div className="flex items-center justify-between">
+            <p className="text-sm text-muted-foreground">
+              代理供应商（青果等）与通道状态
+            </p>
+            <Button size="sm" onClick={openAdd}>
+              <Plus className="mr-2 h-4 w-4" />
+              添加供应商
+            </Button>
+          </div>
+
+          {loading && !data ? (
+            <LoadingState />
+          ) : error && !data ? (
+            <ErrorState message={error} onRetry={reload} />
+          ) : !data || data.length === 0 ? (
+            <EmptyState text="暂无供应商配置，点击右上角「添加供应商」开始" />
+          ) : (
+            <div className="space-y-4">
+              {data.map((p) => (
+                <ProviderCard key={p.id} provider={p} onEdit={openEdit} onChanged={reload} />
+              ))}
+            </div>
+          )}
+        </TabsContent>
+
+        <TabsContent value="wa" className="mt-4">
+          <WaAccounts />
+        </TabsContent>
+      </Tabs>
 
       <ProviderFormDialog
         open={formOpen}

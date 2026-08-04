@@ -1,5 +1,5 @@
 import { NavLink, Outlet } from 'react-router-dom'
-import { LayoutDashboard, ListTodo, Network, MessageCircle, Database, Sun, Moon, Monitor } from 'lucide-react'
+import { LayoutDashboard, ListTodo, Network, Database, Sun, Moon, Monitor } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useTheme, type Theme } from '@/lib/theme'
 import { Toaster } from '@/components/ui/sonner'
@@ -9,7 +9,6 @@ const navItems = [
   { to: '/tasks', label: '任务管理', icon: ListTodo, end: false },
   { to: '/data', label: '数据浏览', icon: Database, end: false },
   { to: '/providers', label: '供应商', icon: Network, end: false },
-  { to: '/wa', label: 'WhatsApp 账号', icon: MessageCircle, end: false },
 ]
 
 const themeMeta: Record<Theme, { label: string; icon: typeof Sun }> = {

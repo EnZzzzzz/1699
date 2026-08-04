@@ -9,7 +9,7 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
-import { PageHeader, LoadingState, ErrorState, EmptyState } from '@/components/PageState'
+import { LoadingState, ErrorState, EmptyState } from '@/components/PageState'
 import { MessageCircle, Plus, Phone, FolderKey, Trash2, Loader2, ScanLine } from 'lucide-react'
 import { AddAccountDialog } from './wa/AddAccountDialog'
 import { ScanLoginDialog } from './wa/ScanLoginDialog'
@@ -110,17 +110,16 @@ export default function WaAccounts() {
   const [scanningName, setScanningName] = useState<string | null>(null)
 
   return (
-    <div className="p-6">
-      <PageHeader
-        title="WhatsApp 账号"
-        desc="用于触达店铺的 WhatsApp 登录态管理"
-        extra={
-          <Button size="sm" onClick={() => setAddOpen(true)}>
-            <Plus className="mr-2 h-4 w-4" />
-            添加账号
-          </Button>
-        }
-      />
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-muted-foreground">
+          用于触达店铺的 WhatsApp 登录态管理，多账号凭证完全隔离
+        </p>
+        <Button size="sm" onClick={() => setAddOpen(true)}>
+          <Plus className="mr-2 h-4 w-4" />
+          添加账号
+        </Button>
+      </div>
 
       {loading && !data ? (
         <LoadingState />
