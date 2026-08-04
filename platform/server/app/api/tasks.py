@@ -8,9 +8,11 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.db import DB_PATH, connect
-from app.runner import TASK_COMMANDS, beijing_now, runner
+from app.runner import IN_PROCESS_TYPES, TASK_COMMANDS, beijing_now, runner
 
 router = APIRouter()
+
+TASK_TYPES = sorted(set(TASK_COMMANDS) | IN_PROCESS_TYPES)
 
 
 def _parse_json(text):
@@ -54,6 +56,9 @@ class TaskParams(BaseModel):
     limit: int = 0
     use_proxy: bool = True
     headless: bool = True
+    # wa_check（进程内 WhatsApp 查号）专用：
+    interval: float = 2.0       # 批间间隔秒
+    accounts: list[str] = []    # 账号池，空 = 仅默认账号
 
 
 class TaskCreate(BaseModel):
@@ -63,10 +68,10 @@ class TaskCreate(BaseModel):
 
 @router.post("/tasks", status_code=201)
 def create_task(body: TaskCreate):
-    if body.type not in TASK_COMMANDS:
+    if body.type not in TASK_TYPES:
         raise HTTPException(
             status_code=422,
-            detail=f"未知任务类型 {body.type!r}，可选: {sorted(TASK_COMMANDS)}")
+            detail=f"未知任务类型 {body.type!r}，可选: {TASK_TYPES}")
     params_json = json.dumps(body.params.model_dump(), ensure_ascii=False)
     conn = sqlite3.connect(DB_PATH, timeout=30)
     try:

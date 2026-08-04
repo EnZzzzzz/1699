@@ -141,16 +141,16 @@ export default function Dashboard() {
             <div className="h-72">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={pp.hourly} margin={{ top: 8, right: 16, left: 0, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(240 3.7% 15.9%)" />
-                  <XAxis dataKey="label" tick={{ fontSize: 12, fill: 'hsl(240 5% 64.9%)' }} />
-                  <YAxis tick={{ fontSize: 12, fill: 'hsl(240 5% 64.9%)' }} allowDecimals={false} />
+                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--chart-grid))" />
+                  <XAxis dataKey="label" tick={{ fontSize: 12, fill: 'hsl(var(--chart-axis))' }} />
+                  <YAxis tick={{ fontSize: 12, fill: 'hsl(var(--chart-axis))' }} allowDecimals={false} />
                   <Tooltip
-                    contentStyle={{ background: 'hsl(240 10% 6%)', border: '1px solid hsl(240 3.7% 15.9%)', borderRadius: 8 }}
-                    labelStyle={{ color: 'hsl(0 0% 98%)' }}
+                    contentStyle={{ background: 'hsl(var(--chart-tooltip-bg))', border: '1px solid hsl(var(--chart-tooltip-border))', borderRadius: 8 }}
+                    labelStyle={{ color: 'hsl(var(--foreground))' }}
                   />
                   <Legend />
-                  <Bar dataKey="collected" name="采集" fill="#38bdf8" radius={[3, 3, 0, 0]} />
-                  <Bar dataKey="consumed" name="消耗" fill="#34d399" radius={[3, 3, 0, 0]} />
+                  <Bar dataKey="collected" name="采集" fill="hsl(var(--chart-collected))" radius={[3, 3, 0, 0]} />
+                  <Bar dataKey="consumed" name="消耗" fill="hsl(var(--chart-consumed))" radius={[3, 3, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             </div>

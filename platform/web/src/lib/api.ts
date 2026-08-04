@@ -62,7 +62,7 @@ export interface Task {
   finished_at: string | null
 }
 
-export type TaskType = '1688_shop' | '1688_contact' | 'yiwugo_search'
+export type TaskType = '1688_shop' | '1688_contact' | 'yiwugo_search' | 'wa_check'
 
 export interface TaskParams {
   batch_num: number

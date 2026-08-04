@@ -7,7 +7,6 @@ import {
 import {
   Tooltip, TooltipContent, TooltipProvider, TooltipTrigger,
 } from '@/components/ui/tooltip'
-import { Toaster } from '@/components/ui/sonner'
 import { PageHeader, LoadingState, ErrorState, EmptyState } from '@/components/PageState'
 import { Plus, RefreshCw } from 'lucide-react'
 import { statusBadge, taskTypeLabel } from './tasks/task-ui'
@@ -138,7 +137,6 @@ export default function Tasks() {
           if (!open) setLogTask(null)
         }}
       />
-      <Toaster />
     </div>
   )
 }

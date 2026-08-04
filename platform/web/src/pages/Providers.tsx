@@ -8,7 +8,6 @@ import { Switch } from '@/components/ui/switch'
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
-import { Toaster } from '@/components/ui/sonner'
 import { PageHeader, LoadingState, ErrorState, EmptyState } from '@/components/PageState'
 import { Activity, Loader2, Network, Pencil, Plus, RefreshCw } from 'lucide-react'
 import { ProviderFormDialog } from './providers/ProviderFormDialog'
@@ -230,7 +229,6 @@ export default function Providers() {
         provider={editingProvider}
         onSaved={reload}
       />
-      <Toaster />
     </div>
   )
 }

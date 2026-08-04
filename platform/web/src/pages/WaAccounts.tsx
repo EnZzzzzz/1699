@@ -9,7 +9,6 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
-import { Toaster } from '@/components/ui/sonner'
 import { PageHeader, LoadingState, ErrorState, EmptyState } from '@/components/PageState'
 import { MessageCircle, Plus, Phone, FolderKey, Trash2, Loader2, ScanLine } from 'lucide-react'
 import { AddAccountDialog } from './wa/AddAccountDialog'
@@ -158,7 +157,6 @@ export default function WaAccounts() {
           if (connected) toast.success('账号已登录')
         }}
       />
-      <Toaster />
     </div>
   )
 }

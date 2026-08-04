@@ -29,3 +29,7 @@ fetcher/vendor/wa-check/auth_info/
 fetcher/vendor/wa-check/auth_info-*/
 fetcher/vendor/wa-check/tmp/
 fetcher/vendor/wa-check/results.json
+
+# 管理平台运行时
+platform/run/
+platform/logs/

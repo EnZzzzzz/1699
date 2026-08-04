@@ -45,6 +45,7 @@ export const TASK_TYPE_OPTIONS: { value: TaskType; label: string }[] = [
   { value: '1688_shop', label: '1688 店铺采集' },
   { value: '1688_contact', label: '1688 联系方式采集' },
   { value: 'yiwugo_search', label: '义乌购搜索' },
+  { value: 'wa_check', label: 'WhatsApp 查号' },
 ]
 
 export function taskTypeLabel(type: string): string {
