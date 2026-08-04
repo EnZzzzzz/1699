@@ -42,6 +42,7 @@ export default function Dashboard() {
   const pipeline = useApiData(
     () => api.pipeline(period, customStart, customEnd),
     customReady ? REFRESH_MS : 0,
+    [period, customStart, customEnd],
   )
 
   if (overview.loading && !overview.data) return <div className="p-6"><LoadingState /></div>

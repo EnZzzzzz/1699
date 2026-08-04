@@ -284,7 +284,11 @@ export interface ApiState<T> {
   reload: () => void
 }
 
-export function useApiData<T>(fetcher: () => Promise<T>, refreshMs = 0): ApiState<T> {
+export function useApiData<T>(
+  fetcher: () => Promise<T>,
+  refreshMs = 0,
+  deps: unknown[] = [],
+): ApiState<T> {
   const [data, setData] = useState<T | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -311,6 +315,10 @@ export function useApiData<T>(fetcher: () => Promise<T>, refreshMs = 0): ApiStat
       return () => clearInterval(timer)
     }
   }, [load, refreshMs])
+
+  // 依赖变化（如筛选条件切换）时立即重新加载
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { load(true) }, deps)
 
   return { data, loading, error, reload: () => load() }
 }
