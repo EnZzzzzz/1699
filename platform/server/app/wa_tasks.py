@@ -207,6 +207,27 @@ def _apply_results(results: list) -> tuple[int, int, int]:
     return written, skipped_err, skipped_amb
 
 
+def _rest_with_heartbeat(task_id: int, seconds: float, label: str,
+                         stop_event: threading.Event) -> bool:
+    """分段等待 + 心跳日志，可被 stop_event 中断；返回是否被中断。
+
+    每段最多 30s 刷一条「剩余约 N 分钟」心跳，避免休息期间日志静默
+    被误判为卡死；每段都可被 stop_event 中断。
+    """
+    deadline = time.monotonic() + seconds
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        if stop_event.wait(min(30.0, remaining)):
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining > 1:
+            _insert_event(
+                task_id, "info",
+                f"⏸ {label}，剩余约 {remaining / 60:.1f} 分钟...")
+
+
 def _atom_account(name: str) -> str:
     """API 账号名 → 原子 account 参数："default" 用缺省 auth_info/。"""
     return "" if name == "default" else name
@@ -366,23 +387,9 @@ def run(task_id: int, params: dict, stop_event: threading.Event) -> None:
                     f"批间休息 {rest / 60:.1f} 分钟（防风控）...",
                     {"checked": checked, "registered": registered,
                      "rest_seconds": round(rest, 1)})
-                # 分段等待 + 心跳：每 30s 刷一条剩余时间，避免休息期间
-                # 日志静默被误判为卡死；每段都可被 stop_event 中断
-                deadline = time.monotonic() + rest
-                while True:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        break
-                    if stop_event.wait(min(30.0, remaining)):
-                        stopped = True
-                        break
-                    remaining = deadline - time.monotonic()
-                    if remaining > 1:
-                        _insert_event(
-                            task_id, "info",
-                            f"⏸ 批间休息中，剩余约 "
-                            f"{remaining / 60:.1f} 分钟...")
-                if stopped:
+                if _rest_with_heartbeat(task_id, rest, "批间休息",
+                                        stop_event):
+                    stopped = True
                     break
                 nums_since_rest = 0
                 _insert_event(task_id, "info", "▶ 批间休息结束，继续查号")
