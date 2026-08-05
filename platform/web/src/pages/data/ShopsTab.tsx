@@ -12,8 +12,6 @@ import {
 import { LoadingState, ErrorState, EmptyState } from '@/components/PageState'
 import { PaginationBar, showTime, useDebouncedValue } from './shared'
 
-const PAGE_SIZE = 20
-
 export function shopStatusBadge(status: string) {
   switch (status) {
     case 'done':
@@ -44,6 +42,7 @@ export function ShopsTab() {
   const [status, setStatus] = useState<string>('all')
   const [keyword, setKeyword] = useState('')
   const [page, setPage] = useState(1)
+  const [size, setSize] = useState(20)
   const q = useDebouncedValue(keyword.trim(), 500)
 
   const [data, setData] = useState<Paged<ShopItem> | null>(null)
@@ -61,7 +60,7 @@ export function ShopsTab() {
         status: status === 'all' ? '' : status,
         q,
         page,
-        size: PAGE_SIZE,
+        size,
       })
       setData(result)
       setError(null)
@@ -70,7 +69,7 @@ export function ShopsTab() {
     } finally {
       setLoading(false)
     }
-  }, [status, q, page])
+  }, [status, q, page, size])
 
   useEffect(() => {
     load()
@@ -141,7 +140,16 @@ export function ShopsTab() {
               </TableBody>
             </Table>
           </div>
-          <PaginationBar page={data.page} size={data.size} total={data.total} onPageChange={setPage} />
+          <PaginationBar
+            page={data.page}
+            size={data.size}
+            total={data.total}
+            onPageChange={setPage}
+            onSizeChange={(s) => {
+              setSize(s)
+              setPage(1)
+            }}
+          />
         </>
       )}
     </div>

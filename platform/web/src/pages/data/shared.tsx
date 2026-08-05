@@ -3,6 +3,9 @@ import { useEffect, useState } from 'react'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '@/components/ui/select'
 
 export function useDebouncedValue<T>(value: T, delayMs = 500): T {
   const [debounced, setDebounced] = useState(value)
@@ -18,11 +21,13 @@ export function PaginationBar({
   size,
   total,
   onPageChange,
+  onSizeChange,
 }: {
   page: number
   size: number
   total: number
   onPageChange: (page: number) => void
+  onSizeChange?: (size: number) => void
 }) {
   const pages = Math.max(1, Math.ceil(total / size))
   const [jumpTo, setJumpTo] = useState('')
@@ -44,6 +49,16 @@ export function PaginationBar({
         第 {page} / {pages} 页 · 共 {total} 条
       </p>
       <div className="flex items-center gap-2">
+        <Select value={String(size)} onValueChange={(v) => onSizeChange?.(Number(v))}>
+          <SelectTrigger className="h-8 w-[92px]">
+            <SelectValue>每页 {size} 条</SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="20">20</SelectItem>
+            <SelectItem value="50">50</SelectItem>
+            <SelectItem value="100">100</SelectItem>
+          </SelectContent>
+        </Select>
         <Button
           variant="outline"
           size="sm"

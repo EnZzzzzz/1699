@@ -14,8 +14,6 @@ import {
 import { LoadingState, ErrorState, EmptyState } from '@/components/PageState'
 import { PaginationBar, showTime, useDebouncedValue } from './shared'
 
-const PAGE_SIZE = 20
-
 function waBadge(item: ContactItem) {
   if (item.wa_registered === 1) {
     return (
@@ -42,6 +40,7 @@ export function ContactsTab() {
   const [hasMobile, setHasMobile] = useState(false)
   const [keyword, setKeyword] = useState('')
   const [page, setPage] = useState(1)
+  const [size, setSize] = useState(20)
   const q = useDebouncedValue(keyword.trim(), 500)
 
   const [data, setData] = useState<Paged<ContactItem> | null>(null)
@@ -61,7 +60,7 @@ export function ContactsTab() {
         has_mobile: hasMobile,
         q,
         page,
-        size: PAGE_SIZE,
+        size,
       })
       setData(result)
       setError(null)
@@ -70,7 +69,7 @@ export function ContactsTab() {
     } finally {
       setLoading(false)
     }
-  }, [wa, hasMobile, q, page])
+  }, [wa, hasMobile, q, page, size])
 
   useEffect(() => {
     load()
@@ -153,7 +152,16 @@ export function ContactsTab() {
               </TableBody>
             </Table>
           </div>
-          <PaginationBar page={data.page} size={data.size} total={data.total} onPageChange={setPage} />
+          <PaginationBar
+            page={data.page}
+            size={data.size}
+            total={data.total}
+            onPageChange={setPage}
+            onSizeChange={(s) => {
+              setSize(s)
+              setPage(1)
+            }}
+          />
         </>
       )}
     </div>
