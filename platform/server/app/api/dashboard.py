@@ -35,6 +35,17 @@ def overview():
             "SELECT COUNT(*), "
             "SUM(CASE WHEN mobile IS NOT NULL AND mobile != '' THEN 1 ELSE 0 END) "
             "FROM contacts").fetchone()
+        # 防御性探测 wa 列是否存在（迁移可能未执行）；列缺失时 wa 统计返回 0
+        cols = {row[1] for row in cur.execute("PRAGMA table_info(contacts)").fetchall()}
+        if "wa_registered" in cols and "wa_checked_at" in cols:
+            c_wa_reg, c_wa_unreg, c_wa_unchecked = cur.execute(
+                "SELECT "
+                "SUM(CASE WHEN wa_registered = 1 THEN 1 ELSE 0 END), "
+                "SUM(CASE WHEN wa_registered = 0 THEN 1 ELSE 0 END), "
+                "SUM(CASE WHEN wa_registered IS NULL THEN 1 ELSE 0 END) "
+                "FROM contacts").fetchone()
+        else:
+            c_wa_reg = c_wa_unreg = c_wa_unchecked = 0
         task_status = dict(cur.execute(
             "SELECT status, COUNT(*) FROM tasks GROUP BY status").fetchall())
     return {
@@ -49,6 +60,9 @@ def overview():
         "contacts": {
             "total": c_total,
             "with_mobile": c_mobile or 0,
+            "wa_registered": c_wa_reg or 0,
+            "wa_unregistered": c_wa_unreg or 0,
+            "wa_unchecked": c_wa_unchecked or 0,
         },
         "tasks": {
             "running": task_status.get("running", 0),

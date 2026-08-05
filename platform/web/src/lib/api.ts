@@ -47,7 +47,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export interface Overview {
   ts: string
   shops: { pending: number; done: number; no_contact: number; failed: number; total: number }
-  contacts: { total: number; with_mobile: number }
+  contacts: { total: number; with_mobile: number; wa_registered: number; wa_unregistered: number; wa_unchecked: number }
   tasks: { running: number; pending: number; done: number; failed: number }
 }
 

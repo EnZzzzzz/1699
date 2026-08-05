@@ -91,6 +91,12 @@ export default function Dashboard() {
                 含手机号 <span className="font-semibold text-foreground">{ov.contacts.with_mobile.toLocaleString()}</span>
                 {ov.contacts.total > 0 && `（${((ov.contacts.with_mobile / ov.contacts.total) * 100).toFixed(1)}%）`}
               </div>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <span className="text-sm text-muted-foreground">WhatsApp：</span>
+                <Badge variant="outline" className="border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">已注册 {ov.contacts.wa_registered.toLocaleString()}</Badge>
+                <Badge variant="secondary">未注册 {ov.contacts.wa_unregistered.toLocaleString()}</Badge>
+                <Badge variant="outline" className="text-muted-foreground">未查 {ov.contacts.wa_unchecked.toLocaleString()}</Badge>
+              </div>
             </div>
           )}
         </StatCard>
