@@ -15,6 +15,7 @@ const {
   DisconnectReason,
   fetchLatestBaileysVersion,
 } = require('@whiskeysockets/baileys');
+const { createQueryRunner } = require('./retry.js');
 
 // 多账号支持：每个账号一个独立会话目录，凭证完全隔离
 //   默认:            auth_info/
@@ -32,6 +33,11 @@ function resolveAuthDir(argv) {
 }
 
 const AUTH_DIR = resolveAuthDir(process.argv);
+
+// 单号查询失败重试：重试次数 / 连续失败风控阈值 / 退避基值（可 env 覆盖）
+const MAX_RETRIES        = parseInt(process.env.WA_QUERY_RETRIES        || '2');
+const THROTTLE_THRESHOLD = parseInt(process.env.WA_THROTTLE_THRESHOLD  || '5');
+const RETRY_BACKOFF_MS   = 3000;
 
 function collectNumbers(argv) {
   const args = argv.slice(2).filter((a) => !a.startsWith('--auth='));
@@ -105,7 +111,7 @@ async function main() {
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
   const { version } = await fetchLatestBaileysVersion();
 
-  const sock = await connectWithRetry(state, saveCreds, version);
+  let sock = await connectWithRetry(state, saveCreds, version);
   console.log('已连接，开始查询...\n');
 
   const results = [];
@@ -117,27 +123,36 @@ async function main() {
     delayMax > delayMin
       ? (delayMin + Math.random() * (delayMax - delayMin)) * 1000
       : delayMin * 1000;
+  // 单号失败：退避→重连→重试；连续失败 ≥THROTTLE_THRESHOLD 判定风控中止本批
+  const runner = createQueryRunner({
+    maxRetries: MAX_RETRIES,
+    throttleThreshold: THROTTLE_THRESHOLD,
+    backoffMs: RETRY_BACKOFF_MS,
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    reconnect: async () => {
+      sock.end();
+      sock = await connectWithRetry(state, saveCreds, version, 3);
+    },
+  });
+
   for (const [i, num] of numbers.entries()) {
-    try {
-      const res = await sock.onWhatsApp(num);
-      const hit = res && res[0];
-      results.push({
-        number: num,
-        registered: !!hit?.exists,
-        jid: hit?.jid || null,
-      });
-      console.log(`${num}\t${hit?.exists ? '✅ 已注册' : '❌ 未注册'}${hit?.jid ? `\t${hit.jid}` : ''}`);
-    } catch (e) {
-      results.push({ number: num, registered: null, error: String(e.message || e) });
-      console.log(`${num}\t⚠️ 查询失败: ${e.message || e}`);
+    const r = await runner.run(num, (n) => sock.onWhatsApp(n));
+    results.push(r);
+    if (r.error) {
+      console.log(`${num}\t⚠️ ${r.error}`);
+    } else {
+      console.log(`${num}\t${r.registered ? '✅ 已注册' : '❌ 未注册'}${r.jid ? `\t${r.jid}` : ''}`);
     }
     if (i < numbers.length - 1) {
-      await new Promise((r) => setTimeout(r, randDelay()));
+      await new Promise((r2) => setTimeout(r2, randDelay()));
     }
   }
 
   const out = process.env.WA_RESULTS || path.join(__dirname, 'results.json');
-  fs.writeFileSync(out, JSON.stringify({ checkedAt: new Date().toISOString(), results }, null, 2));
+  fs.writeFileSync(out, JSON.stringify({
+    checkedAt: new Date().toISOString(), results,
+    throttled: runner.isThrottled(),
+  }, null, 2));
   console.log(`\n完成，共 ${results.length} 个号码。结果已保存: ${out}`);
 
   sock.end();
