@@ -130,8 +130,10 @@ class CheckWhatsApp:
         if delay_min > delay_max:
             delay_min, delay_max = delay_max, delay_min
         if timeout is None:
-            # 超时自适应：连接 ~60s + 每号码（查询 ~5s + 最大间隔），上浮 20%
-            timeout = (60 + len(numbers) * (delay_max + 5)) * 1.2
+            # 超时自适应：连接 ~60s + 每号码（查询 ~5s + 最大间隔），上浮 20%；
+            # 另加固定 360s 重试预算——单号失败会退避重连重试，最坏情况
+            # 为「连续 5 号各重试 2 次」≈300s，因风控中止有上限，故不随号码数放大
+            timeout = (60 + len(numbers) * (delay_max + 5)) * 1.2 + 360
         timeout = float(timeout)
         ctx.log(f"    ...WhatsApp 查号 {len(numbers)} 个（{wa_dir.name}，"
                 f"逐号间隔 {delay_min:g}~{delay_max:g}s）")

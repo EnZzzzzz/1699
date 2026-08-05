@@ -100,7 +100,7 @@ class TestAtomOutcomes(unittest.TestCase):
              "jid": "8613404221971@s.whatsapp.net"},
         ]
 
-        def fake_run(cmd, ctx, timeout, *, cwd, results_path, auth_dir=None):
+        def fake_run(cmd, ctx, timeout, *, cwd, results_path, auth_dir=None, extra_env=None):
             Path(results_path).write_text(
                 '{"checkedAt": "t", "results": ' +
                 '[{"number": "8615156667272", "registered": false, "jid": null},'
@@ -149,7 +149,7 @@ class TestAtomOutcomes(unittest.TestCase):
         (d / "auth_info-b").mkdir()
         seen = {}
 
-        def fake_run(cmd, ctx, timeout, *, cwd, results_path, auth_dir=None):
+        def fake_run(cmd, ctx, timeout, *, cwd, results_path, auth_dir=None, extra_env=None):
             seen["auth_dir"] = auth_dir
             Path(results_path).write_text('{"results": []}', encoding="utf-8")
             return 0, ""
@@ -167,6 +167,22 @@ class TestAtomOutcomes(unittest.TestCase):
             "numbers": ["8615156667272"], "wa_check_dir": d, "account": "b"})
         self.assertIs(r.outcome, Outcome.FATAL)
         self.assertIn("--auth=b", r.detail)
+
+    def test_timeout_includes_retry_budget(self):
+        """超时公式含 +360s 重试预算（重试会拉长单批时长，须计入原子超时）。"""
+        d = self._fake_wa_dir()
+        seen = {}
+
+        def fake_run(cmd, ctx, timeout, *, cwd, results_path, auth_dir=None, extra_env=None):
+            seen["timeout"] = timeout
+            Path(results_path).write_text('{"results": []}', encoding="utf-8")
+            return 0, ""
+
+        self.atom._run_node = fake_run  # type: ignore[assignment]
+        self.atom.run(FakeCtx(), {
+            "numbers": ["8615156667272"], "wa_check_dir": d, "sample_max": 1.0})
+        base = (60 + 1 * (1.0 + 5)) * 1.2
+        self.assertGreaterEqual(seen["timeout"], base + 360)
 
 
 if __name__ == "__main__":
