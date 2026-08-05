@@ -47,6 +47,11 @@ DEFAULT_CC = "86"
 MAX_CONSECUTIVE_FATAL = 2
 _PROGRESS_THROTTLE_SEC = 1.0
 
+# 风控冷却：批内错误率 ≥ 阈值判定疑似风控，批后额外长冷却（防风控加重）
+THROTTLE_RATIO = 0.3
+THROTTLE_COOLDOWN_MIN = 1200.0   # 20 分钟
+THROTTLE_COOLDOWN_MAX = 1800.0   # 30 分钟
+
 # 节奏默认值：逐号码随机间隔 1.5s 固定（check.js 内部缺省）；
 # 每 500 个号码一批，批间休息随机 60~180s
 DEFAULT_SAMPLE_MIN = 1.5
@@ -304,6 +309,7 @@ def run(task_id: int, params: dict, stop_event: threading.Event) -> None:
         fail_detail = None
         last_progress = 0.0
         nums_since_rest = 0  # 距上次批间休息已成功查号的号码数
+        throttle_rest = False  # 本批疑似风控 → 批后额外长冷却
 
         for bi, batch in enumerate(batches, 1):
             if stop_event.is_set() or _db_stop_requested(task_id):
@@ -328,13 +334,26 @@ def run(task_id: int, params: dict, stop_event: threading.Event) -> None:
                 results = res.data.get("results") or []
                 written, skipped_err, skipped_amb = _apply_results(results)
                 hits = sum(1 for r in results if r.get("registered"))
-                checked += len(batch)
+                done = sum(1 for r in results
+                           if r.get("registered") is not None)
+                err_cnt = len(results) - done
+                checked += done  # 只计有结果的号码，出错号码保持 NULL 待查
                 registered += hits
-                msg = (f"批次 {bi}/{len(batches)}：查 {len(batch)} 个，"
+                msg = (f"批次 {bi}/{len(batches)}：查 {done}/{len(batch)} 个，"
                        f"累计已注册 {registered}")
                 extra = []
-                if skipped_err:
-                    extra.append(f"{skipped_err} 个查询出错未写回")
+                if err_cnt and len(results):
+                    ratio = err_cnt / len(results)
+                    extra.append(f"{err_cnt} 个查询出错未写回")
+                    if ratio >= THROTTLE_RATIO:
+                        throttle_rest = True
+                        _insert_event(
+                            task_id, "warning",
+                            f"批次 {bi}/{len(batches)} 错误率 {ratio:.0%}"
+                            f"（{err_cnt}/{len(results)}）"
+                            f" ≥{THROTTLE_RATIO:.0%}，疑似风控，批后将额外冷却",
+                            {"err_cnt": err_cnt, "ratio": round(ratio, 2),
+                             "throttle_rest": True})
                 if skipped_amb:
                     extra.append(f"{skipped_amb} 个号码匹配歧义跳过")
                 if extra:
@@ -393,6 +412,21 @@ def run(task_id: int, params: dict, stop_event: threading.Event) -> None:
                     break
                 nums_since_rest = 0
                 _insert_event(task_id, "info", "▶ 批间休息结束，继续查号")
+
+            # 风控冷却：高错误率批次后额外长休息（不等 batch_num 边界）
+            if throttle_rest and bi < len(batches):
+                cooldown = random.uniform(THROTTLE_COOLDOWN_MIN,
+                                          THROTTLE_COOLDOWN_MAX)
+                _insert_event(
+                    task_id, "warning",
+                    f"⏸ 疑似风控，额外冷却 {cooldown / 60:.1f} 分钟...",
+                    {"checked": checked, "registered": registered,
+                     "cooldown_seconds": round(cooldown, 1)})
+                if _rest_with_heartbeat(task_id, cooldown, "风控冷却",
+                                        stop_event):
+                    stopped = True
+                    break
+                throttle_rest = False
 
         if fail_detail:
             _finalize(task_id, "failed", fail_detail[:500])
