@@ -224,6 +224,28 @@ def run(task_id: int, params: dict, stop_event: threading.Event) -> None:
         accounts = [str(a).strip()
                     for a in (params.get("accounts") or []) if str(a).strip()]
 
+        # 防主号误用（曾因此误封主号）：wa_check 不显式指定账号时，过去会
+        # 静默落到 default（= auth_info 主号），大批量协议查询有封号风险。
+        # 空账号一律拒绝启动；显式选 default 则警告（default 目录已删除时
+        # 原子层会以「未登录」FATAL，此处仅作提示）。
+        if not accounts:
+            _insert_event(
+                task_id, "error",
+                "wa_check 拒绝启动：未指定查号账号（accounts 为空）。"
+                "为避免静默使用 default（主号）导致封号，任务已中止，"
+                "请显式选择小号账号（如 xiaohao-1）后重试。",
+                {"accounts": [], "action": "refused"})
+            _finalize(
+                task_id, "failed",
+                "wa_check 未指定账号，拒绝启动（防空跑主号 default）")
+            return
+        if "default" in accounts:
+            _insert_event(
+                task_id, "warning",
+                "警告：账号池包含 default（对应 auth_info 主号），"
+                "协议批量查询有封号风险，请确认这是有意选择。",
+                {"accounts": accounts, "contains_default": True})
+
         rows = _fetch_pending_rows(limit)
         # 规范化 + 去重（保持顺序），一个号码可能对应多行联系人
         numbers: list[str] = []
