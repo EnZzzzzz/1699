@@ -7,7 +7,7 @@ import {
 } from '@/components/ui/sheet'
 import { Button } from '@/components/ui/button'
 import { ArrowDown, Loader2 } from 'lucide-react'
-import { levelBadge, statusBadge, taskTypeLabel, workerChip, eventWorker } from './task-ui'
+import { levelBadge, statusBadge, taskTypeLabel, workerChip, eventWorker, RestartCountdown } from './task-ui'
 
 interface TaskLogSheetProps {
   task: Task | null
@@ -112,6 +112,12 @@ export function TaskLogSheet({ task, open, onOpenChange, onStatus }: TaskLogShee
               任务 #{task?.id} 日志
             </SheetTitle>
             {displayStatus && statusBadge(displayStatus)}
+            {displayStatus === 'waiting' && (
+              <RestartCountdown
+                nextRestartAt={task?.next_restart_at}
+                className="text-xs text-amber-600 dark:text-amber-400"
+              />
+            )}
             <span
               className={`ml-auto inline-flex items-center gap-1.5 text-xs ${
                 connected ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground'
@@ -142,9 +148,14 @@ export function TaskLogSheet({ task, open, onOpenChange, onStatus }: TaskLogShee
                 等待日志事件…
               </div>
             ) : (
-              <ul className="space-y-1.5">
-                {events.map((ev) => (
-                  <li key={ev.id} className="flex items-start gap-2">
+              <ul className="space-y-1">
+                {events.map((ev, i) => (
+                  <li
+                    key={ev.id}
+                    className={`flex items-start gap-2 rounded px-1.5 ${
+                      i % 2 === 1 ? 'bg-muted/80' : 'bg-transparent'
+                    }`}
+                  >
                     <span className="shrink-0 pt-px">{levelBadge(ev.level)}</span>
                     <span className="shrink-0 pt-0.5">{workerChip(eventWorker(ev))}</span>
                     <span className="shrink-0 pt-0.5 font-mono text-xs text-muted-foreground">
