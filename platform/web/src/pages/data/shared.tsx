@@ -45,20 +45,23 @@ export function PaginationBar({
 
   return (
     <div className="flex items-center justify-between pt-4">
-      <p className="text-sm text-muted-foreground">
-        第 {page} / {pages} 页 · 共 {total} 条
-      </p>
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-3">
+        <p className="text-sm text-muted-foreground">
+          第 {page} / {pages} 页 · 共 {total} 条
+        </p>
+        {/* 与 size="sm" 按钮对齐：h-8 + text-sm font-medium；宽度自适应避免箭头压住文字 */}
         <Select value={String(size)} onValueChange={(v) => onSizeChange?.(Number(v))}>
-          <SelectTrigger className="h-8 w-[92px]">
+          <SelectTrigger className="h-8 font-medium">
             <SelectValue>每页 {size} 条</SelectValue>
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="20">20</SelectItem>
-            <SelectItem value="50">50</SelectItem>
-            <SelectItem value="100">100</SelectItem>
+            <SelectItem value="20">每页 20 条</SelectItem>
+            <SelectItem value="50">每页 50 条</SelectItem>
+            <SelectItem value="100">每页 100 条</SelectItem>
           </SelectContent>
         </Select>
+      </div>
+      <div className="flex items-center gap-2">
         <Button
           variant="outline"
           size="sm"
