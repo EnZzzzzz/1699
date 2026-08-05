@@ -48,3 +48,4 @@ cd platform && ./stop.sh      # 停止
 
 - [docs/flow-architecture.md](docs/flow-architecture.md)：fetcher 框架设计
 - [docs/service-architecture.md](docs/service-architecture.md)：旧服务化方案（未实施，存档）
+- [docs/made-in-china-scraping.md](docs/made-in-china-scraping.md)：联系方式采集源调研（中国制造网中文站可采，含爬取方案）

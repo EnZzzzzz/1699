@@ -2,6 +2,7 @@
 import asyncio
 import json
 import sqlite3
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -25,10 +26,45 @@ def _parse_json(text):
         return None
 
 
+def _loop_wait(row) -> tuple:
+    """循环模式任务是否处于轮间等待期。
+
+    条件：status ∈ (done, failed)、未手动停止（stop_requested=0）、
+    params 带 repeat_interval>0。满足时返回 ("waiting", next_restart_at)，
+    next_restart_at = finished_at + repeat_interval；否则 (None, None)。
+
+    供列表/详情/SSE 派生展示状态：waiting 不属于终态，SSE 不会据此关流，
+    前端据此显示「等待重启」。
+    """
+    # 兼容 sqlite3.Row（无 .get）与 dict 两种输入
+    row = dict(row)
+    status = row.get("status")
+    if status not in ("done", "failed") or row.get("stop_requested"):
+        return None, None
+    params = _parse_json(row.get("params_json")) or {}
+    interval = params.get("repeat_interval")
+    if not isinstance(interval, (int, float)) or interval <= 0:
+        return None, None
+    next_at = None
+    finish = row.get("finished_at")
+    if finish:
+        try:
+            t = datetime.strptime(finish, "%Y-%m-%d %H:%M:%S")
+            next_at = (t + timedelta(seconds=int(interval))
+                       ).strftime("%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            next_at = None
+    return "waiting", next_at
+
+
 def _row_to_task(r):
     t = dict(r)
     t["params_json"] = _parse_json(t.get("params_json"))
     t["progress_json"] = _parse_json(t.get("progress_json"))
+    eff, next_at = _loop_wait(r)
+    if eff:
+        t["status"] = eff
+    t["next_restart_at"] = next_at
     return t
 
 
@@ -333,9 +369,11 @@ def _fetch_events(task_id: int, last_id: int, limit: int = None):
 def _fetch_status(task_id: int):
     conn = sqlite3.connect(DB_PATH, timeout=30)
     try:
+        conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA busy_timeout = 30000")
         return conn.execute(
-            "SELECT status, finished_at FROM tasks WHERE id=?",
+            "SELECT status, finished_at, stop_requested, params_json "
+            "FROM tasks WHERE id=?",
             (task_id,)).fetchone()
     finally:
         conn.close()
@@ -380,11 +418,20 @@ async def task_events(task_id: int, request: Request):
 
             row = await asyncio.to_thread(_fetch_status, task_id)
             if row:
-                status, finished_at = row[0], row[1]
+                # 循环等待期（done/failed + repeat_interval）派生为 waiting：
+                # 不属于终态，SSE 保持流不断，等下一轮 running 事件推过来
+                eff, next_restart_at = _loop_wait(row)
+                status = eff or row["status"]
                 if status != last_status:
                     last_status = status
+                    payload = {
+                        "status": status,
+                        "finished_at": row["finished_at"],
+                    }
+                    if next_restart_at:
+                        payload["next_restart_at"] = next_restart_at
                     yield ("event: status\n"
-                           f"data: {json.dumps({'status': status, 'finished_at': finished_at}, ensure_ascii=False)}\n\n")
+                           f"data: {json.dumps(payload, ensure_ascii=False)}\n\n")
                     if status in ("done", "failed", "stopped"):
                         terminal_sent = True
 

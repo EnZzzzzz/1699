@@ -175,7 +175,7 @@ class TaskRunner:
     # ---------- 生命周期 ----------
 
     def startup(self) -> None:
-        """服务启动：幂等迁移 + 把 DB 里遗留的 running 任务标记为 failed。"""
+        """服务启动：幂等迁移 + 清理孤儿 running + 恢复循环模式待重启。"""
         migrate()
         conn = sqlite3.connect(DB_PATH, timeout=30)
         try:
@@ -190,6 +190,12 @@ class TaskRunner:
                 print(f"[runner] 清理孤儿 running 任务 {cur.rowcount} 个")
         finally:
             conn.close()
+        # 重启前处于循环模式等待期的任务：重新安排自动重启，避免丢失后
+        # 任务永远停在 done/failed（见 _recover_loop_restarts）。
+        try:
+            self._recover_loop_restarts()
+        except Exception as e:
+            print(f"[runner] 恢复循环重启失败: {e}")
 
     def shutdown(self) -> None:
         """服务关闭：取消待重启 Timer；终止仍在跑的子进程 / 通知进程内任务停止。"""
@@ -353,6 +359,17 @@ class TaskRunner:
         with self._lock:
             return task_id in self._timers
 
+    def _schedule_restart(self, task_id: int, delay: int) -> None:
+        """登记/重置一个任务的循环重启 Timer：delay 秒后触发 _auto_restart。"""
+        self.cancel_timer(task_id)
+        timer = threading.Timer(max(0, int(delay)), self._auto_restart,
+                                args=(task_id,))
+        timer.daemon = True
+        timer.name = f"task-restart-{task_id}"
+        with self._lock:
+            self._timers[task_id] = timer
+        timer.start()
+
     def _maybe_schedule_restart(self, task_id: int, status: str) -> None:
         """本轮正常终态（done/failed）后，按 params.repeat_interval 安排自动重启。"""
         if status not in ("done", "failed"):
@@ -383,13 +400,59 @@ class TaskRunner:
                 {"repeat_interval": interval, "status": status})
         except Exception as e:
             print(f"[runner] task {task_id} 写重启事件失败: {e}")
-        self.cancel_timer(task_id)
-        timer = threading.Timer(interval, self._auto_restart, args=(task_id,))
-        timer.daemon = True
-        timer.name = f"task-restart-{task_id}"
-        with self._lock:
-            self._timers[task_id] = timer
-        timer.start()
+        self._schedule_restart(task_id, interval)
+
+    def _recover_loop_restarts(self) -> list:
+        """服务重启后恢复循环模式任务的待重启定时器。
+
+        仅对 status IN ('done','failed') 且 stop_requested=0、params 带
+        repeat_interval>0 的任务重新安排自动重启：
+        - 未到期的（finished_at + interval > now）按原节奏补足剩余等待，
+          避免服务短暂重启把整轮周期提前；
+        - 已到期的立即重启（delay=0），保证宕机期间漏掉的轮次继续循环。
+
+        返回 [(task_id, delay)]，供测试断言与日志观察。
+        """
+        conn = sqlite3.connect(DB_PATH, timeout=30)
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA busy_timeout = 30000")
+            rows = conn.execute(
+                "SELECT id, params_json, stop_requested, finished_at FROM tasks "
+                "WHERE status IN ('done','failed') AND stop_requested=0"
+            ).fetchall()
+        finally:
+            conn.close()
+        scheduled: list = []
+        now = datetime.now(BJ_TZ)
+        for row in rows:
+            try:
+                params = json.loads(row["params_json"] or "{}")
+            except ValueError:
+                continue
+            interval = params.get("repeat_interval")
+            if not isinstance(interval, (int, float)) or interval <= 0:
+                continue
+            interval = int(interval)
+            delay = interval
+            if row["finished_at"]:
+                try:
+                    finish = datetime.strptime(
+                        row["finished_at"], "%Y-%m-%d %H:%M:%S"
+                    ).replace(tzinfo=BJ_TZ)
+                    delay = max(0, interval - int((now - finish).total_seconds()))
+                except ValueError:
+                    pass
+            try:
+                _insert_event(
+                    row["id"], "info",
+                    f"服务重启，恢复循环模式：{delay} 秒后自动重启",
+                    {"repeat_interval": interval, "delay": delay})
+            except Exception as e:
+                print(f"[runner] task {row['id']} 写恢复事件失败: {e}")
+            self._schedule_restart(row["id"], delay)
+            scheduled.append((row["id"], delay))
+        return scheduled
 
     def _auto_restart(self, task_id: int) -> None:
         """Timer 触发：任务仍存在、未被停止、处于终态 → 走与 start 相同的重置逻辑再起一轮。"""

@@ -15,7 +15,7 @@ import {
 } from '@/components/ui/alert-dialog'
 import { PageHeader, LoadingState, ErrorState, EmptyState } from '@/components/PageState'
 import { Play, Plus, RefreshCw, Square, Trash2, X } from 'lucide-react'
-import { statusBadge, taskTypeLabel, paramsSummary } from './tasks/task-ui'
+import { statusBadge, taskTypeLabel, paramsSummary, RestartCountdown } from './tasks/task-ui'
 import { TaskFormDialog } from './tasks/TaskFormDialog'
 import { TaskActions } from './tasks/TaskActions'
 import { TaskLogSheet } from './tasks/TaskLogSheet'
@@ -107,7 +107,15 @@ function TaskRow({
         </span>
       </TableCell>
       <TableCell>
-        {statusBadge(task.status)}
+        <div className="flex flex-wrap items-center gap-1.5">
+          {statusBadge(task.status)}
+          {task.status === 'waiting' && (
+            <RestartCountdown
+              nextRestartAt={task.next_restart_at}
+              className="text-xs text-amber-600 dark:text-amber-400"
+            />
+          )}
+        </div>
         {line && (
           <div className="mt-1 truncate text-xs text-muted-foreground" title={line}>
             {line}

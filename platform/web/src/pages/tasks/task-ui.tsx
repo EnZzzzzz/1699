@@ -1,4 +1,5 @@
 // 任务页共享展示件：状态徽标 / 日志级别徽标 / 任务类型标签
+import { useEffect, useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import type { TaskEventLevel, TaskType } from '@/lib/api'
 
@@ -8,6 +9,9 @@ export function statusBadge(status: string) {
       return <Badge className="bg-sky-600 hover:bg-sky-600">运行中</Badge>
     case 'pending':
       return <Badge variant="secondary">排队中</Badge>
+    case 'waiting':
+      // 循环模式轮间等待：done/failed 后按 repeat_interval 等待自动重启
+      return <Badge className="bg-amber-500 hover:bg-amber-500">等待重启</Badge>
     case 'done':
       return <Badge className="bg-emerald-600 hover:bg-emerald-600">已完成</Badge>
     case 'failed':
@@ -17,6 +21,30 @@ export function statusBadge(status: string) {
     default:
       return <Badge variant="outline">{status}</Badge>
   }
+}
+
+// 循环等待倒计时：显示「X分Y秒后重启」，到点显示「正在重启…」
+// next_restart_at 为 "YYYY-MM-DD HH:MM:SS"（北京时间，机器时区一致）。
+export function RestartCountdown({
+  nextRestartAt,
+  className,
+}: {
+  nextRestartAt?: string | null
+  className?: string
+}) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(t)
+  }, [])
+  if (!nextRestartAt) return null
+  const ts = Date.parse(nextRestartAt.replace(' ', 'T'))
+  if (Number.isNaN(ts)) return null
+  const sec = Math.max(0, Math.round((ts - now) / 1000))
+  const text = sec <= 0
+    ? '正在重启…'
+    : `${Math.floor(sec / 60)}分${String(sec % 60).padStart(2, '0')}秒后重启`
+  return <span className={className}>{text}</span>
 }
 
 export function levelBadge(level: TaskEventLevel) {

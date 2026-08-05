@@ -71,6 +71,8 @@ export interface Task {
   created_at: string
   started_at: string | null
   finished_at: string | null
+  // 循环模式轮间等待期的下次自动重启时间（"YYYY-MM-DD HH:MM:SS"），非等待态为 null
+  next_restart_at: string | null
 }
 
 export type TaskType = '1688_shop' | '1688_company' | '1688_contact' | 'yiwugo_search' | 'wa_check'
@@ -165,6 +167,7 @@ export interface TaskEvent {
 export interface TaskStatusEvent {
   status: string
   finished_at: string | null
+  next_restart_at?: string | null
 }
 
 export interface ProviderChannel {

@@ -39,10 +39,12 @@ export function TaskActions({ task, onChanged, onShowLogs }: TaskActionsProps) {
     }
   }
 
-  const canStop = task.status === 'running'
+  const isRunning = task.status === 'running'
+  const isWaiting = task.status === 'waiting' // 循环模式轮间等待中（可停止以取消自动重启）
+  const canStop = isRunning || isWaiting
   const canStart = task.status === 'pending' || task.status === 'failed' || task.status === 'stopped'
   const canEdit = canStart // pending / failed / stopped 可编辑参数
-  const canDelete = !canStop // 非运行中可删除（会连带清除全部日志事件）
+  const canDelete = !isRunning // 非运行中可删除（等待重启也会随删除 cancel Timer）
 
   return (
     <div className="flex items-center gap-1">
@@ -58,7 +60,7 @@ export function TaskActions({ task, onChanged, onShowLogs }: TaskActionsProps) {
             <AlertDialogHeader>
               <AlertDialogTitle>停止任务 #{task.id}？</AlertDialogTitle>
               <AlertDialogDescription>
-                正在运行的采集进程会被终止，已采集的数据会保留。该操作不可撤销。
+                运行中的采集进程会被终止；等待重启的循环任务会取消自动重启。已采集的数据会保留。该操作不可撤销。
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
