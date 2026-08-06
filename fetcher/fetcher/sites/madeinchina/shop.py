@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
 """中国制造网(cn.made-in-china.com) 供应商展厅 URL 采集任务。
 
-任务内容：从 madeinchina 首页提取类目入口（类目 = 行业市场 market 分页
-页，slug 是拼音缩写如 wujingj=五金工具，不透明），随机挑类目翻页采集
-market 页，解析页内的供应商展厅子域名（{showroom}.cn.made-in-china.com）
-入库 shops 表（status=pending），供 contact 任务消费。
+任务内容：从 madeinchina 首页 + 市场导航页（/shichang/）提取类目入口
+（类目 = 行业市场 market 分页页，slug 是拼音缩写如 wujingj=五金工具，
+不透明），随机挑类目翻页采集 market 页，解析页内的供应商展厅子域名
+（{showroom}.cn.made-in-china.com）入库 shops 表（status=pending），
+供 contact 任务消费。首页只暴露 ~129 个 market 类目（2026-08-06 已全部
+采干），类目主力入口是市场导航页（~947 个类目）。
 
 进度：每个类目的 next_page 记在 category_progress；空页或没有下一页
 （has_more=false）标记 exhausted 之后跳过；抓取失败页码不前进。
@@ -26,7 +28,11 @@ import time
 from fetcher.control.task import Task
 from fetcher.core.errors import classify_error
 from fetcher.core.types import ActionResult, Outcome
-from fetcher.sites.madeinchina.features import HOMEPAGE, SHOWROOM_DOMAIN_SUFFIX
+from fetcher.sites.madeinchina.features import (
+    HOMEPAGE,
+    MARKET_DIR,
+    SHOWROOM_DOMAIN_SUFFIX,
+)
 
 MARKET_URL_TPL = "https://cn.made-in-china.com/market/{slug}_2-{page}.html"
 
@@ -70,7 +76,7 @@ def is_platform_subdomain(sub: str) -> bool:
     return sub in PLATFORM_SUBDOMAINS
 
 
-# 从首页提取类目入口：类目链接有两种独立体系——
+# 从首页/市场导航页提取类目入口：类目链接有两种独立体系——
 #   /market/{slug}_2-N.html   _2- 体系（静态 _2-N.html 锚点分页，如 bxgyxg）
 #   /market/{slug}-N.html     -N 体系（JS submitSearchByPage 分页，如 jgdbj）
 # 同一 pinyin slug 在两种体系下是**不同类目**（如 jgdbj_2=秸秆打包机、
@@ -130,10 +136,14 @@ _JS_EXTRACT_SHOWROOMS = """
 """
 
 
-def fetch_homepage_categories(page, timeout: float = 15.0) -> list[dict]:
-    """访问 madeinchina 首页提取类目入口 [{slug, name}, ...]，失败返回 []。"""
+def fetch_market_categories(page, url: str) -> list[dict]:
+    """访问指定页面提取 market 类目入口 [{slug, name, fmt}, ...]，失败返回 []。
+
+    首页与市场导航页（/shichang/）通用：链接格式相同（_2-N / -N 两种体系），
+    同一个 _JS_EXTRACT_CATEGORIES 正则都认。
+    """
     try:
-        page.goto(HOMEPAGE, wait_until="domcontentloaded", timeout=60000)
+        page.goto(url, wait_until="domcontentloaded", timeout=60000)
         time.sleep(random.uniform(2.0, 4.0))
         cats = page.evaluate(_JS_EXTRACT_CATEGORIES) or []
         return [c for c in cats if c.get("slug")]
@@ -141,8 +151,8 @@ def fetch_homepage_categories(page, timeout: float = 15.0) -> list[dict]:
         return []
 
 
-# 首页类目提取失败时的兜底种子（slug 是拼音缩写，首次实测确认的放进来，
-# 其余待真实运行从首页提取后沉淀）
+# 首页与市场导航页类目提取均失败时的兜底种子（slug 是拼音缩写，首次实测
+# 确认的放进来，其余待真实运行从导航页提取后沉淀）
 SEED_CATEGORIES = [
     ("wujingj", "五金工具"),
 ]
@@ -284,11 +294,21 @@ class MadeInChinaShopTask(Task):
     # ---- worker 循环 ----
 
     def cold_start(self, ctx, item) -> None:
-        """新会话先逛 madeinchina 首页留真实浏览轨迹，顺带提取首页类目填池。"""
-        cats = fetch_homepage_categories(ctx.page)
+        """新会话先逛首页 + 市场导航页留真实浏览轨迹，顺带提取类目填满类目池。
+
+        首页只暴露少量 market 链接（~129 个，2026-08-06 已全部采干），类目
+        主力入口是市场导航页 /shichang/（~947 个）；两页都提取，按 slug 合并
+        去重进池。新会话一上来就深链 market 分页是明显的爬虫特征，所以先逛
+        导航类页面。
+        """
+        home_cats = fetch_market_categories(ctx.page, HOMEPAGE)
+        dir_cats = fetch_market_categories(ctx.page, MARKET_DIR)
+        # 按 slug 合并去重（首页与导航页重合的类目只占一个坑）
+        cats = list({c["slug"]: c for c in home_cats + dir_cats}.values())
         if not cats:
             cats = [{"name": n, "slug": k} for k, n in SEED_CATEGORIES]
-            ctx.log(f"[!] 首页类目提取失败，使用内置种子类目（{len(cats)} 个）")
+            ctx.log(f"[!] 首页与市场导航页类目提取均失败，"
+                    f"使用内置种子类目（{len(cats)} 个）")
         n = self.cat_pool.refresh(cats)
         if n:
             ctx.log(f"类目池新增 {n} 个类目（可采 {self.cat_pool.available()}，"

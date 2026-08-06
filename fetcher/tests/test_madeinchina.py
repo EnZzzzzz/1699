@@ -18,7 +18,9 @@ from fetcher.sites.madeinchina.contact import (
     parse_contact_page,
     showroom_sub,
 )
+from fetcher.sites.madeinchina.features import HOMEPAGE, MARKET_DIR
 from fetcher.sites.madeinchina.shop import (
+    SEED_CATEGORIES,
     ZERO_NEW_LIMIT,
     CategoryPool,
     MadeInChinaShopTask,
@@ -603,6 +605,57 @@ class ShopTaskTest(unittest.TestCase):
         pool.pool = {"bxgyxg": "不锈钢异型管"}
         self.assertIsNone(pool.pick())
         self.assertFalse(pool.has_active())
+
+    # ---- cold_start 类目播种：首页 + 市场导航页（/shichang/）----
+
+    @patch("time.sleep")
+    @patch("random.uniform", return_value=1.0)
+    def test_cold_start_seeds_pool_from_market_dir(self, _r, _s):
+        # 首页只暴露少量 market 链接（~129 个，2026-08-06 已全部采干），
+        # 类目主力入口是市场导航页 /shichang/（~947 个）；两页都提取合并进池
+        page = MICPage()
+
+        def eval_dispatch(js):
+            if "querySelectorAll" in js and "/market/" in js:
+                if "shichang" in page.url:
+                    return [{"slug": "jgdbj", "name": "激光打标机",
+                             "fmt": "plain"},
+                            {"slug": "wujingj", "name": "五金工具",
+                             "fmt": "x2"}]
+                return [{"slug": "wujingj", "name": "五金工具", "fmt": "x2"}]
+            return ""
+
+        page.evaluate = eval_dispatch
+        ctx = make_ctx(page)
+        self.task.cat_pool = CategoryPool(exhausted=set())
+        self.task.cold_start(ctx, None)
+        self.assertIn("jgdbj", self.task.cat_pool.pool)     # 导航页类目进池
+        self.assertIn("wujingj", self.task.cat_pool.pool)   # 首页类目进池
+        # 首页与导航页重复的 slug 只占一个坑
+        self.assertEqual(list(self.task.cat_pool.pool).count("wujingj"), 1)
+        # 两个页面都逛了（留真实浏览轨迹）
+        urls = [u for u, _ in page.goto_calls]
+        self.assertIn(HOMEPAGE, urls)
+        self.assertIn(MARKET_DIR, urls)
+
+    @patch("time.sleep")
+    @patch("random.uniform", return_value=1.0)
+    def test_cold_start_both_pages_fail_falls_back_to_seeds(self, _r, _s):
+        # 首页与导航页都提取失败：兜底内置种子类目并打出警告
+        page = MICPage()
+
+        def boom(url, **kw):
+            raise RuntimeError("net down")
+
+        page.goto = boom
+        ctx = make_ctx(page)
+        logs = []
+        ctx.log = logs.append
+        self.task.cat_pool = CategoryPool(exhausted=set())
+        self.task.cold_start(ctx, None)
+        self.assertEqual(sorted(self.task.cat_pool.pool),
+                         sorted(k for k, _ in SEED_CATEGORIES))
+        self.assertTrue(any("种子类目" in m for m in logs))
 
 
 # ---------- 策略覆盖 ----------

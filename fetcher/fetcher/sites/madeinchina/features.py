@@ -26,6 +26,10 @@ from fetcher.detect.generic import (
 
 HOMEPAGE = "https://cn.made-in-china.com/"
 
+# 市场导航页：全站 market 类目目录（~947 个类目；首页只暴露 ~129 个，
+# 2026-08-06 首页类目已全部采干，类目主力入口改为本页，见 shop.py cold_start）
+MARKET_DIR = "https://cn.made-in-china.com/shichang/"
+
 # 展厅子域名后缀（{sub}.cn.made-in-china.com，shop 任务提取、contact 任务构造 URL）
 SHOWROOM_DOMAIN_SUFFIX = ".cn.made-in-china.com"
 
