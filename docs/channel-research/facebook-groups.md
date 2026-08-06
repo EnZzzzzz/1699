@@ -99,13 +99,75 @@
 
 1. **fetcher 新增 `facebook` 站点插件（subprocess 类任务）**：
    - Step 1 发现：对关键词矩阵（外贸/货代/跨境电商/亚马逊卖家/china sourcing × whatsapp/微信/+86/chat.whatsapp.com）做 Google `site:facebook.com/groups` 搜索，解析出帖子 permalink，落库去重（表：`fb_posts`，字段：url、group_id、discovered_at、status）。
-   - Step 2 抓取：对 permalink 发匿名 GET，优先解析 `og:description`（便宜）；命中 `wa\.me|chat\.whatsapp` 或 desc 被截断时升级为渲染抓取（复用 WebBridge 或轻量无头）取 DOM 全文。
-   - Step 3 提取：正则集 `1[3-9]\d{9}`、`\+86[\s-]?\d{11}`、`\+?\d{7,15}`（ws 号）、`chat\.whatsapp\.com/\S+`、`wa\.me/\S+`，附带微信/TG 号入 contacts 备注。
-   - Step 4 查号：中国号走现有 `wa_check` 进程内执行器验证 WhatsApp 注册态。
+   - Step 2 抓取：**一律渲染抓 DOM + og**（PoC 实测修正：纯 HTTP GET 被 FB 以 TLS/HTTP 指纹识别，一律 400，拿不到任何 HTML，"便宜的免渲染 GET"不存在）。实现可选 Playwright / WebBridge / curl-impersonate（待验证）。og:description 与 DOM 正文同页取得，og 截断点之后的号码有实测增量（PoC 10 帖中 3 帖靠 DOM 多捞到 4 个号）。
+   - Step 3 提取：正则集 `1[3-9]\d{9}`、`\+86[\s-]?\d{11}`、`\+?\d{7,15}`（ws 号）、`chat\.whatsapp\.com/\S+`、`wa\.me/\S+`，附带微信/TG 号入 contacts 备注。**同时抓首屏评论**（PoC 实测部分帖子评论区匿名可见，含留号，侦察时未发现的增量）。
+   - Step 4 查号（分层，**不全量过 wa_check**，见 §8）。
 2. **速率**：Google 查询 ≤ 1 req/3-5s、query 轮换；FB permalink 抓取 ≤ 1 req/2s、住宅出口。ProxyChannel 直接复用现有 `proxy_channels` 表。
 3. **角色区分**：`+86`/`1[3-9]` 号标记为「中国供给侧」（主目标）；其他国际号标记「海外买家」入独立分桶，暂不查号。
 4. **不建议**：登录态批量进群翻 feed（封号风险高、收益边际低）；mbasic 路径（匿名已死）。
 5. 后续可选增量：若用户日后登录 FB，可加「群 feed 评论扫描」作为二期，但不阻塞一期。
+
+## 8. 查号分层策略（2026-08 PoC 后修订）
+
+wa_check 走 WhatsApp 协议、有封号成本且吞吐受风控节奏限制，是链路最贵资源；FB 帖中大量号码是发帖人**自声明的 WhatsApp 联系方式**，无需协议验证。分层如下：
+
+| 桶 | 判定规则 | 处理 |
+|---|---|---|
+| 自声明 WA | `wa.me/<号>`、号码紧邻 "WhatsApp/ws" 标签、微信与 WA 同号双标 | 标记 `wa_source='declared'`，**不查** |
+| 群组线索 | `chat.whatsapp.com/...` 邀请链接 | 非号码，独立入桶，不查 |
+| 不确定 | 裸手机号、仅标微信的号 | **进 wa_check 队列** |
+| 海外号 | 非 +86 国际号 | 独立分桶，暂缓查号 |
+
+配套动作：
+
+- **抽样校准**：从「自声明 WA」桶随机抽 5-10% 过 wa_check，量化自声明与实际注册的一致率；低于 ~80% 时下调信任级别。
+  首个数据点（2026-08-06，10 号小样本，账号 xiaohao-2）：自声明桶 **2/2 已注册**；不确定桶 **3/8 已注册**（其中 2 个仅标微信的号实际已注册 WA）——不确定桶"查了有增量、不查会浪费一半触达"的判断成立。
+- **懒验证**：自声明号码若日后用于群发/营销，使用前再补一次 wa_check 终验。
+- **数据模型**：`wa_registered` 三态（1/0/NULL）塞不下"自声明未验证"，需经 `app.db.migrate()` 加 `wa_source` 列（`'declared' | 'checked'`）区分协议验证与帖子自述。
+- **已知缺陷**：`normalize_numbers(default_cc="86")` 会把 11 位 1 开头的**国际号**误判为中国号补 86 前缀（实测美国虚拟号 `+15623147681` → `8615623147681`）。提取阶段应先按显式国家码/上下文标记号码归属国，非 +86 号不带 default_cc 走规范化。
+
+## 9. PoC 实测记录（2026-08-06，WebBridge 真实浏览器）
+
+对侦察基线 10 帖全量重抓（脚本/结果：会话 `/tmp/fb_wb_poc.py`、`/tmp/fb_poc_results.json`）：
+
+- 纯 HTTP（urllib/curl，带浏览器 UA）直连 permalink **全部 400**，TLS/HTTP 指纹拦截，HTML 都拿不到 → 抓取层必须真实浏览器或指纹伪造客户端。
+- 真实浏览器匿名抓 **10/10 成功**（2 帖首次 30s 加载超时，重试即成功），og:description 与基线 100% 一致，基线手机号零漏提。
+- DOM 全文增量：3 帖在 og 截断点后多捞出 4 个手机号。
+- 新发现：**部分帖子首屏评论匿名可见**（样本帖 9 带出 15 条评论，内含留号），原 §4「无法看评论」需修正为「首屏评论部分可见，翻页加载更多需登录」。
+- 12 次导航住宅 IP 未触发验证码/限速，与 §5 低风险判断一致。
+
+## 10. 一期原子能力已落地（2026-08-06）
+
+- `fetcher/fetcher/sites/facebook/`：站点插件（特征表 features.py + 提取纯函数 post.py），`parse_post(og_desc, body_text)` 输出 §8 四桶分好类的联系方式（declared_wa / cn_uncertain / overseas / 群邀请链接，另附 wechat_ids / tg_handles）。
+- `fetcher/fetcher/atoms/facebook.py`：`FetchFbPost` 原子（name=`fetch_fb_post`），复用 ctx.page 渲染抓 permalink，登录墙/频率限制 → BLOCKED，帖子删除 → EMPTY，导航超时 → NET_ERROR。
+- 测试：`fetcher/tests/test_facebook.py` 20 例（含 PoC 真实样本与误标陷阱：产品名里的 WhatsApp、号码后换行+点赞计数、美国 11 位 1 开头号不补 86）。
+- 号码口径：中国号存裸 11 位（86 由 wa 链路补）；国际号保留原国家码纯数字。
+- **真机验证**（CloakBrowser 无头直连，10 基线帖全量）：**10/10 Outcome.OK**，og 层号码 8/8 全对、分桶全部正确（双标帖归 declared_wa、+86 国际格式去码入 cn_uncertain、产品名 WhatsApp 零误标）。
+- **评论增量的局限**：WebBridge（真实 Chrome 窗口）里帖 8/9/10 评论区多捞到 4 个号，但 CloakBrowser 无头匿名会话两轮（含滚动触发懒加载）均未渲染出这些评论——评论是否匿名渲染**随会话/客户端随机**，不能作为稳定采集面，只能算"碰上就收"的机会增量。稳定采集面 = og:description + 帖子正文。
+- 未做：Google 发现层、控制层任务/CLI、落库（`fb_posts` 表）、平台任务类型接入——均属二期编排工作。
+
+## 11. 附：其他渠道全景（2026-08 调研）
+
+群帖 permalink 是本项目的选定路线，调研时同时评估了其他渠道，存档备查：
+
+### 官方渠道（合规但受限）
+
+- **Graph API**：2018 年剑桥分析事件后对第三方基本锁死。现在能拿到的主要是**你自己拥有/授权的 Page** 数据（Posts、Comments、Insights），无法搜别人的主页或公开内容。
+- **Ad Library API**：广告库全量可查（政治广告和商业广告的广告主、素材、花费区间），是目前**唯一面向公众开放的批量数据接口**。如果目标是"找商家/供应商在投的广告"，这条路最干净。
+- **Meta Content Library / API**：CrowdTangle 已于 2024 年 8 月关停，替代品只面向**学术机构和非营利研究者**申请（经 ICPSR 审批），数据导出受限（部分要在 SOMAR 虚拟机里跑，2025 年底起算力还开始收费）。商业用途基本不用考虑。
+
+### 第三方采集服务（省事、要钱）
+
+商业场景最现实的方案，把账号、代理、反爬都外包：
+
+- **Apify**：现成的 Facebook Pages/Posts/Comments/Groups/Ads Scraper 演员（actor），按量计费，直接 API 调用返回 JSON。
+- **Bright Data / Oxylabs / Decodo**：Facebook 专用 Scraper API + 住宅代理池。Bright Data 自称成功率 98%+（[Best Facebook Scrapers 2026](https://brightdata.com/blog/web-data/best-facebook-scrapers)）。
+
+### 与本项目路线的关系
+
+- 群帖 permalink 匿名抓取**零账号成本、零 API 费用**，且落在 Meta v. Bright Data（2024）判决认定的"未登录抓公开数据"安全区，是主路线。
+- Ad Library API 可作为**补充线索源**（识别在投广告的中国供应商），接入成本是一个 Meta 开发者应用 + token，见 `facebook-apis/` 调研与 demo。
+- 第三方服务是规模化受限时的兜底（按量付费买成功率），一期不引入。
 
 ## 附：实测原始数据
 
