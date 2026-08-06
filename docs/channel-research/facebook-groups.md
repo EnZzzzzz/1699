@@ -157,12 +157,23 @@ wa_check 走 WhatsApp 协议、有封号成本且吞吐受风控节奏限制，�
 - **网页版广告库**（facebook.com/ads/library）：真实浏览器**匿名可搜全球全量在投广告**（含商业广告），裸 HTTP 403——与群帖 permalink 同构，可复用同一套 CloakBrowser 抓取层，是"找在投广告的中国供应商"的正确补充路线（二期候选）。
 - **Meta Content Library / API**：CrowdTangle 已于 2024 年 8 月关停，替代品只面向**学术机构和非营利研究者**申请（ICPSR 审批 + 费用，仅欧盟学术 affiliation），商业用途不用考虑。
 
-### 第三方采集服务（省事、要钱）
+### 第三方采集服务（省事、要钱，2026-08-07 深入调研）
 
-商业场景最现实的方案，把账号、代理、反爬都外包：
+商业场景把账号、代理、反爬外包的方案。四家横向对比（详档：`third-party-apify.md` / `third-party-brightdata.md` / `third-party-oxylabs-decodo.md`）：
 
-- **Apify**：现成的 Facebook Pages/Posts/Comments/Groups/Ads Scraper 演员（actor），按量计费，直接 API 调用返回 JSON。
-- **Bright Data / Oxylabs / Decodo**：Facebook 专用 Scraper API + 住宅代理池。Bright Data 自称成功率 98%+（[Best Facebook Scrapers 2026](https://brightdata.com/blog/web-data/best-facebook-scrapers)）。
+| 厂商 | FB 群帖能力 | 字段 | 1 万帖/月成本 | 免费额度 |
+|---|---|---|---|---|
+| **Apify** | 官方 Groups Scraper（群 URL→帖） | 结构化：permalink/正文/作者/互动数/top 评论 | ~$50（$5/1K 帖 + $29 档） | $5/月（≈1K 帖） |
+| **Bright Data** | Posts by group URL 端点 | 偏薄：示例仅 7 字段且作者打码，互动数待实测 | **~$7.5**（$1.5/1K 条） | **5K 条/月免信用卡** |
+| **Oxylabs** | 无 FB 解析器，通用 API 回原始 HTML | 需自己解析 | ~$49（Micro 档最低消费） | 2K 结果试用 |
+| **Decodo** | 无 FB 模板（社媒 API 仅 YT/IG/Reddit/TikTok） | 需自己解析 | ~$20-50（费率不透明） | 3 天 100MB |
+
+共同边界：**四家都只支持公开群、全部不支持登录态**（Decodo 把"不抓 post-login 内容"写进 Usage Policy）——私密群谁都补不上，第三方服务的覆盖范围与本项目自建匿名路线完全一致。
+
+结论：**自建路线不迁移**（边际成本近零、字段自控），第三方定位为：
+- **Bright Data 免费层（5K 条/月）**：值得实测一次群帖端点字段完整性，作灾备通道；
+- **Apify**：发现层补充（Search Scraper 找 Page、Ad Library actor $0.75/1K 条）+ 字段对照基准；
+- **Decodo 住宅代理**（PAYG $4/GB）：自建路线代理渠道的性价比补充候选。
 
 ### 与本项目路线的关系
 
