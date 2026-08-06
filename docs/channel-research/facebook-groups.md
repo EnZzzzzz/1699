@@ -150,11 +150,12 @@ wa_check 走 WhatsApp 协议、有封号成本且吞吐受风控节奏限制，�
 
 群帖 permalink 是本项目的选定路线，调研时同时评估了其他渠道，存档备查：
 
-### 官方渠道（合规但受限）
+### 官方渠道（合规但受限，2026-08-07 深入调研修正）
 
-- **Graph API**：2018 年剑桥分析事件后对第三方基本锁死。现在能拿到的主要是**你自己拥有/授权的 Page** 数据（Posts、Comments、Insights），无法搜别人的主页或公开内容。
-- **Ad Library API**：广告库全量可查（政治广告和商业广告的广告主、素材、花费区间），是目前**唯一面向公众开放的批量数据接口**。如果目标是"找商家/供应商在投的广告"，这条路最干净。
-- **Meta Content Library / API**：CrowdTangle 已于 2024 年 8 月关停，替代品只面向**学术机构和非营利研究者**申请（经 ICPSR 审批），数据导出受限（部分要在 SOMAR 虚拟机里跑，2025 年底起算力还开始收费）。商业用途基本不用考虑。
+- **Graph API**：2018 年剑桥分析事件后对第三方基本锁死，深入调研确认：读别人 Page 公开 posts/comments、搜索公开内容的路径**全部收敛到 Page Public Content Access 特性**（Advanced Access + App Review，采集用途基本不可能过审）；Post Search 2014 年已下线，oEmbed Read 2025-10 弃用。能用的只有**自己拥有/授权的 Page** 数据（`pages_show_list` + `pages_read_engagement`，Standard Access 免审）。速率限额随日活浮动（200×DAU/小时），新应用额度极低。**结论：不值得接入采集链路**，只适合自有 Page 管理。（详见 `facebook-apis/README.md`）
+- **Ad Library API**：调研修正了"最干净"的初判——**商业广告只有 `ad_reached_countries` 含欧盟/EEA 国家才返回**（DSA 合规产物），中国供应商主投的美国/中东/东南亚市场拿不到；花费/曝光区间只给政治广告；token 需政府证件身份认证（中国大陆身份证常被拒）。**结论：降为低优先级补充源**（仅欧盟定向广告）。（详见 `facebook-apis/AD_LIBRARY.md`）
+- **网页版广告库**（facebook.com/ads/library）：真实浏览器**匿名可搜全球全量在投广告**（含商业广告），裸 HTTP 403——与群帖 permalink 同构，可复用同一套 CloakBrowser 抓取层，是"找在投广告的中国供应商"的正确补充路线（二期候选）。
+- **Meta Content Library / API**：CrowdTangle 已于 2024 年 8 月关停，替代品只面向**学术机构和非营利研究者**申请（ICPSR 审批 + 费用，仅欧盟学术 affiliation），商业用途不用考虑。
 
 ### 第三方采集服务（省事、要钱）
 
