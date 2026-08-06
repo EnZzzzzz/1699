@@ -24,24 +24,43 @@ class PolicyChainTest(unittest.TestCase):
         self.policy = Policy()
 
     def test_net_stall_chain_order(self):
+        """NET_STALL：先便宜地刷新 → 长休息吸收瞬时扰动 → 换 IP → 放弃。"""
         t = AttemptTracker()
         seq = chain_of(self.policy, Scenario.NET_STALL, t)
         names = [(a, s) for a, s, _ in seq]
         self.assertEqual(names, [
             (PolicyAction.CONTINUE, "refresh"),
-            (PolicyAction.CONTINUE, "refresh"),
-            (PolicyAction.CONTINUE, "swap_ip"),
-            (PolicyAction.CONTINUE, "swap_ip"),
+            (PolicyAction.CONTINUE, "block_rest"),
             (PolicyAction.CONTINUE, "swap_ip"),
             (PolicyAction.GIVE_UP, None),
         ])
+
+    def test_net_error_chain_reconnects_tunnel(self):
+        """NET_ERROR：以重启浏览器开头重连隧道（旧引擎 net 重试每次
+        relaunch 的语义），而不是只空等退避。"""
+        chain = DEFAULT_POLICY_TABLE[Scenario.NET_ERROR]
+        self.assertEqual(chain[0][0], "relaunch_browser")
+        t = AttemptTracker()
+        seq = chain_of(self.policy, Scenario.NET_ERROR, t)
+        names = [s for _a, s, _att in seq if s is not None]
+        self.assertEqual(names, ["relaunch_browser", "relaunch_browser",
+                                 "backoff_sleep", "backoff_sleep"])
+
+    def test_net_stall_chain_short_enough_for_circuit(self):
+        """计入熔断的链 ≤3 个策略：单店全链失败计数 ≤4 < 熔断上限 5，
+        单店重试不会烧穿熔断中止整个任务。"""
+        for s in (Scenario.NET_STALL, Scenario.RISK_SLIDER_PAGE,
+                  Scenario.RISK_SLIDER_EMBED, Scenario.EMPTY):
+            chain = DEFAULT_POLICY_TABLE[s]
+            continues = sum(1 for a, _ in chain if a not in ("give_up", "abort"))
+            self.assertLessEqual(continues, 3, f"{s.name} 链过长: {chain}")
 
     def test_attempt_numbers_increment(self):
         t = AttemptTracker()
         d1 = self.policy.decide(Scenario.NET_ERROR, t)
         d2 = self.policy.decide(Scenario.NET_ERROR, t)
-        self.assertEqual((d1.strategy, d1.attempt), ("backoff_sleep", 1))
-        self.assertEqual((d2.strategy, d2.attempt), ("backoff_sleep", 2))
+        self.assertEqual((d1.strategy, d1.attempt), ("relaunch_browser", 1))
+        self.assertEqual((d2.strategy, d2.attempt), ("relaunch_browser", 2))
 
     def test_browser_dead_ends_with_abort(self):
         t = AttemptTracker()
@@ -142,7 +161,7 @@ class PolicyDeclarationTest(unittest.TestCase):
         seq2 = chain_of(custom, Scenario.BROWSER_DEAD, t2)
         self.assertIs(seq2[-1][0], PolicyAction.ABORT)
         # 原 Policy 不被修改
-        self.assertEqual(len(base.table[Scenario.NET_STALL]), 3)
+        self.assertEqual(len(base.table[Scenario.NET_STALL]), 4)
 
     def test_give_up_terminal_mid_chain(self):
         policy = Policy(table={Scenario.EMPTY: [("block_rest", 1),

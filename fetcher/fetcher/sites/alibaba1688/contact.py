@@ -86,6 +86,9 @@ def parse_contact_text(text: str) -> dict:
 # 即使值为「暂无」）；用于 validate 判空，比文本长度阈值可靠
 _CONTACT_LABELS = ("电话", "手机", "地址")
 
+# 1688 店铺域名后缀：共享库多站点并存时按它过滤认领，防抓到 madeinchina 店铺
+_SHOP_DOMAIN_SUFFIX = ".1688.com"
+
 
 class ContactTask(Task):
     """联系人抓取任务：认领先前由 shop/company 任务入库的 pending 店铺。"""
@@ -100,12 +103,14 @@ class ContactTask(Task):
         from fetcher.db import ShopDB  # 延迟导入
         db = ShopDB(config.resolved_db_path())
         if getattr(config, "retry_failed", False):
-            n = db.reset_failed()
+            n = db.reset_failed(_SHOP_DOMAIN_SUFFIX)
             print(f"[0] 已把 {n} 个 failed 店铺重置回 pending")
-        n = db.reset_in_progress()
+        n = db.reset_in_progress(_SHOP_DOMAIN_SUFFIX)
         if n:
             print(f"[0] 已把 {n} 个中断残留的 in_progress 店铺重置回 pending")
-        total_pending = db.count_pending()
+        # 共享库多站点并存：只认领 1688 的店铺（按域名后缀过滤），
+        # 不碰 madeinchina 等其他来源的 pending 店铺
+        total_pending = db.count_pending(_SHOP_DOMAIN_SUFFIX)
         if total_pending == 0:
             print(f"[OK] 没有待抓取的店铺。统计: {db.stats()}")
             print("    先运行 shop / company 任务采集更多店铺")
@@ -148,7 +153,8 @@ class ContactTask(Task):
     # ---- worker 循环 ----
 
     def acquire_item(self, ctx):
-        shops = ctx.store.db.claim_pending_shops(1)
+        # 只认领 1688 的 pending 店铺（共享库防抓到 madeinchina 店铺）
+        shops = ctx.store.db.claim_pending_shops(1, _SHOP_DOMAIN_SUFFIX)
         if not shops:
             return None
         return shops[0]

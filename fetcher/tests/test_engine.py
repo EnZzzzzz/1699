@@ -89,6 +89,19 @@ class EngineTest(unittest.TestCase):
         engine.run()
         self.assertEqual(len(FakeLoop.instances), 2)
 
+    def test_allocated_channel_threaded_to_browser_manager(self):
+        """分配的通道透传给 BrowserManager（一 worker 一通道；relaunch
+        沿用 session.channel，不会重新从通道池轮询跳隧道）。"""
+        from fetcher.net.browser import BrowserManager
+        provider = FakeProvider(2)
+        # 不用 _engine（其 browser_manager_factory 会短路真实构造）
+        engine = Engine(self._config(workers=1), FakeTask(),
+                        provider=provider, loop_factory=FakeLoop)
+        _workers, channels = engine._alloc_workers()
+        mgr = engine._make_browser_manager(None, channels[0])
+        self.assertIsInstance(mgr, BrowserManager)
+        self.assertIs(mgr.channel, channels[0])
+
     def test_seed_kit_exclusive_assignment(self):
         # 种子池 2 份、worker 3 个：前两 worker 独占，第三个白板
         import json

@@ -15,7 +15,9 @@ item 级重试循环 → 收尾清理），但风控状态机不再写死在控�
       Cookie（避免轮换回来复活已烧毁会话），与旧引擎同点位；
     - SeedBurnTracker：首请求秒拦/登录墙记到种子头上，烧毁后
       session.seed_kit=None，后续重启按白板会话；
-    - 网络层错误（NET_ERROR/BROWSER_DEAD/IP_ROTATED）不计入熔断。
+    - 网络层错误（NET_ERROR/BROWSER_DEAD/IP_ROTATED）不计入熔断；
+    - 熔断按店计（每店首个风控类失败计 1），同一店的重试链不累计，
+      防单个慢/卡店铺中止整个任务。
 """
 
 from __future__ import annotations
@@ -153,9 +155,10 @@ class CrawlLoop:
                 self.ctx.set_status(shop=self.task.label(item),
                                     state="检查出口 IP…")
 
-                # ---- 出口 IP 保鲜检查（青果 30 分钟轮换）----
-                if cfg.use_proxy and not self._ensure_fresh_ip():
-                    return self.stats  # 重启失败/中断，走 finally 清理
+                # ---- 出口 IP 保鲜检查（青果 30 分钟轮换）；relaunch 失败
+                #      不退出 worker，记日志继续用当前会话，由 fetch 兜底 ----
+                if cfg.use_proxy:
+                    self._ensure_fresh_ip()
 
                 # ---- 冷启动（acquire 后的任务，如先逛店铺首页）----
                 if self._take_warm():
@@ -274,13 +277,20 @@ class CrawlLoop:
         return False
 
     def _ensure_fresh_ip(self) -> bool:
-        """青果出口 30 分钟轮换：不一致即重启浏览器重绑 Cookie。"""
+        """青果出口 30 分钟轮换：不一致即重启浏览器重绑 Cookie。
+
+        relaunch 失败不中止 worker：记日志继续用当前会话（可能仍可用），
+        避免一个瞬时扰动（IP 查询抖动、隧道临时抽风）静默打死整个 worker。
+        会话若真死了，下次 fetch 走 BROWSER_DEAD/NET_ERROR 链处置。
+        """
         need, _cur, reason = self.ctx.browser_manager.check_ip_fresh(
             self.ctx.session)
         if not need:
             return True
         self.log(f"🔄 {reason}，重启浏览器绑定新 IP ...")
-        return self._relaunch()
+        if not self._relaunch():
+            self.log("[X] 出口 IP 保鲜 relaunch 失败，本次跳过，继续使用当前会话")
+        return True
 
     def _check_budget(self) -> bool:
         """每 IP 请求预算：采满主动换 IP；IP 未轮换则放行（budget_stuck）。"""
@@ -309,6 +319,9 @@ class CrawlLoop:
     def _process_item(self, item) -> tuple[str, int]:
         """返回 (kind, count)：kind ∈ success/giveup/abort/stop。"""
         ctx = self.ctx
+        # 熔断按店计非按次：同一店铺的重试链无论多长只计一次，单个慢/卡
+        # 店铺不会烧穿熔断中止整个任务（旧引擎同店铺最多 3 段升级后放弃）
+        counted = False
         while not ctx.stopped():
             ctx.set_status(state="采集中")
             ctx.last_error = None
@@ -340,15 +353,18 @@ class CrawlLoop:
             # ---- 失败：簿记（IP 事件 / 种子烧毁 / 登录墙烧毁）----
             reason = self._bookkeep_block(scenario, result)
 
-            # ---- 熔断（与旧引擎同点位：风控类失败立即计数判断）----
-            if self.circuit.note_failure(scenario):
-                self.log(f"[X] 已连续失败 {self.circuit.count} 次"
-                         f"（最近一次: {reason}），判定被风控，中止整个任务")
-                extra = self.task.on_abort(ctx, item)
-                if extra:
-                    self.log(f"    {extra}")
-                ctx.stop.set()
-                return "abort", 0
+            # ---- 熔断（按店计）：本店首个风控类失败才计数，重试同一店
+            #      不再累计；连续 N 个店铺都失败（熔断上限）判定被风控 ----
+            if not counted and self.circuit.counts(scenario):
+                counted = True
+                if self.circuit.note_failure(scenario):
+                    self.log(f"[X] 已连续失败 {self.circuit.count} 次"
+                             f"（最近一次: {reason}），判定被风控，中止整个任务")
+                    extra = self.task.on_abort(ctx, item)
+                    if extra:
+                        self.log(f"    {extra}")
+                    ctx.stop.set()
+                    return "abort", 0
 
             # ---- 策略表决策 ----
             decision = self.policy.decide(scenario, self.tracker)

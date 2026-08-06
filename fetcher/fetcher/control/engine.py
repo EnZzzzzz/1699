@@ -110,7 +110,7 @@ class Engine:
                     if i < len(kits) else None for i in range(workers)]
         return [kits[i] if i < len(kits) else None for i in range(workers)]
 
-    def _make_browser_manager(self, store) -> BrowserManager:
+    def _make_browser_manager(self, store, channel=None) -> BrowserManager:
         if self.browser_manager_factory is not None:
             return self.browser_manager_factory(store)
         auto_solve = None
@@ -118,13 +118,20 @@ class Engine:
             from fetcher.atoms.slider import make_auto_solve  # 延迟导入
             auto_solve = make_auto_solve(max_attempts=5)
         return BrowserManager(self.config, store, provider=self.provider,
-                              auto_solve=auto_solve)
+                              auto_solve=auto_solve,
+                              homepage=getattr(self.site, "homepage", None),
+                              channel=channel)
 
     def _worker(self, wid: int, channel, seed_kit, board):
-        """worker 线程入口：独立 DB 连接 / BrowserManager / ctx / loop。"""
+        """worker 线程入口：独立 DB 连接 / BrowserManager / ctx / loop。
+
+        channel 是本 worker 独占的隧道（一 worker 一通道）：透传给
+        BrowserManager，保证 launch/relaunch 都走同一隧道，不重新从
+        通道池轮询跳隧道。
+        """
         tag = f"[w{wid}]"
         store = self.store_factory(wid)
-        mgr = self._make_browser_manager(store)
+        mgr = self._make_browser_manager(store, channel)
 
         def log(msg: str):
             text = (msg or "").strip()

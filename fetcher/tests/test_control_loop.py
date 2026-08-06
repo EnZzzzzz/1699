@@ -281,18 +281,22 @@ class CrawlLoopTest(LoopTestBase):
                            " WHERE event LIKE 'block%'")
         self.assertTrue(any(r["event"] == "block_slider" for r in ev))
 
-    def test_circuit_breaker_aborts(self):
+    def test_circuit_breaker_aborts_after_consecutive_bad_items(self):
+        """熔断按店计：连续 2 个失败店铺（上限 2）才中止；单店重试链
+        再多也只计 1 次，不会在单店内烧穿熔断。"""
         solve = FakeStrategy()
         task = ScriptedTask(
-            [("page", "https://sec.1688.com/x5sec/p.htm", "滑动验证", {})] * 10)
-        table = {Scenario.RISK_SLIDER_PAGE: [("solve", 9), ("give_up", None)]}
+            [("page", "https://sec.1688.com/x5sec/p.htm", "滑动验证", {})] * 20,
+            items=("item1", "item2"))
+        table = {Scenario.RISK_SLIDER_PAGE: [("solve", 2), ("give_up", None)]}
         loop, ctx, _ = self.run_loop(task, table, {"solve": solve},
-                                     max_consecutive_fail=2)
+                                     max_consecutive_fail=2, batch_num=2)
         self.assertTrue(ctx.stop.is_set())
-        self.assertEqual(task.aborted, ["item1"])
+        self.assertEqual(task.aborted, ["item2"])  # 第 2 个失败店触发熔断
+        self.assertEqual(task.given_up, [("item1", "block")])
         self.assertEqual(task.succeeded, [])
-        # 第 2 次风控判定即熔断，策略不应跑满 9 次
-        self.assertLessEqual(solve.calls, 1)
+        # item1 只计 1 次熔断，走完 solve×2 → 放弃（未中止）
+        self.assertEqual(solve.calls, 2)
 
     def test_login_wall_burns_identity_at_detection(self):
         config = make_config(self.tmp)
@@ -358,14 +362,58 @@ class CrawlLoopTest(LoopTestBase):
         self.assertEqual(task.succeeded, [])
         self.assertEqual(task.given_up, [])  # 中断不是放弃
 
-    def test_stall_counts_circuit_like_old_none(self):
-        """goto 超时（NET_STALL）按旧版 None→风控 语义计入熔断。"""
+    def test_single_stall_item_gives_up_not_abort(self):
+        """goto 超时（NET_STALL）单店：重试链走完→放弃该店，不中止整个
+        任务（旧版对单店 3 段升级后放弃、连续 N 店失败才熔断；新版熔断
+        按店计，单店重试链不再烧穿熔断）。"""
         refresh = FakeStrategy()
-        task = ScriptedTask([("stall",)] * 10)
+        task = ScriptedTask([("stall",)] * 20)
         table = {Scenario.NET_STALL: [("refresh", 9), ("give_up", None)]}
         loop, ctx, _ = self.run_loop(task, table, {"refresh": refresh},
                                      max_consecutive_fail=2)
-        self.assertTrue(ctx.stop.is_set())
+        self.assertEqual(task.given_up, [("item1", "block")])
+        self.assertFalse(ctx.stop.is_set())
+        self.assertEqual(refresh.calls, 9)
+
+    def test_ip_fresh_relaunch_failure_does_not_kill_worker(self):
+        """出口 IP 保鲜确认轮换但 relaunch 失败：记日志继续用当前会话，
+        不静默退出 worker，item 正常采集（防"稍扰动就停"）。"""
+        class FlakyMgr(MockBrowserManager):
+            def check_ip_fresh(self, session):
+                return True, None, "出口 IP 查询失败（隧道疑似失效）"
+
+            def relaunch(self, session, channel=None, seed_kit="__keep__",
+                         stop=None, max_retry=None, backoff_base=30.0,
+                         backoff_cap=120.0):
+                raise RuntimeError("relaunch 失败")
+
+        mgr = FlakyMgr(self.page)
+        task = ScriptedTask([("ok", {"v": 1})])
+        config = make_config(self.tmp, use_proxy=True)
+        ctx = make_ctx(self.tmp, self.page, mgr, config)
+        policy = Policy(table={}, strategies={},
+                        max_consecutive_fail=config.max_consecutive_fail)
+        CrawlLoop(ctx, task, policy=policy).run()
+        self.assertEqual(task.succeeded, ["item1"])
+        self.assertFalse(ctx.stop.is_set())
+
+    def test_default_net_stall_chain_recovers_next_item(self):
+        """默认 NET_STALL 链（刷新→休息→换IP→放弃）：一个卡顿店铺放弃
+        后，下一个店铺正常采集，任务不停。"""
+        refresh, block_rest, swap = FakeStrategy(), FakeStrategy(), FakeStrategy()
+        # 每个卡顿店按默认链走完正好消耗 4 次 fetch（初抓 + 3 策略），
+        # 4 个 stall 让 item1 放弃，item2 直接命中 ok
+        task = ScriptedTask([("stall",)] * 4 + [("ok", {"v": 1})],
+                            items=("item1", "item2"))
+        table = {Scenario.NET_STALL: [("refresh", 1), ("block_rest", 1),
+                                      ("swap_ip", 1), ("give_up", None)]}
+        loop, ctx, _ = self.run_loop(
+            task, table,
+            {"refresh": refresh, "block_rest": block_rest, "swap_ip": swap},
+            batch_num=2)
+        self.assertEqual(task.given_up, [("item1", "block")])
+        self.assertEqual(task.succeeded, ["item2"])
+        self.assertFalse(ctx.stop.is_set())
 
 
 if __name__ == "__main__":

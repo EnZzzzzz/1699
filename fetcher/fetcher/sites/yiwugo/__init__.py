@@ -54,12 +54,14 @@ class YiwugoPlugin:
     # ---- 策略表站点级覆盖 ----
     # 义乌购风控是自研滑块（captcha.yiwugo.com），阿里系轨迹回放
     # （solve_slider）不适用且实测防护极轻：直接原地休息 → 换 IP。
+    # 链长 ≤3：单店全链最多 4 次失败计数 < 熔断上限 5，被拦的店走放弃
+    # 而不是烧穿熔断中止整个任务。
     policy_overrides = {
-        Scenario.RISK_SLIDER_PAGE: [("block_rest", 2), ("swap_ip", 3),
+        Scenario.RISK_SLIDER_PAGE: [("block_rest", 1), ("swap_ip", 2),
                                     ("give_up", None)],
-        Scenario.RISK_SLIDER_EMBED: [("block_rest", 2),
+        Scenario.RISK_SLIDER_EMBED: [("block_rest", 1),
                                      ("wait_human_verify", 1),
-                                     ("swap_ip", 3), ("give_up", None)],
+                                     ("swap_ip", 1), ("give_up", None)],
     }
 
     # ---- 任务注册表 ----

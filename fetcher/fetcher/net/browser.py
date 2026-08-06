@@ -145,18 +145,27 @@ class BrowserManager:
     """
 
     def __init__(self, config: RunConfig, store: IdentityStore,
-                 provider=None, log=print, auto_solve=None):
+                 provider=None, log=print, auto_solve=None,
+                 homepage: str | None = None,
+                 channel=None):
         """
         provider:  ProxyProvider 实例（use_proxy=True 时必传；
                    支持 str server 入参的兼容用法见 launch()）。
         auto_solve: 可选的自动过证回调 fn(page) -> bool（轨迹回放滑块，
                    见 atoms/slider.py）；None 时退化为纯人工过证流程。
+        homepage:  新会话 warmup 预热的落地页；None 用 warmup 默认值
+                   （1688 首页，兼容旧调用）。
+        channel: 本 worker 独占的隧道（一 worker 一通道）；launch() 未
+                   显式指定时用它，relaunch 沿用 session.channel。None 时
+                   launch 从 provider 通道池轮询取（旧版兼容）。
         """
         self.config = config
         self.store = store
         self.provider = provider
         self.log = log
         self.auto_solve = auto_solve
+        self.homepage = homepage
+        self.channel = channel
 
     # ---- 出口 IP ----
 
@@ -177,10 +186,13 @@ class BrowserManager:
 
         青果出口 IP 每 30 分钟轮换一次：查询到的 IP 与 identity 不一致
         即视为已过期；查询失败先短重试 3 次确认隧道是否真的失效。
+        查询仍失败时不强制 relaunch —— 重启同样依赖该查询，查询挂时重启
+        大概率也失败；跳过本轮检查，交给 fetch 的 BROWSER_DEAD/NET_ERROR
+        处置兜底，避免一个瞬时查询故障打死整个 worker。
         """
         cur_ip = self._query_exit_ip_with_retry(session.req_proxies)
         if cur_ip is None:
-            return True, None, "出口 IP 查询失败，隧道疑似失效"
+            return False, None, "出口 IP 查询失败（跳过本轮保鲜检查）"
         if cur_ip != session.identity:
             return True, cur_ip, f"出口 IP 已轮换（{session.identity} -> {cur_ip}）"
         return False, cur_ip, ""
@@ -206,7 +218,10 @@ class BrowserManager:
         req_proxies = None
 
         if cfg.use_proxy:
-            ch = self._resolve_channel(channel)
+            # 本 worker 独占通道优先（一 worker 一通道，relaunch 也走
+            # session.channel）；未指定时从通道池轮询取（旧版兼容）
+            ch = self._resolve_channel(
+                channel if channel is not None else self.channel)
             proxy_conf = ch.playwright_proxy()
             req_proxies = ch.requests_proxies()
             # 出口 IP 是 Cookie 隔离的 identity 基准，查不到就不能继续 ——
@@ -301,8 +316,9 @@ class BrowserManager:
                           seed_kit=seed_kit)
         if cfg.use_proxy:
             # 新 IP / 新会话预热：访问首页让站点现场签发独立 Cookie 并
-            # 立即回写；有头模式首页弹滑块会停下来等手动/自动过证
-            self.warmup(session, stop=stop)
+            # 立即回写；有头模式首页弹滑块会停下来等手动/自动过证。
+            # homepage 由 engine 透传 site.homepage（默认仍 1688 首页）
+            self.warmup(session, homepage=self.homepage, stop=stop)
             self.store.record_event(
                 identity, "launch", channel.server if channel else "")
         return session
@@ -378,7 +394,9 @@ class BrowserManager:
         如 sites.alibaba1688.page_block_reason）；None 时跳过检测。
         返回 True 表示预热顺利（含过证后）；未过证/失败返回 False
         （不阻断启动，后续抓取重试/手动过证流程会处理）。
+        homepage: 落地页；None 归一到默认 1688 首页（兼容旧调用不传参）。
         """
+        homepage = homepage or "https://www.1688.com/"
         page, ctx, identity = session.page, session.ctx, session.identity
         headed = not self.config.headless
         try:

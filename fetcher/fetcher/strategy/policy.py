@@ -32,19 +32,28 @@ TERMINALS = (TERMINAL_GIVE_UP, TERMINAL_ABORT)
 # ---------- 默认策略表 ----------
 # 语义对齐旧引擎的风控状态机（原地休息 → 修复换 IP → 放弃）与
 # 网络故障退避重试，差异见 docs/design.md 的取舍说明。
+#
+# 链长约定：计入熔断的场景（风控/空页/卡顿）单条链 ≤3 个策略，单个店铺
+# 全链重试最多产生 4 次失败计数 < 熔断上限 5，单店不会烧穿熔断中止整个
+# 任务；同时休息（block_rest）是旧引擎 block_stage==0 的缓冲器，吸收瞬时
+# 扰动后重试，而不是一口气换 IP 耗尽配额。
 DEFAULT_POLICY_TABLE = {
-    # 网络卡/页面没加载出来：先便宜地刷新，再换 IP
-    Scenario.NET_STALL: [("refresh", 2), ("swap_ip", 3), (TERMINAL_GIVE_UP, None)],
-    # 代理隧道层错误（请求没到目标站）：退避重试为主，换 IP 兜底
-    Scenario.NET_ERROR: [("backoff_sleep", 5), ("swap_ip", 2), (TERMINAL_GIVE_UP, None)],
+    # 网络卡/页面没加载出来：先便宜地刷新 → 长休息吸收瞬时扰动 → 换 IP
+    Scenario.NET_STALL: [("refresh", 1), ("block_rest", 1), ("swap_ip", 1),
+                         (TERMINAL_GIVE_UP, None)],
+    # 代理隧道层错误（请求没到目标站）：重启浏览器重连隧道（与旧引擎
+    # net 重试每次 relaunch 一致），再退避等待兜底
+    Scenario.NET_ERROR: [("relaunch_browser", 2), ("backoff_sleep", 2),
+                         (TERMINAL_GIVE_UP, None)],
     # 浏览器死亡：与风控无关，直接重启；重不起来中止整个任务
     Scenario.BROWSER_DEAD: [("relaunch_browser", 3), (TERMINAL_ABORT, None)],
-    # 整页滑块：自动过证 → 原地休息 → 换 IP → 放弃
-    Scenario.RISK_SLIDER_PAGE: [("solve_slider", 3), ("block_rest", 1),
-                                ("swap_ip", 2), (TERMINAL_GIVE_UP, None)],
+    # 整页滑块：自动过证 → 原地休息 → 换 IP → 放弃（solve_slider 内部
+    # 已含最多 8 次轨迹回放，顶层 1 次即旧引擎的完整过证）
+    Scenario.RISK_SLIDER_PAGE: [("solve_slider", 1), ("block_rest", 1),
+                                ("swap_ip", 1), (TERMINAL_GIVE_UP, None)],
     # 内嵌滑块：自动过证 → 有头模式等人工 → 换 IP → 放弃
-    Scenario.RISK_SLIDER_EMBED: [("solve_slider", 3), ("wait_human_verify", 1),
-                                 ("swap_ip", 2), (TERMINAL_GIVE_UP, None)],
+    Scenario.RISK_SLIDER_EMBED: [("solve_slider", 1), ("wait_human_verify", 1),
+                                 ("swap_ip", 1), (TERMINAL_GIVE_UP, None)],
     # 登录墙（最高级风控）：有头等人工登录 → 烧毁身份+换 IP → 放弃。
     # wait_human_login 在无头模式 SKIPPED（solved=False），自然落到下一条，
     # 与旧引擎「无头模式登录墙不原地休息，直接修复换 IP」行为一致。
@@ -52,8 +61,8 @@ DEFAULT_POLICY_TABLE = {
                           (TERMINAL_GIVE_UP, None)],
     # 出口 IP 已轮换：重启浏览器按新 identity 重绑 Cookie
     Scenario.IP_ROTATED: [("relaunch_browser", 3), (TERMINAL_ABORT, None)],
-    # 页面加载了但内容为空：先刷新，再按软拦截处理
-    Scenario.EMPTY: [("refresh", 2), ("block_rest", 1), ("swap_ip", 1),
+    # 页面加载了但内容为空：先刷新 → 长休息 → 换 IP → 放弃
+    Scenario.EMPTY: [("refresh", 1), ("block_rest", 1), ("swap_ip", 1),
                      (TERMINAL_GIVE_UP, None)],
 }
 

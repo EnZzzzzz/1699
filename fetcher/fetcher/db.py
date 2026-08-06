@@ -55,9 +55,18 @@
 from __future__ import annotations  # 兼容 Python < 3.10 的 X | None 注解
 
 import os
+import re
 import sqlite3
 import time
 from pathlib import Path
+
+# 拼音类目 slug（madeinchina market 页）：纯 ASCII 字母数字下划线。
+# 中文关键词 / company: 前缀行属 1688 等其他任务，不当作 market slug。
+_IS_PINYIN_RE = re.compile(r"^[a-zA-Z0-9_]+$")
+
+
+def _is_pinyin_slug(keyword: str) -> bool:
+    return bool(_IS_PINYIN_RE.match(keyword))
 
 # 项目根 = fetcher 包的两级之上（<root>/fetcher/fetcher/db.py）。
 # 默认库文件与旧版完全一致（<root>/.cache/1688.db），schema 不变；
@@ -274,17 +283,29 @@ class ShopDB:
             "SELECT * FROM shops WHERE status='pending'"
             " ORDER BY first_seen_at, id LIMIT ?", (limit,)).fetchall()
 
-    def claim_pending_shops(self, limit: int = 1) -> list[sqlite3.Row]:
+    def claim_pending_shops(self, limit: int = 1,
+                            domain_suffix: str | None = None
+                            ) -> list[sqlite3.Row]:
         """原子认领 pending 店铺：SELECT + 置为 in_progress 在同一事务内完成。
 
         多 worker 并发调用安全（BEGIN IMMEDIATE 立即取写锁），
         同一店铺只会被一个 worker 领到。返回认领到的店铺行（可能少于 limit）。
+
+        domain_suffix 非空时只认领域名以该后缀结尾的店铺（多站点共享一个
+        shops 表时按来源隔离，如 madeinchina 传 ".cn.made-in-china.com"、
+        1688 传 ".1688.com"，避免互相认领对方的 pending 店铺）。
         """
+        where = "WHERE status='pending'"
+        params: list = []
+        if domain_suffix:
+            where += " AND substr(domain, -?, ?) = ?"
+            params += [len(domain_suffix), len(domain_suffix), domain_suffix]
+        params.append(limit)
         try:
             self.conn.execute("BEGIN IMMEDIATE")
             rows = self.conn.execute(
-                "SELECT * FROM shops WHERE status='pending'"
-                " ORDER BY first_seen_at, id LIMIT ?", (limit,)).fetchall()
+                f"SELECT * FROM shops {where}"
+                " ORDER BY first_seen_at, id LIMIT ?", params).fetchall()
             if rows:
                 ids = [r["id"] for r in rows]
                 self.conn.execute(
@@ -296,21 +317,48 @@ class ShopDB:
             self.conn.rollback()
             raise
 
-    def reset_in_progress(self) -> int:
-        """把 in_progress 重置回 pending（进程中断残留的认领，启动时调用）。"""
-        cur = self.conn.execute(
-            "UPDATE shops SET status='pending' WHERE status='in_progress'")
+    def reset_in_progress(self, domain_suffix: str | None = None) -> int:
+        """把 in_progress 重置回 pending（进程中断残留的认领，启动时调用）。
+
+        domain_suffix 非空时只重置该来源的（共享库多站点并发时防止误动
+        其他站点的 in_progress 认领）。
+        """
+        if domain_suffix:
+            cur = self.conn.execute(
+                "UPDATE shops SET status='pending'"
+                " WHERE status='in_progress' AND substr(domain, -?, ?) = ?",
+                (len(domain_suffix), len(domain_suffix), domain_suffix))
+        else:
+            cur = self.conn.execute(
+                "UPDATE shops SET status='pending' WHERE status='in_progress'")
         self.conn.commit()
         return cur.rowcount
 
-    def count_pending(self) -> int:
+    def count_pending(self, domain_suffix: str | None = None) -> int:
+        """统计 pending 店铺数；domain_suffix 非空时只统计该来源的。"""
+        if domain_suffix:
+            return self.conn.execute(
+                "SELECT COUNT(*) FROM shops WHERE status='pending'"
+                " AND substr(domain, -?, ?) = ?",
+                (len(domain_suffix), len(domain_suffix),
+                 domain_suffix)).fetchone()[0]
         return self.conn.execute(
             "SELECT COUNT(*) FROM shops WHERE status='pending'").fetchone()[0]
 
-    def reset_failed(self) -> int:
-        """把 failed 的店铺重置回 pending（用于重试）。"""
-        cur = self.conn.execute(
-            "UPDATE shops SET status='pending' WHERE status='failed'")
+    def reset_failed(self, domain_suffix: str | None = None) -> int:
+        """把 failed 的店铺重置回 pending（用于重试）。
+
+        domain_suffix 非空时只重置该来源的（共享库多站点并存时 --retry-failed
+        不应动其他站点的 failed 店铺）。
+        """
+        if domain_suffix:
+            cur = self.conn.execute(
+                "UPDATE shops SET status='pending'"
+                " WHERE status='failed' AND substr(domain, -?, ?) = ?",
+                (len(domain_suffix), len(domain_suffix), domain_suffix))
+        else:
+            cur = self.conn.execute(
+                "UPDATE shops SET status='pending' WHERE status='failed'")
         self.conn.commit()
         return cur.rowcount
 
@@ -372,6 +420,22 @@ class ShopDB:
         rows = self.conn.execute(
             "SELECT keyword FROM category_progress WHERE exhausted=1").fetchall()
         return {r[0] for r in rows}
+
+    def get_active_categories(self) -> list[dict]:
+        """返回未采完的拼音类目（madeinchina market slug 是拼音缩写）。
+
+        当前首页只暴露少量 market 链接，类目池只靠首页提取会把大量
+        已发现但未采完的类目搁浅在 category_progress 里；这里把
+        非 exhausted 的拼音类目捞回来，prepare 时播种进类目池续采。
+
+        过滤规则：keyword 是纯拼音（ASCII [a-zA-Z0-9_]+）——1688 等其他
+        任务的中文/company: 关键词行与 madeinchina 无关，排除。
+        """
+        rows = self.conn.execute(
+            "SELECT keyword, name FROM category_progress WHERE exhausted=0"
+        ).fetchall()
+        return [{"slug": r[0], "name": r[1] or r[0]} for r in rows
+                if r[0] and _is_pinyin_slug(r[0])]
 
     def mark_category_exhausted(self, keyword: str, name: str = None):
         """标记类目已采到末页（页码不前进，之后采集跳过该类目）。"""
