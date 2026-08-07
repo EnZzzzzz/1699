@@ -8,7 +8,7 @@
 | Phase | 目标 | 预计 Step 数 | 依赖 | 状态 |
 |---|---|---|---|---|
 | P1 | 读码回填 + 核心改造（注入点/辅助函数/隐藏点修正）+ 既有测试更新 | 3 | 无 | done ✅ |
-| P2 | Cookie 域过滤收紧 + DB 迁移 + 隔离性单测 | 2 | P1 | pending |
+| P2 | Cookie 域过滤收紧 + DB 迁移 + 隔离性单测 | 2 | P1 | 进行中（2.1 done） |
 | P3 | 等价性冒烟 + 文档 + 终审 | 2 | P2 | pending |
 
 ---
@@ -49,12 +49,12 @@
 **完成标准**：SPEC §5 第 2、4 条达成；全量绿。本 Phase 无运行时冒烟（P3 做）。
 
 ### Step 2.1 Session.close 域过滤 + _migrate 前缀迁移
-- 预估：15 min · 依赖：P1 · 状态：pending
+- 预估：15 min · 依赖：P1 · 状态：done ✅
 - 内容：`Session.close()` 回写按 store.domain 过滤（与 save_from_context 同语义；store 为 None 时不过滤——现状即无回写，保持）；`db.py` `_migrate()` 按 SPEC §3.4 回填的映射清单加幂等迁移（探测→UPDATE，逐映射一条）。
 - 交付物：代码 + 单测（close 过滤行为；迁移幂等：旧键库→迁移→新键可 load→再迁移零变化；无法映射的域保持原样）。
 - 验收：
-  - [ ] SPEC §5 第 4 条达成
-  - [ ] 全量无回归（TDD 先红后绿）
+  - [x] SPEC §5 第 4 条达成
+  - [x] 全量无回归（TDD 先红后绿）
 
 ### Step 2.2 隔离性单测
 - 预估：15 min · 依赖：2.1 · 状态：pending

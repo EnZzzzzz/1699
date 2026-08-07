@@ -19,3 +19,7 @@
   - 修复轮 1：reviewer 2 Critical（C1 CLI 装配无测试→_build_engine 抽辅函被两分支调用+3 测试；C2 Engine guard 无测试→3 测试）+ I1 docstring 缺 site_name + M1 or→if/else，全部 ADDRESSED
   - 全量 281 passed；拼键唯一性 grep：f"{self.site_name}:" 仅 browser.py:221/:237
   - **Phase 1 完成**（SPEC §4 假设 1/2 回填 + 核心改造 + 既有测试适配；键已开始带前缀，本 Phase 无运行时冒烟）
+- Step 2.1: complete (commits dd6dea5..a7ee816, review clean)
+  - 实现：Session.close 回写按 store.domain 过滤（getattr 防御，与 save_from_context 同语义）；_migrate 追加 4 条幂等 UPDATE（madeinchina→1688→taobao→yiwugo 顺序，NOT LIKE '%:%' 守卫，无法映射域保持）；单测 9 条（close 过滤 3 形态 + 迁移四站点/无法映射/幂等/新键 load）
+  - review 零 Critical/Important；2 Minor（test_migration.py 死代码 NOW_TS 未引用、_cookie_row helper 未调用）→ 终审分诊
+  - 全量 290 passed
