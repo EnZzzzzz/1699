@@ -73,12 +73,12 @@
   - [x] `main()` daemon 分支装配参数与 site 分支逐项一致（provider/policy/Engine 参数）
 
 ### Step 2.4 直连冒烟脚本与执行
-- 预估：15 min · 依赖：2.3 · 状态：pending
+- 预估：15 min · 依赖：2.3 · 状态：done（无代码 commit，证据见 task-2.4-report.md）
 - 内容：临时 DB 预置 2 条 shops pending（手工 SQL 或小脚本），直连模式（无代理）`python -m fetcher daemon --limit 2 --headed`（有头便于观察）；同时验证空队列挂起：跑完后不清数据再启动一次，观察 30s+ 不退出、CPU≈0，Ctrl+C 后 30s 内干净退出。
 - 交付物：冒烟记录（命令、输出要点、DB 核查结果）写入 ledger.md。
 - 验收：
-  - [ ] 2 条 work_items done、shops done、contacts 落库
-  - [ ] 空队列挂起 + 信号退出行为符合 SPEC §5 第 4 条
+  - [x] 2 条 work_items done、shops done、contacts 落库
+  - [x] 空队列挂起 + 信号退出行为符合 SPEC §5 第 4 条
 
 ---
 

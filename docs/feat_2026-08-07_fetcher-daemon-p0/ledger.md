@@ -29,3 +29,7 @@
   - Step 2.3: minor (deferred): daemon 分支 Engine(cfg, task=task,...) 关键字传参 vs 站点分支位置传参（语义等价）
   - Step 2.3: minor (deferred): daemon parser 无 --retry-failed 开关（getattr 容错为 False，后续需要再挂）
   - Step 2.3: minor (deferred): daemon_task.py:36 docstring 示例 domain_suffix="1688.com" 少个点（正确口径 ".1688.com"），终审时修
+- Step 2.4: complete（走查 Step，无代码 commit；证据 task-2.4-report.md + /tmp/daemon_smoke_{b,c}.log，主 Agent 已抽查日志与生产库零污染）
+  - Step 2.4: 计划外发现（既有 bug，非 daemon 引入）: ContactTask.summary() 用无参 ShopDB() 忽略 --db，收尾报表读生产库（contact.py:132，只读）→ 待按 issue-create 流程处理，终审分诊
+  - Step 2.4: minor (deferred): 非 tty 下 stdout 块缓冲，运行中途日志为空（建议 -u 或 logging flush，非本次范围）
+  - Step 2.4: 环境噪音记录: CloakBrowser 席位 5/5 被本机其他爬虫占用时启动会等席位（每 20s 重查），非 bug
