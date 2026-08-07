@@ -33,6 +33,10 @@ class StepResult:
     solved: bool
     detail: str = ""
     data: dict = field(default_factory=dict)
+    # 策略输出的冷却时长（秒）：策略只「输出」冷却、不执行冷却（等待由
+    # 控制层 chokepoint 统一做）；cooldown 非空时策略保证自己没有为
+    # 这段时长等待过。
+    cooldown: float | None = None
 
 
 @runtime_checkable
