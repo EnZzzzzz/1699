@@ -21,7 +21,7 @@ P0 把 daemon 骨架立起来了，但所有等待仍内联在执行路径里：
 
 ### 2.1 范围（P1 做）
 
-1. 契约层：`StepResult` 加 `cooldown: float | None` 字段（秒）；`PolicyDecision` 加同名透传字段；`WorkerContext` 加 `cooldown_until: dict[str, float]` 暂存（P3 的状态钩子，本阶段只写不读）。
+1. 契约层：`StepResult` 加 `cooldown: float | None` 字段（秒）；`WorkerContext` 加 `cooldown_until: dict[str, float]` 暂存（P3 的状态钩子，本阶段只写不读）。（`PolicyDecision` 不加透传字段，见 §4 假设 3 的读码结论。）
 2. 策略迁移（`strategy/strategies.py`）：`SleepStrategy` / `BackoffSleepStrategy` / `BlockRestStrategy` 的 run() 不再触发 `ctx.wait`，时长算好放进 `StepResult.cooldown` 返回。
 3. loop 收敛（`control/loop.py`）：新增 `_cooldown(seconds, reason)` chokepoint；4 处既有等待点（批次休息 :129-137、样本间隔 :195-200、周期长休 :203-213、启动退避 :243-249）全部改经 chokepoint；`_process_item` 在 `step.cooldown` 非空时调 chokepoint 执行等待。
 4. 单元测试 + 等价性冒烟。
@@ -51,7 +51,7 @@ class StepResult:
 ```
 
 - 语义：**策略输出冷却、不执行冷却**。`cooldown` 非空时策略保证自己没有为这段时长等待过（调用方执行一次，不重复）。
-- `PolicyDecision`（policy.py:70-77）加 `cooldown: float | None = None` 透传字段；`Policy.decide` 不决策时长，只搬运（decide 当前不接触策略执行结果——实际透传点在 loop：`_process_item` 拿到 `step.cooldown` 直接消费。**若 decide 链路用不上该字段则不加，以读码核实为准，report 说明**）。
+- `PolicyDecision`（policy.py:70-77）**不加 cooldown 字段**（§4 假设 3 已读码验证：decide 只输出 action/strategy/attempt/detail，从不接触策略执行结果；`step = strategy.run(ctx)` 只有 loop 消费，cooldown 由 loop 直接取 `step.cooldown`，无需透传）。
 - `WorkerContext.cooldown_until: dict[str, float]`：chokepoint 每次执行等待时写入 `cooldown_until[reason] = time.time() + seconds`。P0/P1 单队列下无人读它，是 P3 调度器的查询接口。
 
 ### 3.2 策略迁移（逐个）
@@ -59,8 +59,8 @@ class StepResult:
 | 策略 | 现状 | 迁移后 |
 |---|---|---|
 | `SleepStrategy`（:41） | Sleep 原子内 `ctx.wait(t)`（对数正态时长，params min/max） | run() 用同一分布算出 t，返回 `StepResult(True, cooldown=t)`，不调原子 |
-| `BackoffSleepStrategy`（:46-50） | BackoffSleep 原子 `ctx.wait(min(30*attempt,180))` | run() 算 `min(30*attempt,180)`（attempt 来源与现子一致：policy decide 给的 attempt——读码确认其传递路径），返回 cooldown |
-| `BlockRestStrategy`（:53-67） | run 时取 config block_rest_min/max → Sleep 原子 wait | 时长口径改为 `random.uniform(block_rest_min, block_rest_max)`（**注意**：现状经 Sleep 原子是对数正态 clamp 到 [min,max]——迁移时必须保留同一分布，读 atoms/sleep.py 确认分布公式后逐字复刻，report 给出公式对照），返回 cooldown，保留现有 log 行 |
+| `BackoffSleepStrategy`（:46-50） | BackoffSleep 原子 `ctx.wait(min(30*attempt,180))` | run() 算 `min(30*attempt,180)`（attempt 传递路径已读码确认：loop.py:387 `ctx.state["attempt"] = decision.attempt` → 原子读 `ctx.state.get("attempt", 1)`，见 atoms/sleep.py:60），返回 cooldown |
+| `BlockRestStrategy`（:53-67） | run 时取 config block_rest_min/max → Sleep 原子 wait | 时长口径改为策略层内联计算（**注意**：现状经 Sleep 原子是对数正态、clamp 到 `[min*0.5, max*5]`（读码确认，非 `[min,max]`）——迁移时必须保留同一分布，公式逐字复刻依据见 §4 假设 2），返回 cooldown，保留现有 log 行 |
 | `SwapIPStrategy`（:86-135） | 内部 ctx.wait/WaitHumanLogin | **不动**（§2.2 例外），类 docstring 加一行「冷却例外」标注 |
 
 ### 3.3 loop chokepoint
@@ -89,8 +89,8 @@ def _cooldown(self, seconds: float, reason: str) -> bool:
 | # | 行为假设 | 依据 | 验证方式 |
 |---|---|---|---|
 | 1 | SwapIP 的内部等待外移需要两阶段状态机，P1 不做的损失可接受 | 已读码验证（主 Agent）：strategies.py:102-135，等待夹在两次 RelaunchBrowser 之间，外移后第二次 relaunch 无人执行会破坏换 IP 语义 | 无需 spike；P3 设计时重议（届时有 item 挂起机制） |
-| 2 | Sleep 原子的时长分布（对数正态 clamp）可以在策略层逐字复刻 | 推断（explore 报告：atoms/sleep.py:41 对数正态，params min/max） | Step 1.1 读 atoms/sleep.py 全文，把分布公式逐字抄进 SPEC 本节回填；测试断言样本落在 [min,max] 且分布参数一致 |
-| 3 | decide/PolicyDecision 链路不需要 cooldown 字段（loop 直接消费 step.cooldown） | 推断（explore 报告：loop.py:386-394 消费 step，decision 只含 action/strategy/attempt） | Step 1.1 读 policy.py 确认；若确认无需透传，§3.1 的 PolicyDecision 字段取消并回填 |
+| 2 | Sleep 原子的时长分布（对数正态 clamp）可以在策略层逐字复刻 | 已读码验证（atoms/sleep.py:21-27 `human_pause_duration`、:36-44 `Sleep.run`、:57-66 `BackoffSleep.run`） | 时长公式逐字摘录（Step 2.1 逐字复刻的唯一依据）：**Sleep**：`lo = float(params.get("min", 2.0))`、`hi = float(params.get("max", 5.0))`，调 `human_pause_duration(lo, hi)`——`lo >= hi` 时返回 `float(lo)`（固定等待）；否则 `median = (lo + hi) / 2`，`t = random.lognormvariate(math.log(median), 0.5)`（随机源：stdlib `random` 模块级实例，对数正态，mu=ln(中位数)、sigma=0.5），clamp `max(lo * 0.5, min(t, hi * 5))`（下限 lo*0.5、上限 hi*5）。**BackoffSleep**：`base = float(params.get("base", 30.0))`、`cap = float(params.get("cap", 180.0))`、`attempt = params.get("attempt") or ctx.state.get("attempt", 1)`，`t = min(base * int(attempt), cap)`（纯线性退避，无随机）。原子内等待调用形式：`interrupted = ctx.wait(t)`，中断返回 `ActionResult(Outcome.SKIPPED, ...)`，否则 `ActionResult.success(..., seconds=t)`。测试断言样本落在 clamp 区间且分布参数一致 |
+| 3 | decide/PolicyDecision 链路不需要 cooldown 字段（loop 直接消费 step.cooldown） | 已读码验证（policy.py:70-77 PolicyDecision 仅 action/strategy/attempt/detail 四字段；decide :156-194 只做链推进决策，从不接触策略执行结果；loop.py:386-394 `step = strategy.run(ctx)` 的返回值只有 `_process_item` 自己消费） | 已验证：不需要透传，loop 直接消费 step.cooldown。§3.1 的 PolicyDecision 字段已取消 |
 | 4 | 迁移后 loop 的等待展示行为（倒计时状态行）不回归 | 现状：wait_countdown 仅 loop 三处使用（board.py:134-148） | chokepoint 实现保留两种展示路径；冒烟观察状态行 |
 | 5 | ctx.wait / wait_countdown 的 stop 可中断语义经 chokepoint 后不变 | 已读码验证：ctx.wait=stop.wait(timeout)（context.py:127-129），wait_countdown 循环 stop.wait(min(1,remain))（board.py:147） | 单测：冷却中置 stop → 立即中断返回 |
 
