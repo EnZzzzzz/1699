@@ -220,5 +220,5 @@ class Engine:
                 t.join(timeout=90)
             (board.log if board else print)("[!] 进度已保存，下次运行自动续爬")
 
-        print(f"[OK] {self.task.summary(self.state['stats'])}")
+        print(f"[OK] {self.task.summary(self.state['stats'], self.config.resolved_db_path())}")
         return 0

@@ -51,7 +51,8 @@ class FakeLoop:
 class FakeTask(Task):
     name = "fake"
 
-    def summary(self, all_stats):
+    def summary(self, all_stats, db_path=None):
+        self._last_summary_db_path = db_path
         return f"汇总 {len(all_stats)} 个 worker"
 
 
@@ -124,11 +125,23 @@ class EngineTest(unittest.TestCase):
 
     def test_summary_aggregates_all_workers(self):
         provider = FakeProvider(2)
-        engine = self._engine(self._config(), provider)
+        cfg = self._config()
+        engine = self._engine(cfg, provider)
         engine.run()
         self.assertEqual(sorted(engine.state["stats"]), [0, 1])
-        self.assertEqual(engine.task.summary(engine.state["stats"]),
+        self.assertEqual(engine.task.summary(engine.state["stats"],
+                                              cfg.resolved_db_path()),
                          "汇总 2 个 worker")
+
+    def test_summary_receives_db_path_from_config(self):
+        """Engine 调用 summary 时传入 config.resolved_db_path()。"""
+        provider = FakeProvider(1)
+        cfg = self._config(db_path="/tmp/test_engine.db")
+        engine = self._engine(cfg, provider)
+        engine.run()
+        self.assertEqual(engine.task._last_summary_db_path,
+                         cfg.resolved_db_path(),
+                         "Engine 应将 resolved_db_path() 传给 summary")
 
     # ---- Step 1.3: site_name guard ----
 

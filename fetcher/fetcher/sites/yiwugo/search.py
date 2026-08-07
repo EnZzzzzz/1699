@@ -131,7 +131,7 @@ class YiwugoSearchTask(Task):
               f"产出 → {self._out_path(config)}")
         return True
 
-    def summary(self, all_stats: dict) -> str:
+    def summary(self, all_stats: dict, db_path=None) -> str:
         items = sum(s.get("items", 0) for s in all_stats.values())
         pages = sum(s.get("pages", 0) for s in all_stats.values())
         return f"本次义乌购搜索采集: {pages} 页, 商品 {items} 个"

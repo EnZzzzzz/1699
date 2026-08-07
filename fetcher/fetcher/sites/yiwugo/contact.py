@@ -156,7 +156,7 @@ class YiwugoContactTask(Task):
               f"产出 → {self._out_path(config)}")
         return True
 
-    def summary(self, all_stats: dict) -> str:
+    def summary(self, all_stats: dict, db_path=None) -> str:
         contacts = sum(s.get("contacts", 0) for s in all_stats.values())
         done = sum(s.get("done", 0) for s in all_stats.values())
         dead = sum(s.get("dead", 0) for s in all_stats.values())
