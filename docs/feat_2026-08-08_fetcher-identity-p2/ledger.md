@@ -23,3 +23,9 @@
   - 实现：Session.close 回写按 store.domain 过滤（getattr 防御，与 save_from_context 同语义）；_migrate 追加 4 条幂等 UPDATE（madeinchina→1688→taobao→yiwugo 顺序，NOT LIKE '%:%' 守卫，无法映射域保持）；单测 9 条（close 过滤 3 形态 + 迁移四站点/无法映射/幂等/新键 load）
   - review 零 Critical/Important；2 Minor（test_migration.py 死代码 NOW_TS 未引用、_cookie_row helper 未调用）→ 终审分诊
   - 全量 290 passed
+- Step 2.2: complete (commits 7439ca8..8782609, review clean)
+  - 实现：test_identity_isolation.py 13 测试（① Cookie 各落各桶交叉 load ② burn 一站完好 ③ ip_stats/ip_events 分行 ④ 内存键分开（ip_req/budget_stuck 键级 + burn_ips 真实路径）⑤ 指纹同裸 IP 一致 ⑥ check_ip_fresh 判相等）；定向破坏 RED 证据真实（burn 断言 1→99 亲见 `1 != 99` 红）
+  - Step 2.2: parked — reviewer Important-1（④a/④b 键级断言未走 loop 真实路径）：brief 明确允许键级兜底；ip_req/budget 的带前缀键真实路径已在 test_control_loop（Step 1.3 更新）经真实 CrawlLoop 触达，④c burn_ips 已走 SeedBurnTracker 真实路径 —— ruling：真实但延期（Step 3.1 冒烟自然覆盖），不进修复轮
+  - Step 2.2: parked — reviewer Important-2（check_ip_fresh 未验证 site_name 串扰）：by design check_ip_fresh 只比 bare IP 不读 site_name（§3.3#1 的本来语义），测试与生产行为逐字相符 —— ruling：reviewer 观察非缺陷
+  - Step 2.2: minor (deferred): 跨 store 读注释可能误导（隔离维度是 identity 键不是 store.domain）；mgr 选择 if/else 隐式假设两站点（新增站点时改显式守卫）
+  - 全量 303 passed；**Phase 2 完成**（SPEC §5 第 2、4 条达成）

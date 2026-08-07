@@ -8,7 +8,7 @@
 | Phase | 目标 | 预计 Step 数 | 依赖 | 状态 |
 |---|---|---|---|---|
 | P1 | 读码回填 + 核心改造（注入点/辅助函数/隐藏点修正）+ 既有测试更新 | 3 | 无 | done ✅ |
-| P2 | Cookie 域过滤收紧 + DB 迁移 + 隔离性单测 | 2 | P1 | 进行中（2.1 done） |
+| P2 | Cookie 域过滤收紧 + DB 迁移 + 隔离性单测 | 2 | P1 | done ✅ |
 | P3 | 等价性冒烟 + 文档 + 终审 | 2 | P2 | pending |
 
 ---
@@ -57,11 +57,11 @@
   - [x] 全量无回归（TDD 先红后绿）
 
 ### Step 2.2 隔离性单测
-- 预估：15 min · 依赖：2.1 · 状态：pending
+- 预估：15 min · 依赖：2.1 · 状态：done ✅
 - 内容：新增 `fetcher/tests/test_identity_isolation.py`：同一裸 IP（如 1.2.3.4）两站点（1688:/madeinchina:）——① Cookie 各落各桶、load 不串；② burn 一站另一站完好；③ ip_stats/ip_events 分行统计；④ 内存键（ip_req/budget_stuck）分开（经 loop 簿记或键级断言）；⑤ 指纹参数同裸 IP 逐字一致（md5 输入=bare ip）；⑥ check_ip_fresh 对 `1688:1.2.3.4` vs `1.2.3.4` 判相等。
 - 验收：
-  - [ ] SPEC §5 第 2、3 条达成（防假阳性证据：至少一轮定向破坏）
-  - [ ] 全量无回归
+  - [x] SPEC §5 第 2、3 条达成（防假阳性证据：至少一轮定向破坏）
+  - [x] 全量无回归
 
 ---
 
