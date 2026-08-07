@@ -171,8 +171,8 @@ wa_check 走 WhatsApp 协议、有封号成本且吞吐受风控节奏限制，�
 共同边界：**四家都只支持公开群、全部不支持登录态**（Decodo 把"不抓 post-login 内容"写进 Usage Policy）——私密群谁都补不上，第三方服务的覆盖范围与本项目自建匿名路线完全一致。
 
 结论：**自建路线不迁移**（边际成本近零、字段自控），第三方定位为：
-- **Bright Data 免费层（5K 条/月）**：值得实测一次群帖端点字段完整性，作灾备通道；
-- **Apify**：发现层补充（Search Scraper 找 Page、Ad Library actor $0.75/1K 条）+ 字段对照基准；
+- **Bright Data 免费层（5K 条/月）**：~~值得实测一次群帖端点字段完整性~~ 已实测（见 §12），作灾备通道；
+- **Apify**：发现层补充（Search Scraper 找 Page、Ad Library actor $0.75/1K 条）+ 字段对照基准（群帖能力已实测，见 §12）；
 - **Decodo 住宅代理**（PAYG $4/GB）：自建路线代理渠道的性价比补充候选。
 
 ### 与本项目路线的关系
@@ -180,6 +180,37 @@ wa_check 走 WhatsApp 协议、有封号成本且吞吐受风控节奏限制，�
 - 群帖 permalink 匿名抓取**零账号成本、零 API 费用**，且落在 Meta v. Bright Data（2024）判决认定的"未登录抓公开数据"安全区，是主路线。
 - Ad Library API 可作为**补充线索源**（识别在投广告的中国供应商），接入成本是一个 Meta 开发者应用 + token，见 `facebook-apis/` 调研与 demo。
 - 第三方服务是规模化受限时的兜底（按量付费买成功率），一期不引入。
+
+## 12. 第三方服务实测与原子落地（2026-08-06）
+
+对 §11 表格中免费额度最优的两家做了真实账号 + 小额付费额度验证（均无需绑卡）。
+
+### 免费额度确认
+
+| | Apify | Bright Data |
+|---|---|---|
+| 免费额度 | $5/月（≈1000 帖） | **5000 credits/月**（1 credit = 1 条记录，共享池） |
+| 群帖单价 | $5/1K 帖 | **$1.5/1K 条**（便宜约 3 倍） |
+
+### 对照实测（同群 `185879310028412` = Shenzhen Expats 2026、同限 10 帖、同时段）
+
+- 两家返回**同一批帖子**（post_id 逐一吻合），正文**全文不截断**（优于自建路线 og:description 的 ~200 字符截断）。
+- 密度一致：10 帖中 3 帖含中国手机号，去重后仅 1 个唯一号码（同一租房中介连发 3 帖）——**整群翻 feed 的打法必须跨帖去重**，唯一联系人率按 10-20% 估。
+- 字段：BD 更全（38 字段：群名/群成员数/群简介/hashtags/作者主页 URL）；Apify 基础字段齐全但**官网示例的 topComments 实测未返回**（评论需单独 actor/接口，两家同）。
+- 时延：Apify 同步一次调用 ~18s；BD 异步三段式 ~40s。
+
+### 接入坑位（勿踩）
+
+- BD 群帖发现**只能走异步 `POST /datasets/v3/trigger`**（dataset_id=`gd_lz11l67o2cb3r0lkj3`）；误用同步 `/scrape` 会报误导性错误 `Customer is not active`（账号本身正常）。
+- BD 请求体是**裸数组** `[{"url":...}]`，不是部分文档示例里的 `{"input":[...]}`。
+- BD 控制台查看 API key 需邮箱 6 位验证码（6 个独立输入框的 OTP 组件）。
+
+### fetcher 原子已落地
+
+- `fetcher/fetcher/atoms/facebook_group.py`：`FetchFbGroupPosts`（name=`fetch_fb_group_posts`），双 provider（默认 brightdata），输入群 URL + limit，输出归一化帖子 + 复用 `parse_post` 的四桶分桶（跨帖按号码去重）。Outcome 口径：402/429→BLOCKED（额度/限流）、401/403→FATAL、0 帖→EMPTY、轮询中断→SKIPPED。只用标准库 urllib；key 走 `api_key` 参数或环境变量 `BRIGHTDATA_API_KEY` / `APIFY_TOKEN`。
+- 测试：`fetcher/tests/test_facebook_group.py` 17 例（mock HTTP，样本取自本次实测）。
+- 真机验证：两家各采 5 帖均 `ok`，结果一致；花费 BD 5 credits + Apify $0.025，均在免费额度内。
+- 未做：runner 任务类型、CLI、落库、平台前端（同 §10 末尾的二期编排范围）；两家 key 当前仅存于验证会话，二期接入时建议入 DB 按 provider 配置管理。
 
 ## 附：实测原始数据
 

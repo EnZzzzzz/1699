@@ -9,6 +9,7 @@ from fetcher.atoms.browser_ops import (
     SaveCookies,
 )
 from fetcher.atoms.facebook import FetchFbPost
+from fetcher.atoms.facebook_group import FetchFbGroupPosts
 from fetcher.atoms.human import WaitHumanLogin, WaitHumanVerify
 from fetcher.atoms.identity_ops import ClearIdentity
 from fetcher.atoms.refresh import Refresh
@@ -23,6 +24,7 @@ __all__ = [
     "CheckWhatsApp",
     "ClearIdentity",
     "ColdStart",
+    "FetchFbGroupPosts",
     "FetchFbPost",
     "Refresh",
     "RelaunchBrowser",
