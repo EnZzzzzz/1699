@@ -97,6 +97,8 @@ CREATE INDEX IF NOT EXISTS idx_work_items_claim ON work_items(queue, status, id)
 - `after_item(...)`：透传 inner 后按结果 `finish_work_item`（done/failed）。
 - 其余方法（`fetch/validate/on_success/on_giveup/cold_start/label/compose/summary/...`）全部透传 inner。
 
+**已知行为差异（Step 1.1 发现，裁定：接受）**：站点级 `cold_start`（`sites/alibaba1688/__init__.py:73`）对 dict item 走 `item["domain"]` 分支（逛**店铺**首页），对 sqlite Row 走 `getattr` 得 None（逛**站点**首页）。daemon 用 dict 后冷启动软着陆从站点首页变为店铺首页——该 dict 分支是既有代码显式预留的，方向更拟人（先逛目标店再抓该店联系方式），判定为可接受的等价性偏差，在 §5 等价性对比中不作为差异项。
+
 **shops 表状态流（初始化+变更路径，职责分配）**：
 
 - 初始化：shops 行由既有 shop 采集任务写入（daemon 不负责产生）。
