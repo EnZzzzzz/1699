@@ -113,8 +113,8 @@ CREATE INDEX IF NOT EXISTS idx_work_items_claim ON work_items(queue, status, id)
 
 | # | 行为假设 | 依据 | 验证方式 |
 |---|---|---|---|
-| 1 | `ContactTask.fetch/on_success` 对 item 只做 `item["domain"]` 式键访问，dict 可 1:1 替代 sqlite Row | 推断（explore 报告：item 为 shops 行，用 domain/name/url） | Step 1.1 读 `contact.py` 确认全部 item 访问点；若有点属性访问（`item.domain`）则 payload 改用 `types.SimpleNamespace` 或 dict 子类，结论回填本节 |
-| 2 | `Engine` 注入 `loop_factory`/task 包装后行为与直跑一致（无对 task 具体类型的 isinstance 判断） | 推断（engine.py:36-53 构造器预留注入点，task 经参数传入） | Step 2.1 全文 grep `isinstance.*Task` 确认；单测 test_engine.py 模式复刻 |
+| 1 | `ContactTask.fetch/on_success` 对 item 只做 `item["domain"]` 式键访问，dict 可 1:1 替代 sqlite Row | 已读码验证（Step 1.1）：`contact.py` 全部 item 访问点均为 `item["..."]` 键访问（163/171/180/182/227/230/245/252 行），键集合 = {`domain`,`name`,`url`}，无 `item.domain` 属性访问；间接消费方站点 `cold_start`（`sites/alibaba1688/__init__.py:73`）已显式兼容 dict | **dict 可直接替代**，无需 SimpleNamespace/子类适配；payload 必须含 `domain`/`name`/`url` 三键（`label` 用 `name`+`domain`，`fetch` 用 `domain`+`url`，`cold_start`/`on_success`/`on_giveup`/`on_abort` 用 `domain`） |
+| 2 | `Engine` 注入 `loop_factory`/task 包装后行为与直跑一致（无对 task 具体类型的 isinstance 判断） | 已读码验证（Step 1.1）：全包 grep `isinstance` / `type(...) is` / `__class__`，`engine.py`/`loop.py`/`task.py`/`cli/main.py` 中对 task 零命中（现存 isinstance 均判 Scenario/dict/Channel 等数据类型），task 全程鸭子类型调用 | **无特判**：Engine/CrawlLoop/CLI 只经 Task 协议方法（`make_stats`/`compose`/`acquire_item`/`summary`…）调用 task，`DaemonTaskProxy` 实现协议即可经 `Engine(cfg, task=proxy)`（engine.py:36-41）与 `loop_factory`（engine.py:53）注入；Step 2.1 单测复刻 test_engine.py 模式 |
 | 3 | work_items 表加进 fetcher `SCHEMA` 不影响平台侧：平台读库用 `app.db.connect()` 只读连接 + 防御性探测，不校验全表清单 | 项目约定（AGENTS.md §4）+ 推断 | P0 冒烟时平台服务保持运行，确认平台各页面/API 无异常 |
 | 4 | 条件变量 wait 挂起期间，该消费者的通道/浏览器空转无额外风险（与现状批休期间状态相同） | 现状类比（批休 900s 也是持通道挂起） | 无需 spike；等价性冒烟覆盖 |
 | 5 | 青果通道在 daemon 常驻（可能数天）下，隧道缓存 TTL 30 分钟刷新逻辑在长跑中稳定 | 推断（qingguo.py:50-55 缓存逻辑与运行时长无关） | 长跑观察留到 P1+；P0 冒烟为短时有限运行，不阻塞 |
