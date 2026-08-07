@@ -26,12 +26,12 @@
   - [x] SPEC §4 假设 2、3 依据列改为「已读码验证（附 file:line）」，结论明确
 
 ### Step 1.2 契约层实现 + 单测
-- 预估：15 min · 依赖：1.1 · 状态：pending
+- 预估：15 min · 依赖：1.1 · 状态：done（commit b084129）
 - 内容：`strategy/base.py` 的 `StepResult` 加 `cooldown: float | None = None`（dataclass 纯加法，不动既有三字段语义）；`core/context.py` 的 `WorkerContext` 加 `cooldown_until: dict[str, float]`（field default_factory）；若 Step 1.1 结论是需要，`policy.py` 的 `PolicyDecision` 加透传字段。单测：StepResult 默认值/构造兼容（既有三参数位置构造不破坏）、WorkerContext 新字段初始化。
 - 交付物：代码 + `fetcher/tests/` 新增或并入既有契约测试文件。
 - 验收：
-  - [ ] 纯加法：既有构造调用点零改动（grep StepResult( 全部调用点仍编译通过）
-  - [ ] 新单测全绿 + 全量无回归（TDD 先红后绿）
+  - [x] 纯加法：既有构造调用点零改动（grep StepResult( 全部调用点仍编译通过）
+  - [x] 新单测全绿 + 全量无回归（TDD 先红后绿）
 
 ---
 
