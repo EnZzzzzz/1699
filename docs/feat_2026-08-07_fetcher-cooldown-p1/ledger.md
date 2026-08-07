@@ -20,3 +20,6 @@
   - Step 2.2: minor (deferred): ✓ 策略完成日志时序变化（先打 ✓ 再冷却；中断时 ✓ 会打出，旧路径不打）——终审分诊是否一行对齐
   - Step 2.2: minor (deferred): cooldown=0.0 会跳过登记与等待（现状无此值，仅记录）
   - Step 2.2: 记录（非问题）: 中断时 cooldown_until 残留未来时间戳，P3 按「过期即无效」消费即可
+- Step 2.3: complete (commits 44e4c49..9e5b005, review clean)
+  - Step 2.3: minor (deferred): deadline 断言容差 1s 相对小 seconds 偏宽（破坏 A 已锁「完全不写」，spy seconds 透传锁「算错」）
+  - Step 2.3: minor (deferred): 组③未断言 spy 无意外 reason；:381 elapsed 下界有理论时序抖动空间

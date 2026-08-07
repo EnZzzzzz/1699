@@ -56,11 +56,11 @@
   - [x] `_process_item` 正确消费 step.cooldown 且中断语义不变
 
 ### Step 2.3 迁移单测
-- 预估：15 min · 依赖：2.1、2.2 · 状态：pending
+- 预估：15 min · 依赖：2.1、2.2 · 状态：done（commit 9e5b005；策略层用例①②已由 Step 2.1 覆盖，本 Step 做 loop 侧 3 组）
 - 内容：新增 `fetcher/tests/test_cooldown.py`：① 三策略返回 cooldown 在预期区间且自身零等待（断言 run() 返回耗时 ≈0）；② cooldown 分布参数与旧公式一致（采样统计或公式级断言）；③ chokepoint 写 cooldown_until + stop 中断立即返回；④ `_process_item` 策略冷却路径集成测试（仿 test_daemon_task.py 用例 5 的 CrawlLoop 联跑：策略返回 cooldown → loop 执行等待 → 重试 fetch）；⑤ 4 处等待点各触发一次（小参数配置）断言走了 chokepoint（可 monkeypatch 计时）。
 - 验收：
-  - [ ] 5 个用例全绿（防假阳性证据：定向破坏至少一轮）
-  - [ ] 全量无回归
+  - [x] 用例全绿（防假阳性证据：两轮定向破坏）
+  - [x] 全量无回归
 
 ---
 
