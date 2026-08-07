@@ -145,6 +145,7 @@ class BrowserManager:
     """
 
     def __init__(self, config: RunConfig, store: IdentityStore,
+                 site_name: str,
                  provider=None, log=print, auto_solve=None,
                  homepage: str | None = None,
                  channel=None):
@@ -158,6 +159,8 @@ class BrowserManager:
         channel: 本 worker 独占的隧道（一 worker 一通道）；launch() 未
                    显式指定时用它，relaunch 沿用 session.channel。None 时
                    launch 从 provider 通道池轮询取（旧版兼容）。
+        site_name: 站点注册名（如 "1688"），用于 identity 前缀分桶；
+                   必传（CLI/daemon 传入）。
         """
         self.config = config
         self.store = store
@@ -166,6 +169,7 @@ class BrowserManager:
         self.auto_solve = auto_solve
         self.homepage = homepage
         self.channel = channel
+        self.site_name = site_name
 
     # ---- 出口 IP ----
 
@@ -214,7 +218,7 @@ class BrowserManager:
 
         cfg = self.config
         proxy_conf = None
-        identity = "direct"
+        identity = f"{self.site_name}:direct"
         req_proxies = None
 
         if cfg.use_proxy:
@@ -230,7 +234,7 @@ class BrowserManager:
             if exit_ip is None:
                 raise ExitIPError(f"经通道 {ch.server} 查询出口 IP 失败，"
                                   f"隧道疑似不可用，无法绑定 Cookie identity")
-            identity = exit_ip
+            identity = f"{self.site_name}:{exit_ip}"
             channel = ch
             self.log(f"    [proxy] 青果住宅代理: {ch.server}，出口 IP: {exit_ip}")
 

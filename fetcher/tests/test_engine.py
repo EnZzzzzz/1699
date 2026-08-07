@@ -96,7 +96,8 @@ class EngineTest(unittest.TestCase):
         provider = FakeProvider(2)
         # 不用 _engine（其 browser_manager_factory 会短路真实构造）
         engine = Engine(self._config(workers=1), FakeTask(),
-                        provider=provider, loop_factory=FakeLoop)
+                        provider=provider, loop_factory=FakeLoop,
+                        site_name="1688")
         _workers, channels = engine._alloc_workers()
         mgr = engine._make_browser_manager(None, channels[0])
         self.assertIsInstance(mgr, BrowserManager)

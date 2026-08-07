@@ -195,7 +195,8 @@ def main(argv: list | None = None) -> int:
         policy = policy.with_overrides(overrides)
 
     from fetcher.control.engine import Engine
-    engine = Engine(cfg, task, site=site, provider=provider, policy=policy)
+    engine = Engine(cfg, task, site=site, provider=provider, policy=policy,
+                    site_name=args.site)
     return engine.run()
 
 
@@ -239,7 +240,8 @@ def _run_daemon(args) -> int:
           f"{n_shops} 个 in_progress 店铺 → pending")
 
     from fetcher.control.engine import Engine
-    engine = Engine(cfg, task=task, site=site, provider=provider, policy=policy)
+    engine = Engine(cfg, task=task, site=site, provider=provider, policy=policy,
+                    site_name="1688")
     return engine.run()
 
 

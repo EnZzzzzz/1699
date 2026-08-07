@@ -15,7 +15,8 @@ class CheckIPFreshP2Test(unittest.TestCase):
     def setUp(self):
         config = RunConfig(headless=True, use_proxy=False)
         self.mgr = BrowserManager(
-            config=config, store=MagicMock(), log=lambda m: None)
+            config=config, store=MagicMock(), log=lambda m: None,
+            site_name="1688")
 
     def _session(self, identity, req_proxies=None):
         return Session(identity=identity, req_proxies=req_proxies)
@@ -107,7 +108,8 @@ class FingerprintArgsP2Test(unittest.TestCase):
             headless=True, use_proxy=False,
             db_path="/nonexistent/test_1688.db")
         mgr = BrowserManager(
-            config=config, store=MagicMock(), log=lambda m: None)
+            config=config, store=MagicMock(), log=lambda m: None,
+            site_name="1688")
 
         with patch.object(browser_mod, "fingerprint_args", _capture_fp):
             try:
@@ -123,6 +125,87 @@ class FingerprintArgsP2Test(unittest.TestCase):
         self.assertEqual(captured_fp_args[0], "direct",
                          f"直连模式指纹入参应为 'direct'，"
                          f"实际={captured_fp_args[0]!r}")
+
+
+class LaunchPrefixedIdentityTest(unittest.TestCase):
+    """Step 1.3: launch 产出带 site 前缀的 identity。"""
+
+    def test_launch_produces_prefixed_identity_proxy_mode(self):
+        """代理模式：launch 产出 '1688:1.2.3.4' 而非 '1.2.3.4'。
+
+        RED 预期（修正前）：identity = exit_ip = '1.2.3.4'，没有前缀。
+        """
+        import fetcher.net.browser as browser_mod
+
+        config = RunConfig(
+            headless=True, use_proxy=True,
+            db_path="/nonexistent/test_prefixed.db")
+        mgr = BrowserManager(
+            config=config, store=MagicMock(), log=lambda m: None,
+            site_name="1688")
+
+        # mock 出口 IP 查询
+        with patch.object(mgr, "_query_exit_ip_with_retry",
+                          return_value="1.2.3.4"):
+            mock_ch = MagicMock()
+            mock_ch.playwright_proxy.return_value = {"server": "fake"}
+            mock_ch.requests_proxies.return_value = {}
+            mock_ch.server = "10.0.0.1:8080"
+            mock_browser = MagicMock()
+            mock_ctx = MagicMock()
+            mock_page = MagicMock()
+            mock_browser.new_context.return_value = mock_ctx
+            mock_ctx.new_page.return_value = mock_page
+            with patch.object(mgr, "_resolve_channel",
+                              return_value=mock_ch):
+                with patch.object(browser_mod, "fingerprint_args",
+                                  return_value=["--no-sandbox"]):
+                    with patch.object(browser_mod, "load_license_key",
+                                      return_value="fake-key"):
+                        with patch.object(
+                            browser_mod, "wait_for_license_seat",
+                            return_value=True):
+                            with patch("cloakbrowser.launch",
+                                       return_value=mock_browser):
+                                session = mgr.launch()
+
+        self.assertEqual(session.identity, "1688:1.2.3.4",
+                         f"代理模式 identity 应带 site 前缀，"
+                         f"实际={session.identity!r}")
+
+    def test_launch_produces_prefixed_direct_direct_mode(self):
+        """直连模式：launch 产出 '1688:direct' 而非 'direct'。
+
+        RED 预期（修正前）：identity = 'direct'，没有前缀。
+        """
+        import fetcher.net.browser as browser_mod
+
+        config = RunConfig(
+            headless=True, use_proxy=False,
+            db_path="/nonexistent/test_prefixed.db")
+        mgr = BrowserManager(
+            config=config, store=MagicMock(), log=lambda m: None,
+            site_name="1688")
+
+        mock_browser = MagicMock()
+        mock_ctx = MagicMock()
+        mock_page = MagicMock()
+        mock_browser.new_context.return_value = mock_ctx
+        mock_ctx.new_page.return_value = mock_page
+        with patch.object(browser_mod, "fingerprint_args",
+                          return_value=["--no-sandbox"]):
+            with patch.object(browser_mod, "load_license_key",
+                              return_value="fake-key"):
+                with patch.object(
+                    browser_mod, "wait_for_license_seat",
+                    return_value=True):
+                    with patch("cloakbrowser.launch",
+                               return_value=mock_browser):
+                        session = mgr.launch()
+
+        self.assertEqual(session.identity, "1688:direct",
+                         f"直连模式 identity 应带 site 前缀，"
+                         f"实际={session.identity!r}")
 
 
 if __name__ == "__main__":
