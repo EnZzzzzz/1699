@@ -26,12 +26,12 @@
   - [x] SPEC §4 假设 1、2 依据列改「已读码验证」，映射清单完整
 
 ### Step 1.2 辅助函数 + 隐藏点修正（§3.3 清单 #1-#6）
-- 预估：15 min · 依赖：1.1 · 状态：pending
+- 预估：15 min · 依赖：1.1 · 状态：done ✅
 - 内容：`core/session.py` 加 `bare_identity`/`is_direct`；按 §3.3 表修正 6 处（browser.py:196、loop.py:451、atoms/identity_ops.py:25、db.py:684、db.py:772、browser.py:299 指纹传参改 bare_identity）；TDD 先写这两个函数的测试。
 - 交付物：代码 + 测试。
 - 验收：
-  - [ ] 6 处修正与 §3.3 表一致；SPEC §5 第 6 条 grep 达成（此阶段对尚无前缀的库行为不变——bare_identity 无前缀原样返回）
-  - [ ] 全量无回归（TDD 先红后绿）
+  - [x] 6 处修正与 §3.3 表一致；SPEC §5 第 6 条 grep 达成（此阶段对尚无前缀的库行为不变——bare_identity 无前缀原样返回）
+  - [x] 全量无回归（TDD 先红后绿）
 
 ### Step 1.3 identity 诞生点拼前缀 + engine 注入 + 既有测试键格式更新
 - 预估：15 min · 依赖：1.2 · 状态：pending
