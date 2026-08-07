@@ -16,6 +16,22 @@ if TYPE_CHECKING:  # 避免 core -> net 的反向依赖
     from fetcher.net.proxy.base import Channel
 
 
+# ---------- identity 辅助函数 ----------
+
+def bare_identity(identity: str) -> str:
+    """剥掉站点前缀：'1688:1.2.3.4' → '1.2.3.4'；无前缀原样返回。
+
+    指纹/保鲜检查等需要裸 IP 的场合用此函数从 identity 键中提取裸 IP。
+    兼容旧键（无前缀直存 IP 或 'direct'）。
+    """
+    return identity.split(":", 1)[1] if ":" in identity else identity
+
+
+def is_direct(identity: str) -> bool:
+    """identity 是否代表直连模式（含 'direct' 与 'site:direct' 两种形态）。"""
+    return bare_identity(identity) == "direct"
+
+
 @dataclass
 class Session:
     """一次浏览器启动的产物。

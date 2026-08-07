@@ -36,7 +36,7 @@ from fetcher.core.errors import (
     LicenseSeatTimeout,
     UserInterrupted,
 )
-from fetcher.core.session import Session
+from fetcher.core.session import Session, bare_identity
 from fetcher.net.identity import IdentityStore
 
 # ---------- 配置加载 ----------
@@ -193,7 +193,7 @@ class BrowserManager:
         cur_ip = self._query_exit_ip_with_retry(session.req_proxies)
         if cur_ip is None:
             return False, None, "出口 IP 查询失败（跳过本轮保鲜检查）"
-        if cur_ip != session.identity:
+        if cur_ip != bare_identity(session.identity):
             return True, cur_ip, f"出口 IP 已轮换（{session.identity} -> {cur_ip}）"
         return False, cur_ip, ""
 
@@ -296,7 +296,7 @@ class BrowserManager:
                 locale="zh-CN",
                 timezone="Asia/Shanghai",
                 stealth_args=False,
-                args=fingerprint_args(seed_kit["name"] if seed_kit else identity),
+                args=fingerprint_args(seed_kit["name"] if seed_kit else bare_identity(identity)),
                 **({"proxy": proxy_conf, "geoip": True} if proxy_conf else {}),
             )
         except SystemExit as e:
