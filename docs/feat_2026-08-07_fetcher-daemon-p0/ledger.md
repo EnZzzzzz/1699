@@ -39,3 +39,5 @@
   - 现场观察：测试进程与活 madeinchina 爬虫经共享隧道缓存拿到同一出口 IP（跨站，无实际危害）——正是 scheduler-architecture §2 所述「无协调撞车」的实证
   - Step 3.1: 计划外发现（既有 bug）: ContactTask.summary() 无参 ShopDB() 读生产库 + 构造时对生产库执行幂等 DDL/_migrate（与 2.4 发现同源）
   - Step 3.1: minor (deferred): 非 TTY 下常规行只上状态板不进日志文件（既有行为，可观测性改进点）
+- Step 3.2: complete (commits a35a842..56953e9, review clean)
+  - Step 3.2: minor (deferred): README「--limit N 跑完 N 个后退出」是 per-worker 口径简写（多 worker 总量 N×workers），终审修复轮顺手改严谨

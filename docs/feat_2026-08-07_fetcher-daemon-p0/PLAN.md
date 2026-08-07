@@ -96,10 +96,10 @@
   - [x] 平台服务保持运行期间各页面/API 无异常（SPEC §4 假设 3 回填：平台未运行，本项不适用）
 
 ### Step 3.2 文档同步
-- 预估：10 min · 依赖：3.1 · 状态：pending
+- 预估：10 min · 依赖：3.1 · 状态：done（commit 56953e9）
 - 内容：`docs/scheduler-architecture.md` §10 P0 行标注完成（链接本目录）；`fetcher/README.md` 的 CLI 用法段补 daemon 子命令；AGENTS.md §1 fetcher 说明补一句 daemon 模式。
 - 验收：
-  - [ ] 三处文档更新随代码同 commit
+  - [x] 三处文档更新随代码同 commit
 
 ### Step 3.3 终审与归档准备
 - 预估：10 min · 依赖：3.1、3.2 · 状态：pending
