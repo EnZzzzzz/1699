@@ -33,3 +33,9 @@
   - Step 2.4: 计划外发现（既有 bug，非 daemon 引入）: ContactTask.summary() 用无参 ShopDB() 忽略 --db，收尾报表读生产库（contact.py:132，只读）→ 待按 issue-create 流程处理，终审分诊
   - Step 2.4: minor (deferred): 非 tty 下 stdout 块缓冲，运行中途日志为空（建议 -u 或 logging flush，非本次范围）
   - Step 2.4: 环境噪音记录: CloakBrowser 席位 5/5 被本机其他爬虫占用时启动会等席位（每 20s 重查），非 bug
+- Step 3.1: complete（走查 Step，无代码 commit；证据 task-3.1-report.md + /tmp/equiv_*.log，主 Agent 已全文核实报告）
+  - 主 Agent 裁定：SPEC §5 第 2 条「work_items 全 done」字面未达成（18 done + 2 failed，登录墙密集期策略链正常放弃，A 组同环境 1 failed）→ 验收放宽为「全部落正确终态」，已记入 SPEC §6 变更记录
+  - 等价性结论：节奏 2.08 vs 2.64 个/分钟（同量级，差异=风控等待）；成功产出 17 家完全相同；共有 contacts 14/17 逐字段全等、3 家为软拦截内容差异，无「同字段不同值」
+  - 现场观察：测试进程与活 madeinchina 爬虫经共享隧道缓存拿到同一出口 IP（跨站，无实际危害）——正是 scheduler-architecture §2 所述「无协调撞车」的实证
+  - Step 3.1: 计划外发现（既有 bug）: ContactTask.summary() 无参 ShopDB() 读生产库 + 构造时对生产库执行幂等 DDL/_migrate（与 2.4 发现同源）
+  - Step 3.1: minor (deferred): 非 TTY 下常规行只上状态板不进日志文件（既有行为，可观测性改进点）

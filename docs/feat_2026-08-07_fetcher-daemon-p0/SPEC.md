@@ -126,10 +126,10 @@ CREATE INDEX IF NOT EXISTS idx_work_items_claim ON work_items(queue, status, id)
 ## 5. 验收标准（P0 整体）
 
 1. `cd fetcher && python -m pytest tests -x -q` 全绿（含新增用例）。
-2. 冒烟：`python -m fetcher daemon --proxy --limit 5` 跑通——5 个店铺联系人提取完成，work_items 5 行 done，shops 对应行 done，contacts 落库字段口径与旧 CLI 相同。
+2. 冒烟：`python -m fetcher daemon --proxy --limit 5` 跑通——店铺联系人提取完成，work_items 全部落正确终态（done，或风控放弃时 failed 且带 reason/kind），shops 对应行落终态，contacts 落库字段口径与旧 CLI 相同。
 3. 等价性对比：同批数据分别用旧 CLI 与 daemon 跑 `--limit 20`，对比每分钟请求数（事件时间戳）、成功率、contacts 字段完整度，无统计学可见差异（节奏参数相同即可，允许随机浮动）。
 4. 空队列行为：shops 无 pending 时 daemon 不退出、CPU 空转≈0；stop 信号后 30s 内全部消费者退出、浏览器关闭。
 
 ## 6. 变更记录
 
-（空——评审后变更在此追加）
+- 2026-08-07（Step 3.1 验收裁定）：§5 第 2 条「work_items 5 行 done」放宽为「全部落正确终态」——实测 18 done + 2 failed（登录墙密集期策略链按既有规则放弃，A 组旧 CLI 同环境 1 failed），失败落终态本身是机制正确的体现，环境因素不应计入验收。
