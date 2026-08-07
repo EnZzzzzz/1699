@@ -15,3 +15,8 @@
   - 实现要点：时长 import 复用 human_pause_duration（atoms/sleep.py），BackoffSleep 逐字复刻含 or 短路；三策略脱离 _AtomStrategy；注册表/调用方咬合经 review 核实
   - Step 2.1: minor (deferred): BlockRestStrategy.__init__ 留存 self._params 但 run() 不读（惯性残留，Step 2.2 可顺手清理）
   - Step 2.1: minor (deferred): 中间态下 Sleep 的「随机等待」日志先于实际等待打出（Step 2.2 接上后自洽）
+- Step 2.2: complete (commits 9f0f403..df1a925, review clean)
+  - 实现要点：_cooldown(seconds, reason, prefix=None)；中断终局与旧路径逐字同值（return "stop",0 → _cleanup）；BlockRestStrategy 死字段已清理
+  - Step 2.2: minor (deferred): ✓ 策略完成日志时序变化（先打 ✓ 再冷却；中断时 ✓ 会打出，旧路径不打）——终审分诊是否一行对齐
+  - Step 2.2: minor (deferred): cooldown=0.0 会跳过登记与等待（现状无此值，仅记录）
+  - Step 2.2: 记录（非问题）: 中断时 cooldown_until 残留未来时间戳，P3 按「过期即无效」消费即可

@@ -48,12 +48,12 @@
   - [x] 时长公式与 SPEC 回填公式逐字一致
 
 ### Step 2.2 loop chokepoint + 4 处等待点收敛
-- 预估：15 min · 依赖：2.1 · 状态：pending
+- 预估：15 min · 依赖：2.1 · 状态：done（commit df1a925）
 - 内容：`control/loop.py` 新增 `_cooldown(seconds, reason)`（写 ctx.cooldown_until + 保留现状两种等待展示路径）；批次休息/样本间隔/周期长休/启动退避 4 处改经 chokepoint（时长公式逐字保留）；`_process_item` 消费 `step.cooldown`（reason=`f"strategy:{name}"`，中断按现状 stop 路径）。
 - 验收：
-  - [ ] loop.py 内 `ctx.wait`/`wait_countdown` 只出现在 `_cooldown` 一处
-  - [ ] 4 处等待的时长公式与迁移前逐字一致（diff 对照）
-  - [ ] `_process_item` 正确消费 step.cooldown 且中断语义不变
+  - [x] loop.py 内 `ctx.wait`/`wait_countdown` 只出现在 `_cooldown` 一处
+  - [x] 4 处等待的时长公式与迁移前逐字一致（diff 对照）
+  - [x] `_process_item` 正确消费 step.cooldown 且中断语义不变
 
 ### Step 2.3 迁移单测
 - 预估：15 min · 依赖：2.1、2.2 · 状态：pending
