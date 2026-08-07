@@ -23,3 +23,4 @@
 - Step 2.3: complete (commits 44e4c49..9e5b005, review clean)
   - Step 2.3: minor (deferred): deadline 断言容差 1s 相对小 seconds 偏宽（破坏 A 已锁「完全不写」，spy seconds 透传锁「算错」）
   - Step 2.3: minor (deferred): 组③未断言 spy 无意外 reason；:381 elapsed 下界有理论时序抖动空间
+- Step 3.1: 首次派发（agent-30）中途失联——B/C/D 段据其 todo 记录已跑完，但 /tmp 证据文件与 report 全部丢失，子 Agent 实例已不存在。裁定：Step 3.1 整体重跑（走查 Step 不接受口头声明），要求新 implementer 证据随跑随写 report、日志文件放 plan 目录下 docs/feat_2026-08-07_fetcher-cooldown-p1/smoke/ 而非 /tmp。
