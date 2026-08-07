@@ -6,4 +6,7 @@
 
 ## Step 进度
 
-（尚无完成记录）
+- Step 1.1: complete (commits cfdca75..5f8764e, review clean)
+  - 关键产出：注册名来源结论——插件 name 属性不可用（1688 的 plugin.name='alibaba1688' ≠ 注册名 '1688'），改为 CLI/daemon 透传 site_name；§4 假设 1 被推翻（变更记录已记）；domain→site 映射清单（%1688.com%→1688:、%made-in-china.com%→madeinchina:、%taobao.com%→taobao:、%yiwugo.com%→yiwugo:，先 made-in-china 再 1688）；无法映射第三方域 .mmstat.com(544)/.ynuf.aliapp.org(166) 保持原样；identity 诞生点 browser.py:217/:233，relaunch 不携带旧 identity
+  - 首次 review 8 条发现（4C/2I/2M）全是行号错误（implementer 行号系统性偏差），修复轮 1 全部 ADDRESSED；已用 grep -n 逐条实码复核
+  - Step 1.1: minor (deferred): browser.py relaunch 范围 :344-384 的右端点 :384 是空白行，方法体实际 :381（文档引用精度，P3 编码阶段可精确化）

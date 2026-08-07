@@ -19,11 +19,11 @@
 **完成标准**：SPEC §4 假设 1、2 回填「已读码验证」；核心改造完成、既有测试全部适配通过。本 Phase 无运行时行为变化（键格式变化对单站点逻辑透明），不做冒烟。
 
 ### Step 1.1 读码回填（SPEC §4 假设 1、2）
-- 预估：10 min · 依赖：无 · 状态：pending
+- 预估：10 min · 依赖：无 · 状态：done ✅
 - 内容：① 读 `fetcher/fetcher/sites/__init__.py` 与两个站点插件，确认 engine 的插件对象上能拿到站点注册名的确切字段（回填 SPEC §3.1）；② 生产库**只读** `SELECT domain, COUNT(*) FROM cookies GROUP BY domain` + 各站点 cookie_domain，回填 SPEC §3.4 的 domain→site 迁移映射确切清单（含未覆盖域的处置）；③ 顺带确认 `net/browser.py:233` identity 诞生点的确切代码形态（回填 SPEC §3.1 行号）。
 - 交付物：SPEC 回填 commit；report 附摘录。
 - 验收：
-  - [ ] SPEC §4 假设 1、2 依据列改「已读码验证」，映射清单完整
+  - [x] SPEC §4 假设 1、2 依据列改「已读码验证」，映射清单完整
 
 ### Step 1.2 辅助函数 + 隐藏点修正（§3.3 清单 #1-#6）
 - 预估：15 min · 依赖：1.1 · 状态：pending
