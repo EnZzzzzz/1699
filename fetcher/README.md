@@ -42,7 +42,7 @@ python -m fetcher daemon --proxy                # 常驻模式：1688 contact �
 shops 表 pending 行自动补货入队，队列取空后挂起等货而非退出。支持全部共享
 网络层参数（`--proxy` / `--workers` / `--headed` 等，同各任务子命令），另有
 `--queue`（P0 仅默认值 `crawl_1688_contact`，不开放其他选择）；`--limit N`
-跑完 N 个后退出，作冒烟/联调的收工手段。
+每个 worker 跑完 N 个后退出，作冒烟/联调的收工手段。
 **daemon 与旧 CLI `1688 contact` 同站互斥**：两边启动都会把 shops 的
 in_progress 重置为 pending（daemon 另回收 work_items 的 claimed 残留），
 同站同跑会互相重置，同一时刻只跑一个。

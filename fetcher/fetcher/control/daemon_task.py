@@ -32,8 +32,8 @@ class DaemonTaskProxy:
     """Task 协议代理：工作项来源切换为 work_items 表（daemon 常驻等货）。
 
     用法：
-        task = DaemonTaskProxy(inner=ContactTask(), queue="contact",
-                               site="1688", domain_suffix="1688.com")
+        task = DaemonTaskProxy(inner=ContactTask(), queue="crawl_1688_contact",
+                               site="1688", domain_suffix=".1688.com")
         engine = Engine(cfg, task=task, ...)
     """
 
