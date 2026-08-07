@@ -54,6 +54,7 @@
 
 from __future__ import annotations  # 兼容 Python < 3.10 的 X | None 注解
 
+import json
 import os
 import re
 import sqlite3
@@ -168,6 +169,24 @@ CREATE TABLE IF NOT EXISTS category_progress (
     exhausted       INTEGER NOT NULL DEFAULT 0,     -- 1 = 已采到末页，之后跳过
     last_crawled_at TEXT
 );
+
+-- daemon 工作队列（fetcher daemon 模式）：shops 的 pending 店铺经
+-- topup_contact_work_items 入队，消费者线程用 claim_work_item 认领执行
+CREATE TABLE IF NOT EXISTS work_items (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    queue       TEXT NOT NULL,             -- P0 固定 "crawl_1688_contact"
+    site        TEXT,                      -- "1688"
+    batch_id    INTEGER,                   -- P0 恒 NULL（平台批次 P4 接入）
+    payload_json TEXT NOT NULL,            -- contact: {"domain","name","url"}
+    requires    TEXT NOT NULL DEFAULT '["channel","browser"]',
+    status      TEXT NOT NULL DEFAULT 'pending',  -- pending/claimed/done/failed
+    claimed_by  TEXT,                      -- "w0".."wN"
+    claimed_at  TEXT,
+    finished_at TEXT,
+    result_json  TEXT,
+    created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_work_items_claim ON work_items(queue, status, id);
 """
 
 # 依赖迁移后列（status）的索引，单独在 _migrate 之后创建
@@ -385,6 +404,94 @@ class ShopDB:
             sql += ", attempts=attempts+1"
         self.conn.execute(sql + " WHERE domain=?", (domain,))
         self.conn.commit()
+
+    # ---------- work_items ----------
+    def topup_contact_work_items(self, queue: str, site: str,
+                                 domain_suffix: str, limit: int) -> int:
+        """从 shops 补货 work_items：最老的 pending 店铺入队并置 in_progress。
+
+        单事务内 SELECT + INSERT + UPDATE（BEGIN IMMEDIATE 立即取写锁）。
+        shops 状态语义与 claim_pending_shops 严格一致（pending → in_progress，
+        排序口径 first_seen_at, id），只是把「返回给调用方」改成「写入
+        work_items 表」；已入队店铺已非 pending，重复补货不会产生重复行。
+        """
+        try:
+            self.conn.execute("BEGIN IMMEDIATE")
+            rows = self.conn.execute(
+                "SELECT * FROM shops WHERE status='pending'"
+                " AND substr(domain, -?, ?) = ?"
+                " ORDER BY first_seen_at, id LIMIT ?",
+                (len(domain_suffix), len(domain_suffix), domain_suffix,
+                 limit)).fetchall()
+            now = _now()
+            for r in rows:
+                payload = json.dumps(
+                    {"domain": r["domain"], "name": r["name"],
+                     "url": r["url"]},
+                    ensure_ascii=False)
+                self.conn.execute(
+                    "INSERT INTO work_items (queue, site, payload_json,"
+                    " created_at) VALUES (?, ?, ?, ?)",
+                    (queue, site, payload, now))
+                self.conn.execute(
+                    "UPDATE shops SET status='in_progress' WHERE id=?",
+                    (r["id"],))
+            self.conn.commit()
+            return len(rows)
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def claim_work_item(self, queue: str, consumer_id: str) -> dict | None:
+        """原子认领该队列最老的 pending 工作项；无货返回 None。
+
+        SELECT + UPDATE 在同一 BEGIN IMMEDIATE 事务内，多消费者并发安全，
+        同一行只会被一个消费者领到。返回 {"id", "domain", "name", "url"}
+        （domain/name/url 解析自 payload_json）。
+        """
+        try:
+            self.conn.execute("BEGIN IMMEDIATE")
+            row = self.conn.execute(
+                "SELECT * FROM work_items WHERE queue=? AND status='pending'"
+                " ORDER BY id LIMIT 1", (queue,)).fetchone()
+            if not row:
+                self.conn.commit()
+                return None
+            self.conn.execute(
+                "UPDATE work_items SET status='claimed', claimed_by=?,"
+                " claimed_at=? WHERE id=?",
+                (consumer_id, _now(), row["id"]))
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        payload = json.loads(row["payload_json"])
+        return {"id": row["id"], "domain": payload.get("domain"),
+                "name": payload.get("name"), "url": payload.get("url")}
+
+    def finish_work_item(self, item_id: int, status: str,
+                         result: dict | None = None) -> None:
+        """工作项落终态（done/failed）+ finished_at + result_json。
+
+        result 为 None 时 result_json 存 NULL。
+        """
+        self.conn.execute(
+            "UPDATE work_items SET status=?, finished_at=?, result_json=?"
+            " WHERE id=?",
+            (status, _now(),
+             json.dumps(result, ensure_ascii=False)
+             if result is not None else None,
+             item_id))
+        self.conn.commit()
+
+    def reset_claimed_work_items(self) -> int:
+        """全部 claimed 工作项重置回 pending（进程中断残留的认领，
+        daemon 启动时调用），清空 claimed_by/claimed_at，返回重置行数。"""
+        cur = self.conn.execute(
+            "UPDATE work_items SET status='pending', claimed_by=NULL,"
+            " claimed_at=NULL WHERE status='claimed'")
+        self.conn.commit()
+        return cur.rowcount
 
     # ---------- category_progress ----------
     def get_category_progress(self, keyword: str) -> dict | None:
