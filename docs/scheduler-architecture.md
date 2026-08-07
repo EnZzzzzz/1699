@@ -156,6 +156,8 @@ def consumer_loop(consumer):
 | 页面渲染等待 2~5s | 站点插件内 `time.sleep` | 保留在原子内（属于执行过程，非调度间隔） |
 | worker 启动错开 15~60s | `engine.py:198-201` | 消费者启动时一次性冷却 |
 
+注：P1 已落地——Sleep/BackoffSleep/BlockRest 改为输出 StepResult.cooldown、loop 4 处等待收敛至 `_cooldown` chokepoint（control/loop.py）；SwapIP 内部等待为例外未迁移（P3 重议）。
+
 - 所有冷却参数进配置（站点插件声明默认值，平台可覆盖），单位统一秒。
 - 请求预算（如 60 页/IP）保持按 (IP, site) 记账，达预算 → 触发换 IP 原子 + 长冷却，与现状一致。
 
@@ -206,7 +208,7 @@ CREATE INDEX idx_work_items_claim ON work_items(queue, status, id);
 | 阶段 | 内容 | 验收 |
 |---|---|---|
 | P0 daemon 骨架 | work_items 表 + Dispatcher + 条件变量调度循环 + BrowserConsumer（单站点 1688）；CLI 新增 `daemon` 子命令 | 单站点行为与现有 CLI 等价（节奏、产出、事件口径一致）；✅ 已完成（2026-08-07，实施记录 docs/archive/feat_2026-08-07_fetcher-daemon-p0/） |
-| P1 冷却策略迁移 | `strategies.py` 的 sleep 全部改为输出冷却时长；`loop.py` 流水线原子化改造 | 同一批次总耗时、请求节奏分布与旧实现相当 |
+| P1 冷却策略迁移 | `strategies.py` 的 sleep 全部改为输出冷却时长；`loop.py` 流水线原子化改造 | 同一批次总耗时、请求节奏分布与旧实现相当；✅ 已完成（2026-08-08，实施记录 docs/feat_2026-08-07_fetcher-cooldown-p1/） |
 | P2 identity 分桶 | (IP,site) 键改造 + BrowserContext 隔离 + 簿记表迁移 | 同 IP 两站点 Cookie/簿记互不污染（单测覆盖） |
 | P3 第二站点接入 | madeinchina 队列接入，跨站填充生效 | 同通道 madeinchina 冷却期间执行 1688 工作项，两边各自预算不超标 |
 | P4 平台切换 | runner 改批次提交、wa_check 迁入、API + 前端看板 | 平台创建/停止/监控全流程走 dispatcher |
