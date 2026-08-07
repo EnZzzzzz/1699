@@ -41,11 +41,11 @@
 **完成标准**：单测全绿；SPEC §5 第 2、3 条的 grep 验收达成；**运行时冒烟**：直连 `python -m fetcher daemon --db <临时库> --workers 1 --limit 3` 跑通（行为等价冒烟在 Phase 3 做完整版）。
 
 ### Step 2.1 策略迁移（Sleep/BackoffSleep/BlockRest）
-- 预估：15 min · 依赖：P1 · 状态：pending
+- 预估：15 min · 依赖：P1 · 状态：done（commit 3e719d5）
 - 内容：`strategy/strategies.py` 三个策略的 run() 改为「算时长 → StepResult(cooldown=t)」，时长分布按 SPEC §4 假设 2 回填的公式逐字复刻；BlockRest 保留现有 log 行；SwapIPStrategy docstring 加「冷却例外」标注（引用 SPEC §2.2）。attempt 的获取路径按 Step 1.1 核实的现状（BackoffSleep 的 attempt 从哪来就怎么来）。
 - 验收：
-  - [ ] 三策略 grep 无 `ctx.wait`；SwapIP 有例外注释
-  - [ ] 时长公式与 SPEC 回填公式逐字一致
+  - [x] 三策略 grep 无 `ctx.wait`；SwapIP 有例外注释
+  - [x] 时长公式与 SPEC 回填公式逐字一致
 
 ### Step 2.2 loop chokepoint + 4 处等待点收敛
 - 预估：15 min · 依赖：2.1 · 状态：pending

@@ -11,3 +11,7 @@
   - Step 1.1: minor (deferred): report 内一处行号引用偏一行（:37-38 实为 :37-39），SPEC 正文无误
 - Step 1.2: complete (commits 635b170..b084129, review clean)
   - Step 1.2: minor (deferred): report 行数计数误差（+5 实为 +4）；StepResult docstring 未提 cooldown 字段（行内注释已足够）
+- Step 2.1: complete (commits 23044ed..3e719d5, review clean)
+  - 实现要点：时长 import 复用 human_pause_duration（atoms/sleep.py），BackoffSleep 逐字复刻含 or 短路；三策略脱离 _AtomStrategy；注册表/调用方咬合经 review 核实
+  - Step 2.1: minor (deferred): BlockRestStrategy.__init__ 留存 self._params 但 run() 不读（惯性残留，Step 2.2 可顺手清理）
+  - Step 2.1: minor (deferred): 中间态下 Sleep 的「随机等待」日志先于实际等待打出（Step 2.2 接上后自洽）
