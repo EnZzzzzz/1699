@@ -78,11 +78,11 @@
   - [x] 冷却中 SIGTERM 立即中断（单元测试锁定 + 两次运行时 ≤11s 退出；严格批休窗口场景用户裁定接受）
 
 ### Step 3.2 文档同步 + 终审准备
-- 预估：10 min · 依赖：3.1 · 状态：pending
+- 预估：10 min · 依赖：3.1 · 状态：done（文档同步 commit 9096948；终审通过 + SPEC §6 裁定记录补登）
 - 内容：`docs/scheduler-architecture.md` §10 P1 行标完成；`docs/scheduler-architecture.md` §6 冷却策略表加注「P1 已落地：时长输出+chokepoint，SwapIP 为例外」；fetcher/README.md 如无用户可见变化则不动（确认 daemon 行为描述仍准确）。ledger 补全，终审。
 - 验收：
-  - [ ] 文档更新随代码同 commit
-  - [ ] 全分支终审：旧行为等价（时长公式零变化）经 diff 逐处核实
+  - [x] 文档更新随代码同 commit
+  - [x] 全分支终审：旧行为等价（时长公式零变化）经 diff 逐处核实
 
 ---
 

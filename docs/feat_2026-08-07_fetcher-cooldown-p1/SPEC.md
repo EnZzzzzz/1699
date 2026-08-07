@@ -104,4 +104,4 @@ def _cooldown(self, seconds: float, reason: str) -> bool:
 
 ## 6. 变更记录
 
-（空——评审后变更在此追加）
+- 2026-08-08（Step 3.1 用户裁定）：§5 第 4 条中「冷却中 SIGTERM 立即中断」的严格批休窗口运行时场景，因直连滑块墙环境（B 组 6/6 failed）无法推进到验证点，验收口径改为「chokepoint 中断语义由单元测试锁定（30s 冷却 0.1s 打断 <5s 退出）+ 两次运行时 SIGTERM ≤11s 干净退出（P0 空队列 12s、P1 B 段 11s）」，用户裁定接受。

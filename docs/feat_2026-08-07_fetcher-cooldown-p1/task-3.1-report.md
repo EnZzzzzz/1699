@@ -301,3 +301,13 @@ $ ... "SELECT MAX(created_at) FROM ip_events; SELECT MAX(updated_at) FROM ip_sta
 - 生产库零污染：**达成**（冒烟期间生产库零写入的硬证据，F 段）。
 - 环境说明：全程直连滑块墙 100% 命中（B 组 6/6 failed、C 组 5/6 failed），节奏证据全部来自
   失败路径的 cooldown 结构——恰是本 P1 的验证对象（cooldown 对成功/失败同样生效）。
+
+E 段第二次尝试插曲：00:04:07 daemon 正常启动，但 00:04:58 起 watcher 报
+`unable to open database /tmp/cooldown_a.db`——核查发现 **/tmp/cooldown_a.db 与
+cooldown_b.db 同时消失**（ls 无匹配）。daemon 持有已删 inode 继续空跑，已连同
+watcher 一并 TaskStop。删除源未明：repo 内 cleanup-cloakbrowser.sh 只清 CloakBrowser
+租约不碰 /tmp；疑为 00:02:49 用户打断事件相关的外部清理，如实记录。
+C/D 段证据此前已全部提取入本文档，不受影响。00:10 用 `smoke/seed.py` 重建临时库
+（同 6 店同序，生产库未变），第三次重跑 E。
+
+- §E 进行中（00:10）：临时库已重建，重跑 E。
