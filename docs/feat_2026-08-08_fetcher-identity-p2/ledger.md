@@ -34,3 +34,6 @@
   - 验收①✅（1688:direct 桶 165 行、无裸 direct）；②✅（daemon 口径一致，2 item 因本机 IP 风控全 fail——ip_events 8 条 block_other 全记 1688:direct）；③✅（平台正则对两个带冒号键完整匹配，平台侧零改动成立）
   - ⚠️ 发现（已上报用户）：冒烟 exit 时 `ContactTask.summary()`（contact.py:132，既有代码）不传 db 路径默认开**生产库** → P2 的 _migrate 迁移在生产库提前触发：17385 行带前缀 + 710 裸键（恰为 .mmstat.com 544/.ynuf.aliapp.org 166 无法映射清单，逐域吻合）；总数 18095 不变、迁移完整幂等无数据损失；部署窗口（旧代码白板重启）提前生效，当前无运行中旧代码爬虫。验收④降级为「除一次性设计迁移外零污染」
   - 待用户裁定：summary() 是否小修（thread config.resolved_db_path()，防临时库冒烟再触生产库）
+  - Step 3.1: complete——用户裁定「继续」= 同意小修；修复 commit 5fc0dbd（Task.summary 签名加 db_path、engine 传 config.resolved_db_path()、8 处站点实现全改、test_summary_db_path.py +6、engine 装配测试），review 零 Critical/Important（3 Minor：基类 db_path 无类型标注、默认 None 允许省略、3 处无 ShopDB 站点参数未用——终审分诊）；全量 309 passed
+  - Step 3.1: minor (deferred): 同上 3 条 Minor
+  - **Phase 3 冒烟验收**：①✅ 1688:direct 桶；②✅ 行为与 P1 一致（2 item 因本机 IP 风控全 fail，如实记录）；③✅ 平台正则兼容（平台侧零改动）；④ 生产库零污染 → 降级为「除一次性设计迁移外零污染」（summary 路径提前触发迁移，已修复防复发）

@@ -7,7 +7,7 @@
 | 层 | 模块 | 职责 |
 |---|---|---|
 | 公共协议 | `fetcher/core/` | Scenario 枚举、ActionResult、Session、WorkerContext、错误分级 |
-| 网络层 | `fetcher/net/` | BrowserManager（启动/预热/重启/席位/watchdog/指纹）、IdentityStore（Cookie 按出口 IP 隔离）、代理（青果/快代理/直连）、种子身份池 |
+| 网络层 | `fetcher/net/` | BrowserManager（启动/预热/重启/席位/watchdog/指纹）、IdentityStore（Cookie 按 `site:出口 IP` 分桶隔离）、代理（青果/快代理/直连）、种子身份池 |
 | 原子层 | `fetcher/atoms/` | Sleep / Refresh / SolveSlider / RelaunchBrowser / SaveCookies / CheckIPFresh / ColdStart / ClearIdentity / WaitHuman* |
 | 判断层 | `fetcher/detect/` | Detector 协议 + SceneInspector 优先级链（只读状态，绝不动浏览器） |
 | 策略层 | `fetcher/strategy/` | Policy（声明式策略表，dict 加载可覆盖）+ AttemptTracker + 策略实现 |
@@ -15,6 +15,11 @@
 | 存储 | `fetcher/db.py` | ShopDB（schema 与 `.cache/1688.db` 完全兼容） |
 
 设计细节见 [docs/design.md](docs/design.md)。
+
+## 部署注意（P2 identity 分桶，2026-08-08 起）
+
+- identity 键已从「出口 IP」升级为 `site:出口 IP`（如 `1688:1.2.3.4`，直连 `1688:direct`），Cookie/簿记按站点分桶。
+- **Cookie 迁移部署窗口**：新代码首次打开库时会把 cookies 表存量裸键行自动迁移为带站点前缀（幂等，无法归属的第三方域如 `.mmstat.com` 保持原样自然过期）。**旧代码进程在迁移后按裸键查不到 Cookie，会白板重启一次**——部署新代码应在活爬虫停跑窗口进行，或接受运行中爬虫一次性重置。
 
 ## 安装
 

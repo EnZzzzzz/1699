@@ -71,12 +71,12 @@
 **完成标准**：SPEC §5 全部达成；终审通过。
 
 ### Step 3.1 等价性冒烟
-- 预估：15 min（不含跑数）· 依赖：P2 · 状态：pending
+- 预估：15 min（不含跑数）· 依赖：P2 · 状态：done ✅
 - 内容：临时库预置 2 条 shops pending，`python -u -m fetcher daemon --db /tmp/ident_smoke.db --workers 1 --limit 2 --headed` 直连跑通；核查：cookies 表出现 `1688:direct` 桶（无裸 `direct` 新行）、行为与 P1 一致（日志口径、contacts 落库）；平台正则兼容断言（python -c 跑 SPEC §4 假设 4 的正则对 `identity=1688:1.2.3.4` 与 `identity=madeinchina:direct` 匹配）；生产库零污染核查（基线对照法，参照前两次冒烟；**注意**：本冒烟只用临时库，不动生产库迁移——生产库的 _migrate 由首次新代码进程自然触发，属预期行为，记录在 report）。
 - 交付物：report 含命令/输出/SQL 证据。
 - 验收：
-  - [ ] SPEC §5 第 5 条达成
-  - [ ] 平台正则兼容结论
+  - [x] SPEC §5 第 5 条达成
+  - [x] 平台正则兼容结论
 
 ### Step 3.2 文档同步 + 终审
 - 预估：10 min · 依赖：3.1 · 状态：pending

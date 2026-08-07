@@ -165,11 +165,12 @@ def consumer_loop(consumer):
 
 改动点：
 
-- `Session.identity` 增加 site 维度：实际键为 `f"{site}:{ip}"`（直连为 `f"{site}:direct"`）。`core/session.py` 注释与默认值同步更新。
-- `IdentityStore`（`net/identity.py`）：load/save/burn 全部带 site 键；burn 只烧对应站点的 Cookie，不殃及同 IP 其他站点。
-- 风控簿记（`loop.py:399-446` 的 ip_req/ip_stats/ip_events）：表加 site 列或键拼 site 前缀（走 `app.db.migrate()` 幂等迁移，防御性探测）。
-- 指纹种子按 (site, IP) 生成；BrowserConsumer 内每站点一个独立 BrowserContext（独立 storage state），共享一个浏览器进程以缓解席位压力——**需实测 CloakBrowser 席位按进程还是按 context 计数**（若按 context，则退为一站一浏览器，消费者数量受席位硬约束）。
-- 种子身份池（`engine.py:80-111`）：认领粒度改为 (消费者, site)。
+- `Session.identity` 增加 site 维度：实际键为 `f"{site}:{ip}"`（直连为 `f"{site}:direct"`）。**拼前缀只在身份诞生点一处**（`net/browser.py` launch 两处赋值，site 注册名经 CLI/daemon 透传）；`core/session.py` 提供 `bare_identity`/`is_direct` 辅助函数（指纹/保鲜检查等需裸 IP 的场合）。
+- `IdentityStore`（`net/identity.py`）：load/save/burn 全部带 site 键（键级自然分桶，零 schema 改动）；burn 只烧对应站点的 Cookie，不殃及同 IP 其他站点。
+- 风控簿记（`loop.py` 的 ip_req/ip_stats/ip_events）：键拼 site 前缀自然分桶（零 schema 改动）；**历史统计行保持裸键**（统计性质、无法按站点干净拆分），新行自动带前缀。
+- 指纹种子维持按裸 IP 生成（**修正：不按 (site, IP)**——同 IP 跨站指纹不变更拟人，且避免已迁移 Cookie 与指纹错配，裁定与理由见 SPEC §3.5）。
+- BrowserContext 多站点隔离（一消费者内每站点一 context）**移至 P3**（无多队列之前是死代码，见 SPEC §2.2）。CloakBrowser 席位按**浏览器二进制进程**租约（包源码证据 cloakbrowser 0.5.2 `license.py:368`，退出码 76=session limit，见 SPEC §3.6）；服务端实测随 P3 多 context 落地前做一次。
+- 种子身份池（`engine.py:80-111`）：认领粒度维持现状（每 worker 一份、指纹按种子名）——跨站种子隔离随 P3。
 
 ## 8. 存储设计（新增表，走幂等迁移）
 
@@ -209,8 +210,8 @@ CREATE INDEX idx_work_items_claim ON work_items(queue, status, id);
 |---|---|---|
 | P0 daemon 骨架 | work_items 表 + Dispatcher + 条件变量调度循环 + BrowserConsumer（单站点 1688）；CLI 新增 `daemon` 子命令 | 单站点行为与现有 CLI 等价（节奏、产出、事件口径一致）；✅ 已完成（2026-08-07，实施记录 docs/archive/feat_2026-08-07_fetcher-daemon-p0/） |
 | P1 冷却策略迁移 | `strategies.py` 的 sleep 全部改为输出冷却时长；`loop.py` 流水线原子化改造 | 同一批次总耗时、请求节奏分布与旧实现相当；✅ 已完成（2026-08-08，实施记录 docs/archive/feat_2026-08-07_fetcher-cooldown-p1/） |
-| P2 identity 分桶 | (IP,site) 键改造 + BrowserContext 隔离 + 簿记表迁移 | 同 IP 两站点 Cookie/簿记互不污染（单测覆盖） |
-| P3 第二站点接入 | madeinchina 队列接入，跨站填充生效 | 同通道 madeinchina 冷却期间执行 1688 工作项，两边各自预算不超标 |
+| P2 identity 分桶 | identity 键升级 `f"{site}:{ip}"`（拼前缀仅诞生点一处）；6 处隐藏使用点修正（保鲜检查/直连判定/报表/指纹）；Cookie 域过滤收紧 + cookies 表幂等迁移（历史 ip_stats/ip_events 保持裸键） | 同 IP 两站点 Cookie/簿记互不污染（隔离性单测）；✅ 已完成（2026-08-08，实施记录 docs/archive/feat_2026-08-08_fetcher-identity-p2/） |
+| P3 第二站点接入 | madeinchina 队列接入，跨站填充生效；BrowserContext 多站点隔离（自 P2 移入） | 同通道 madeinchina 冷却期间执行 1688 工作项，两边各自预算不超标 |
 | P4 平台切换 | runner 改批次提交、wa_check 迁入、API + 前端看板 | 平台创建/停止/监控全流程走 dispatcher |
 | P5 退役旧路径 | 旧 subprocess 采集路径冻结→删除；修订 flow-architecture.md §2/§10 | 旧代码路径删除，文档同步 |
 
