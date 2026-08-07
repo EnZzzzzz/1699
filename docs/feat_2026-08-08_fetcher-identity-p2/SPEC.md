@@ -37,9 +37,9 @@
 ### 3.1 键格式与注入点
 
 - 键：`f"{site}:{ip}"`，site 用站点注册名（`register_site("1688", ...)`、`register_site("madeinchina", ...)` 等，与 `work_items.site` 同口径）；直连 `f"{site}:direct"`。
-- 注入点：`engine.py` 的 `_make_browser_manager`（:113-123）把 site 注册名传给 BrowserManager；identity 诞生点（`browser.py:233` 一带，launch 拿到出口 IP 处）拼前缀。**仅此一处拼键**——loop/atoms/db 全链路经 `ctx.identity` 消费，零改动。
-- site 注册名来源（Step 1.1 回填）：插件对象的 `name` 属性**不可直接用于拼前缀**——Alibaba1688Plugin.name = `"alibaba1688"`（`fetcher/fetcher/sites/alibaba1688/__init__.py:17`），与注册名 `"1688"`（同文件:66 `register_site("1688", Alibaba1688Plugin)`）不一致。其余四站点一致（madeinchina/yiwugo/taobao/facebook 的 `plugin.name == register_site(name)`）。**方案**：新增 `site_name` 参数字段，由 CLI（`args.site`，`cli/main.py:198`）/ daemon（硬编码 `"1688"`，`cli/main.py:242`）经 `Engine.__init__` → `_make_browser_manager` 透传给 `BrowserManager`，后者在 launch 拼前缀时使用。这样保证 site 与 `work_items.site` 同口径。
-- identity 诞生点（Step 1.1 回填）：`browser.py:217` `identity = "direct"`（默认值）；`browser.py:233` `identity = exit_ip`（代理分支覆盖）。**仅此一处**——`relaunch()` 调用 `session.close()` 后调 `self.launch()`（`browser.py:337-366`），identity 始终由 launch 重新生成，不从旧 session 携带。P2 拼前缀即在此两处：`f"{site_name}:direct"` / `f"{site_name}:{exit_ip}"`。
+- 注入点：`engine.py` 的 `_make_browser_manager`（:113）把 site 注册名传给 BrowserManager；identity 诞生点（`browser.py:233` 一带，launch 拿到出口 IP 处）拼前缀。**仅此一处拼键**——loop/atoms/db 全链路经 `ctx.identity` 消费，零改动。
+- site 注册名来源（Step 1.1 回填）：插件对象的 `name` 属性**不可直接用于拼前缀**——Alibaba1688Plugin.name = `"alibaba1688"`（`fetcher/fetcher/sites/alibaba1688/__init__.py:27`），与注册名 `"1688"`（同文件:85 `register_site("1688", Alibaba1688Plugin)`）不一致。其余四站点一致（madeinchina/yiwugo/taobao/facebook 的 `plugin.name == register_site(name)`）。**方案**：新增 `site_name` 参数字段，由 CLI（`args.site`，`cli/main.py:174`）/ daemon（硬编码 `"1688"`，`cli/main.py:215`）经 `Engine.__init__` → `_make_browser_manager` 透传给 `BrowserManager`，后者在 launch 拼前缀时使用。这样保证 site 与 `work_items.site` 同口径。
+- identity 诞生点（Step 1.1 回填）：`browser.py:217` `identity = "direct"`（默认值）；`browser.py:233` `identity = exit_ip`（代理分支覆盖）。**仅此一处**——`relaunch()` 调用 `session.close()` 后调 `self.launch()`（`browser.py:344-384`），identity 始终由 launch 重新生成，不从旧 session 携带。P2 拼前缀即在此两处：`f"{site_name}:direct"` / `f"{site_name}:{exit_ip}"`。
 
 ### 3.2 辅助函数（`core/session.py` 模块级）
 
@@ -113,7 +113,7 @@ def is_direct(identity: str) -> bool:
 
 | # | 行为假设 | 依据 | 验证方式 |
 |---|---|---|---|
-| 1 | 站点注册名可从 engine 的插件对象获得（用于拼前缀） | **已读码验证**：插件 `name` 属性对 1688 为 `"alibaba1688"`（`alibaba1688/__init__.py:17`），与注册名 `"1688"`（同文件:66）不一致——插件对象无注册名字段。改为 CLI/daemon 透传 `args.site` / `"1688"`（`cli/main.py:198/242`）经 Engine 新参到 BrowserManager（详见 §3.1） | Step 1.1 已回填 §3.1 |
+| 1 | 站点注册名可从 engine 的插件对象获得（用于拼前缀） | **已读码验证**：插件 `name` 属性对 1688 为 `"alibaba1688"`（`alibaba1688/__init__.py:27`），与注册名 `"1688"`（同文件:85）不一致——插件对象无注册名字段。改为 CLI/daemon 透传 `args.site` / `"1688"`（`cli/main.py:174/215`）经 Engine 新参到 BrowserManager（详见 §3.1） | Step 1.1 已回填 §3.1 |
 | 2 | cookies 迁移的 domain→site 映射清单完整覆盖存量数据 | **已读生产库验证**（2026-08-08，`1688.db` 只读：18095 行、6971 distinct domain、637 identity，0 行含冒号）。映射清单详见 §3.4，无法映射的第三方域（`.mmstat.com` 544 行、`.ynuf.aliapp.org` 166 行）保持原样自然过期 | Step 1.1 已回填 §3.4 |
 | 3 | 拼前缀后 `check_ip_fresh`/`"direct"` 字面量/报表是全部受损点 | 已读码验证（探索报告逐条 file:line） | §3.3 清单即修复范围；终审 grep 复核 |
 | 4 | 平台日志正则 `identity=([^\s)，、]+)` 兼容带冒号键 | 推断（冒号不在排除字符集） | Step 3 冒烟时跑一条断言验证（python -c 正则匹配），报告平台侧零改动结论 |
@@ -130,4 +130,4 @@ def is_direct(identity: str) -> bool:
 
 ## 6. 变更记录
 
-- **2026-08-08 Step 1.1 回填**：§4 假设 1 被推翻——插件对象的 `name` 属性不可直接用于拼前缀（1688 的 `plugin.name="alibaba1688"` ≠ 注册名 `"1688"`）。方案：CLI/daemon 把注册名（`args.site` / `"1688"`）透传给 BrowserManager（§3.1）。§4 假设 2 已验证——生产库 domain→site 映射清单完整回填 §3.4（含无法映射第三方域 `.mmstat.com`、`.ynuf.aliapp.org`）。identity 诞生点精确行号 `browser.py:217/233` 确认——relaunch 不携带旧 identity，唯一诞生点即 launch（§3.1）。
+- **2026-08-08 Step 1.1 回填**：§4 假设 1 被推翻——插件对象的 `name` 属性不可直接用于拼前缀（1688 的 `plugin.name="alibaba1688"` ≠ 注册名 `"1688"`，见 `alibaba1688/__init__.py:27` vs `:85`）。该假设原文为「站点注册名可从 engine 的插件对象获得」，实际无法获得，改为 CLI/daemon 透传方案。方案：CLI/daemon 把注册名（`args.site` / `"1688"`）透传给 BrowserManager（§3.1）。§4 假设 2 已验证——生产库 domain→site 映射清单完整回填 §3.4（含无法映射第三方域 `.mmstat.com`、`.ynuf.aliapp.org`）。identity 诞生点精确行号 `browser.py:217/233` 确认——relaunch 不携带旧 identity，唯一诞生点即 launch（§3.1）。
