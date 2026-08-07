@@ -9,6 +9,8 @@ fetcher/          采集框架（Python 包，可独立安装）：
                   核心层 core/（ActionResult/Outcome/WorkerContext）· 原子层 atoms/（Atom 协议）
                   网络层 net/ · 判断层 detect/ · 策略层 strategy/ · 站点插件 sites/
                   CLI：python -m fetcher 1688 shop|contact|company / yiwugo search / taobao search
+                  CLI 另有 daemon 常驻模式：1688 contact 从 work_items 表消费（空队列挂起等货，
+                  与旧 CLI 同站互斥），见 docs/scheduler-architecture.md
                   vendor/wa-check/：内置 Node/Baileys CLI（WhatsApp 查号协议实现）
 platform/         管理系统（前后端分离）
   server/         FastAPI 后端（端口 8765）：app/api/ REST + SSE · app/runner.py 任务监督器
