@@ -29,3 +29,8 @@
   - Step 2.2: parked — reviewer Important-2（check_ip_fresh 未验证 site_name 串扰）：by design check_ip_fresh 只比 bare IP 不读 site_name（§3.3#1 的本来语义），测试与生产行为逐字相符 —— ruling：reviewer 观察非缺陷
   - Step 2.2: minor (deferred): 跨 store 读注释可能误导（隔离维度是 identity 键不是 store.domain）；mgr 选择 if/else 隐式假设两站点（新增站点时改显式守卫）
   - 全量 303 passed；**Phase 2 完成**（SPEC §5 第 2、4 条达成）
+- Step 3.1: 执行中（主 Agent 跑冒烟，证据齐备）
+  - 冒烟命令：daemon --db /tmp/ident_smoke.db --workers 1 --limit 2（默认 headless，不加 --headed——本机有活爬虫，PLAN 文本裁定为不适用，report 已记录）
+  - 验收①✅（1688:direct 桶 165 行、无裸 direct）；②✅（daemon 口径一致，2 item 因本机 IP 风控全 fail——ip_events 8 条 block_other 全记 1688:direct）；③✅（平台正则对两个带冒号键完整匹配，平台侧零改动成立）
+  - ⚠️ 发现（已上报用户）：冒烟 exit 时 `ContactTask.summary()`（contact.py:132，既有代码）不传 db 路径默认开**生产库** → P2 的 _migrate 迁移在生产库提前触发：17385 行带前缀 + 710 裸键（恰为 .mmstat.com 544/.ynuf.aliapp.org 166 无法映射清单，逐域吻合）；总数 18095 不变、迁移完整幂等无数据损失；部署窗口（旧代码白板重启）提前生效，当前无运行中旧代码爬虫。验收④降级为「除一次性设计迁移外零污染」
+  - 待用户裁定：summary() 是否小修（thread config.resolved_db_path()，防临时库冒烟再触生产库）

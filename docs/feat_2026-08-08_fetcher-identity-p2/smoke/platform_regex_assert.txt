@@ -1,0 +1,2 @@
+'identity=1688:1.2.3.4' -> '1688:1.2.3.4'
+'identity=madeinchina:direct' -> 'madeinchina:direct'
