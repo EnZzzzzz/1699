@@ -102,11 +102,11 @@
   - [x] 三处文档更新随代码同 commit
 
 ### Step 3.3 终审与归档准备
-- 预估：10 min · 依赖：3.1、3.2 · 状态：pending
+- 预估：10 min · 依赖：3.1、3.2 · 状态：done（终审通过 + 修复轮 commit 5a54987，re-review clean）
 - 内容：按 subagent-driven-development 做全分支终审（diff 全量过一遍：是否最小改动、旧路径是否零改动、注释是否与行为一致）；ledger.md 补全。
 - 验收：
-  - [ ] 终审 findings 清零或转 issue（issue-create 规范）
-  - [ ] 旧代码路径（cli site 分支 / CrawlLoop / ContactTask）diff 为零
+  - [x] 终审 findings 清零或转 issue（issue-create 规范）
+  - [x] 旧代码路径（cli site 分支 / CrawlLoop / ContactTask）diff 为零
 
 ---
 

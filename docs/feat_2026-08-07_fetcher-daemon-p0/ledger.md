@@ -41,3 +41,9 @@
   - Step 3.1: minor (deferred): 非 TTY 下常规行只上状态板不进日志文件（既有行为，可观测性改进点）
 - Step 3.2: complete (commits a35a842..56953e9, review clean)
   - Step 3.2: minor (deferred): README「--limit N 跑完 N 个后退出」是 per-worker 口径简写（多 worker 总量 N×workers），终审修复轮顺手改严谨
+- Step 3.3: complete (终审 commits 66fde5d..4837613 全分支通过；修复轮 4837613..5a54987，re-review clean)
+  - 终审结论：通过。旧代码路径零改动逐文件核实；db/proxy/CLI 三处接口咬合一致；非目标防线守住；SPEC §5 四条验收均有归档证据
+  - 终审修复（5a54987）：daemon_task.py docstring 示例（queue/domain_suffix 口径）+ README --limit per-worker 口径
+  - 终审分诊（合并后跟进）：prepare 不走 db_factory；daemon --retry-failed；--queue 加 choices 收紧；stdout 缓冲/日志可观测性
+  - 终审分诊（转 issue，既有 bug 非本分支引入）：ContactTask.summary() 无参 ShopDB() 忽略 --db（contact.py:132，建议 P2）——待用户确认后按 issue-create 开 issue
+  - 不用修（带 ruling）：on_success 异常残留 claimed（重启回收兜底）；condvar 单锁串行（毫秒级短事务）；finish 不校验 status（内部字面量调用）
