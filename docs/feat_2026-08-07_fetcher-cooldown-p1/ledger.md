@@ -6,3 +6,6 @@
 ## Step 进度
 
 （尚无完成记录）
+- Step 1.1: complete (commits 71bde8f..39f3420, review clean)
+  - 关键产出：Sleep 分布公式逐字回填（lognormvariate(ln((lo+hi)/2), 0.5)，clamp [lo*0.5, hi*5]）；SPEC §3.2 先验错误（clamp [min,max]）已更正；PolicyDecision 确认免透传
+  - Step 1.1: minor (deferred): report 内一处行号引用偏一行（:37-38 实为 :37-39），SPEC 正文无误

@@ -19,11 +19,11 @@
 **完成标准**：SPEC §4 假设 2、3 回填「已读码验证」；契约层单测全绿；既有测试无回归。本 Phase 无运行时行为变化（字段纯加法），不要求冒烟。
 
 ### Step 1.1 读码确认（SPEC §4 假设 2、3）
-- 预估：10 min · 依赖：无 · 状态：pending
+- 预估：10 min · 依赖：无 · 状态：done（commit 39f3420）
 - 内容：① 读 `fetcher/fetcher/atoms/sleep.py` 全文，把 Sleep/BackoffSleep 的时长分布公式逐字摘出，回填 SPEC §4 假设 2（公式写进 SPEC，迁移要逐字复刻）；② 读 `fetcher/fetcher/strategy/policy.py` 的 `PolicyDecision`/`decide` 与 `control/loop.py:319-395` 的策略消费链路，确认 cooldown 是否需要经 PolicyDecision 透传，回填 SPEC §4 假设 3（若不需要，SPEC §3.1 的 PolicyDecision 字段取消）。
 - 交付物：SPEC 回填 commit；report 附两处读码摘录。
 - 验收：
-  - [ ] SPEC §4 假设 2、3 依据列改为「已读码验证（附 file:line）」，结论明确
+  - [x] SPEC §4 假设 2、3 依据列改为「已读码验证（附 file:line）」，结论明确
 
 ### Step 1.2 契约层实现 + 单测
 - 预估：15 min · 依赖：1.1 · 状态：pending
