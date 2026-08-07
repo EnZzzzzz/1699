@@ -49,12 +49,12 @@
 **完成标准**：单测全绿；`python -m fetcher daemon --help` 正常；**运行时冒烟**：无代理直连模式 `python -m fetcher daemon --limit 2`（临时 DB + 预置 2 条 shops pending 种子数据）能跑通完整链路（真实浏览器、真实 1688 访问），work_items 落终态。
 
 ### Step 2.1 DaemonTaskProxy 实现
-- 预估：15 min · 依赖：Phase 1 · 状态：pending
+- 预估：15 min · 依赖：Phase 1 · 状态：done（commit f6034dd）
 - 内容：新增 `fetcher/control/daemon_task.py`：`DaemonTaskProxy(inner, queue, site, domain_suffix)`，实现 Task 协议；`acquire_item` 按 SPEC §3.3 三段式（claim → top-up+notify → condvar wait 30s 自醒查 stop）；`after_item` 透传后 `finish_work_item`；其余 `__getattr__` 透传 inner（类属性 `unit/batch_unit/cold_start_before_acquire/ip_request_budget` 显式转发）。
 - 交付物：daemon_task.py；若 Step 1.1 发现 isinstance 判断，此处一并给出兼容处理。
 - 验收：
-  - [ ] proxy 不显式 import ContactTask（对任意 inner task 成立）
-  - [ ] stop 置位时 acquire_item 最多 30s 内返回 None
+  - [x] proxy 不显式 import ContactTask（对任意 inner task 成立）
+  - [x] stop 置位时 acquire_item 最多 30s 内返回 None
 
 ### Step 2.2 proxy 单测
 - 预估：15 min · 依赖：2.1 · 状态：pending
