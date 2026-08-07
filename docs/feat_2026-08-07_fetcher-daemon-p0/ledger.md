@@ -20,3 +20,7 @@
   - Step 2.1: minor (deferred): prepare 不走 db_factory，直接 ShopDB(config.resolved_db_path())
   - Step 2.1: minor (deferred): inner.on_success 抛异常时 work_item 残留 claimed（重启回收兜底，取舍可接受）
   - Step 2.1: minor (deferred): 单一条件变量锁串行化所有 worker 的 claim/topup（P0 规模无需处理）
+- Step 2.2: complete (commits 6794d64..1af732b, review clean)
+  - Step 2.2: minor (deferred): 用例 2 无 stop/deadline 兜底，regression 时可能挂起而非失败
+  - Step 2.2: minor (deferred): 用例 4 stray on_success 对 inner.succeeded 有未断言的副作用
+  - Step 2.2: minor (deferred): 用例 5 worker 异常被 loop 吞掉后诊断信息少一层（终态断言+deadline 仍可抓住）

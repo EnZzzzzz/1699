@@ -57,11 +57,11 @@
   - [x] stop 置位时 acquire_item 最多 30s 内返回 None
 
 ### Step 2.2 proxy 单测
-- 预估：15 min · 依赖：2.1 · 状态：pending
+- 预估：15 min · 依赖：2.1 · 状态：done（commit 1af732b）
 - 内容：新增 `tests/test_daemon_task.py`（仿 `test_control_loop.py` 的 FakeBrowser 基建 + 临时 DB）。用例：① 有货→claim→返回 payload dict；② 空队列→自动 top-up→返回；③ stop 置位→wait 退出返回 None（用极小 wait 超时注入）；④ after_item 正确写 work_items 终态；⑤ 与 CrawlLoop 联跑：loop 跑完 N 项后队列空、stop 置位、loop 正常退出且 stats 正确。
 - 交付物：测试文件。
 - 验收：
-  - [ ] 5 个用例全绿（先红后绿）
+  - [x] 5 个用例全绿（先红后绿）
 
 ### Step 2.3 CLI daemon 子命令
 - 预估：10 min · 依赖：2.1 · 状态：pending
