@@ -6,4 +6,7 @@
 
 ## Step 进度
 
-（尚无完成记录）
+- Step 1.1: complete (commits e50270b..8a3db10, review clean)
+  - Step 1.1: minor (deferred): report 称 isinstance grep 命中 13 处，实际 14 处（计数小误差，不影响结论）
+  - Step 1.1: minor (deferred): report 内 cold_start 差异裁定未回引 SPEC §3.3（两处表述一致，追溯需跨文件）
+  - 主 Agent 裁定（8a3db10）：cold_start dict/Row 分支差异接受为已知等价性偏差，已写入 SPEC §3.3

@@ -19,11 +19,11 @@
 **完成标准**：新增 DB 方法单测全绿；既有测试无回归。本 Phase 无运行时行为变化，不要求冒烟。
 
 ### Step 1.1 确认 item 访问契约（SPEC §4 假设 1）
-- 预估：10 min · 依赖：无 · 状态：pending
+- 预估：10 min · 依赖：无 · 状态：done
 - 内容：通读 `fetcher/sites/alibaba1688/contact.py` 中 `fetch/validate/on_success/label/cold_start` 对 item 的全部访问点；grep `engine.py`/`loop.py`/`task.py` 确认无 `isinstance(...ContactTask)` 之类对具体 task 类型的判断（SPEC §4 假设 2）。
 - 交付物：SPEC §4 表格回填结论（dict 可用 / 需 SimpleNamespace）；若发现 isinstance 判断，记录位置并在 Step 2.2 处理。
 - 验收：
-  - [ ] SPEC §4 假设 1、2 的「依据」列从「推断」改为「已读码验证」，结论明确
+  - [x] SPEC §4 假设 1、2 的「依据」列从「推断」改为「已读码验证」，结论明确
 
 ### Step 1.2 work_items 表 DDL + ShopDB 四个方法
 - 预估：15 min · 依赖：1.1 · 状态：pending
