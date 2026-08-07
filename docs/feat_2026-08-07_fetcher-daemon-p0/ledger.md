@@ -10,3 +10,8 @@
   - Step 1.1: minor (deferred): report 称 isinstance grep 命中 13 处，实际 14 处（计数小误差，不影响结论）
   - Step 1.1: minor (deferred): report 内 cold_start 差异裁定未回引 SPEC §3.3（两处表述一致，追溯需跨文件）
   - 主 Agent 裁定（8a3db10）：cold_start dict/Row 分支差异接受为已知等价性偏差，已写入 SPEC §3.3
+- Step 1.2+1.3: complete (commits 10b4b47..8fcfe91, review clean)
+  - Step 1.2+1.3: minor (deferred): 未覆盖 name/url 为 NULL 时 payload 三键仍在的用例（代码按 dict 字面量构造保证，审查确认可靠）
+  - Step 1.2+1.3: minor (deferred): 用例 2 顺序模拟并发，真并发互斥依赖「与 claim_pending_shops 同模式」论证（brief 许可）
+  - Step 1.2+1.3: minor (deferred): claim 的 payload 解析在 commit 之后，payload 损坏会抛异常（无事务悬挂，当前唯一写入方是 topup）
+  - Step 1.2+1.3: minor (deferred): finish_work_item 不校验 status 取值域（brief 未要求）

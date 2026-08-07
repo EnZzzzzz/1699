@@ -26,20 +26,20 @@
   - [x] SPEC §4 假设 1、2 的「依据」列从「推断」改为「已读码验证」，结论明确
 
 ### Step 1.2 work_items 表 DDL + ShopDB 四个方法
-- 预估：15 min · 依赖：1.1 · 状态：pending
+- 预估：15 min · 依赖：1.1 · 状态：done（与 1.3 合并执行，commit 8fcfe91）
 - 内容：`fetcher/db.py` 的 `SCHEMA` 加 work_items 表与索引（SPEC §3.2 DDL）；新增 `topup_contact_work_items` / `claim_work_item` / `finish_work_item` / `reset_claimed_work_items`，严格仿 `claim_pending_shops`（`db.py:286-318`）的 `BEGIN IMMEDIATE` 短事务模式；时间戳沿用模块内 `_now`。
 - 交付物：上述代码。
 - 验收：
-  - [ ] 四个方法签名与 SPEC §3.2 表格一致
-  - [ ] 既有 `python -m pytest tests -x -q` 无回归
+  - [x] 四个方法签名与 SPEC §3.2 表格一致
+  - [x] 既有 `python -m pytest tests -x -q` 无回归
 
 ### Step 1.3 存储层单测
-- 预估：15 min · 依赖：1.2 · 状态：pending
+- 预估：15 min · 依赖：1.2 · 状态：done（与 1.2 合并执行，commit 8fcfe91）
 - 内容：新增 `tests/test_work_items.py`（临时 sqlite，仿 `test_contact_task.py` 基建）。用例：① top-up 后 shops 标 in_progress 且 work_items 行生成、重复 top-up 不产生重复行（pending 过滤）；② 两个并发 claim 拿不到同一行（线程级或顺序模拟）；③ finish 落终态+时间戳；④ reset_claimed 把 claimed 重置为 pending；⑤ 空 shops 时 top-up 返回 0。
 - 交付物：测试文件。
 - 验收：
-  - [ ] 5 个用例全绿
-  - [ ] 先红后绿（TDD：测试在方法实现前已写出并亲眼见失败——若 1.2 先行，则本 Step 须能说明每个断言对应的行为）
+  - [x] 5 个用例全绿
+  - [x] 先红后绿（TDD：测试在方法实现前已写出并亲眼见失败——若 1.2 先行，则本 Step 须能说明每个断言对应的行为）
 
 ---
 
