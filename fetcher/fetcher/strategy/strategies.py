@@ -88,9 +88,6 @@ class BlockRestStrategy:
 
     name = "block_rest"
 
-    def __init__(self, **params):
-        self._params = params
-
     def run(self, ctx) -> StepResult:
         lo = float(ctx.config.block_rest_min)
         hi = float(ctx.config.block_rest_max)
