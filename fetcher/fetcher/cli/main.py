@@ -44,6 +44,21 @@ def build_parser() -> argparse.ArgumentParser:
                                help="只打印各出口 IP 的 tmd 触发统计后退出")
             add_common_args(t, default_rest_every=(20 if task_name == "contact"
                                                    else 15))
+
+    # daemon 常驻模式：与站点 subparsers 平级（dest 同为 "site"），不属于
+    # 任何站点、不套 task 二级 subparser；num/limit 按 contact 口径给出，
+    # 供 config_from_args 复用（--limit 是冒烟收工手段，走 CrawlLoop 既有逻辑）
+    p_daemon = sub.add_parser(
+        "daemon", help="常驻模式：从 work_items 队列持续消费（P0 仅 1688 contact）")
+    p_daemon.add_argument("-n", "--num", type=int,
+                          default=TASK_NUM_DEFAULTS["contact"],
+                          help="每个 worker 每批采集数量；采满一批后强制休息")
+    p_daemon.add_argument("--limit", type=int, default=0,
+                          help="每个 worker 本次最多采集量（默认 0=不限）")
+    p_daemon.add_argument("--queue", type=str, default="crawl_1688_contact",
+                          help="消费的 work_items 队列名（P0 只支持默认值 "
+                               "crawl_1688_contact，不开放其他选择）")
+    add_common_args(p_daemon, default_rest_every=20)
     return ap
 
 
@@ -152,6 +167,10 @@ def main(argv: list | None = None) -> int:
         build_parser().print_help()
         return 2
 
+    # daemon 常驻模式分支（"daemon" 不在站点注册表，必须先于 get_site 拦截）
+    if args.site == "daemon":
+        return _run_daemon(args)
+
     site = get_site(args.site)
 
     # contact 的 tmd 报表独立出口（不装配引擎）
@@ -177,6 +196,50 @@ def main(argv: list | None = None) -> int:
 
     from fetcher.control.engine import Engine
     engine = Engine(cfg, task, site=site, provider=provider, policy=policy)
+    return engine.run()
+
+
+def _run_daemon(args) -> int:
+    """daemon 常驻模式装配：1688 contact 包 DaemonTaskProxy 后跑 Engine。
+
+    config_from_args 不读 args.task（读 task 的是站点分支的
+    site.make_task(args.task)），daemon parser 已带 num/limit 默认值，
+    故 config_from_args 原样复用、无需任何适配。provider/policy/Engine
+    装配与站点分支逐项一致；退出语义不加新逻辑（信号走 Engine 既有
+    优雅退出，--limit 走 CrawlLoop 既有收工逻辑）。
+    """
+    from fetcher.control.daemon_task import DaemonTaskProxy
+    from fetcher.db import ShopDB
+
+    cfg = config_from_args(args)
+    site = get_site("1688")
+    inner = site.make_task("contact")
+    task = DaemonTaskProxy(inner, queue=args.queue, site="1688",
+                           domain_suffix=".1688.com")
+    if not task.prepare(cfg):
+        return 0
+
+    provider = make_provider(cfg)
+    # 策略表：默认表 + 站点级覆盖（policy_overrides）+ CLI 熔断上限
+    from fetcher.strategy.policy import Policy
+    policy = Policy(max_consecutive_fail=cfg.max_consecutive_fail)
+    overrides = getattr(site, "policy_overrides", None)
+    if overrides:
+        policy = policy.with_overrides(overrides)
+
+    # 崩溃恢复（SPEC §3.3 状态流）：先回收 work_items 残留认领，
+    # 再重置 shops 的 in_progress（不带 domain 过滤，与既有 CLI 启动语义一致）
+    db = ShopDB(cfg.resolved_db_path())
+    try:
+        n_items = db.reset_claimed_work_items()
+        n_shops = db.reset_in_progress()
+    finally:
+        db.close()
+    print(f"[daemon] 启动重置：{n_items} 个 claimed 工作项 → pending，"
+          f"{n_shops} 个 in_progress 店铺 → pending")
+
+    from fetcher.control.engine import Engine
+    engine = Engine(cfg, task=task, site=site, provider=provider, policy=policy)
     return engine.run()
 
 

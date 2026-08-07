@@ -34,8 +34,18 @@ python -m fetcher 1688 shop --proxy -n 500 --max-batches 2
 python -m fetcher 1688 company --proxy --limit 300
 python -m fetcher 1688 contact --tmd-report     # 只出 tmd 报表
 python -m fetcher taobao search --proxy -n 30   # 第二个站点：淘宝商品搜索
+python -m fetcher daemon --proxy                # 常驻模式：1688 contact 从 work_items 队列持续消费
 # 站点/任务子命令由 sites 注册表自动发现生成，加目录即接入
 ```
+
+`daemon` 子命令 = 1688 contact 常驻模式：消费者从 `work_items` 表认领工作项，
+shops 表 pending 行自动补货入队，队列取空后挂起等货而非退出。支持全部共享
+网络层参数（`--proxy` / `--workers` / `--headed` 等，同各任务子命令），另有
+`--queue`（P0 仅默认值 `crawl_1688_contact`，不开放其他选择）；`--limit N`
+每个 worker 跑完 N 个后退出，作冒烟/联调的收工手段。
+**daemon 与旧 CLI `1688 contact` 同站互斥**：两边启动都会把 shops 的
+in_progress 重置为 pending（daemon 另回收 work_items 的 claimed 残留），
+同站同跑会互相重置，同一时刻只跑一个。
 
 ```python
 # 库用法（CLI 即以下装配的薄壳）
