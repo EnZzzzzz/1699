@@ -24,3 +24,8 @@
   - Step 2.2: minor (deferred): 用例 2 无 stop/deadline 兜底，regression 时可能挂起而非失败
   - Step 2.2: minor (deferred): 用例 4 stray on_success 对 inner.succeeded 有未断言的副作用
   - Step 2.2: minor (deferred): 用例 5 worker 异常被 loop 吞掉后诊断信息少一层（终态断言+deadline 仍可抓住）
+- Step 2.3: complete (commits f955498..e377a29, review clean)
+  - 主 Agent 裁决（执行前）：daemon parser 补挂 -n/--num 与 --limit、main() 调 task.prepare(cfg)，两点偏差均必要且符合 SPEC 意图
+  - Step 2.3: minor (deferred): daemon 分支 Engine(cfg, task=task,...) 关键字传参 vs 站点分支位置传参（语义等价）
+  - Step 2.3: minor (deferred): daemon parser 无 --retry-failed 开关（getattr 容错为 False，后续需要再挂）
+  - Step 2.3: minor (deferred): daemon_task.py:36 docstring 示例 domain_suffix="1688.com" 少个点（正确口径 ".1688.com"），终审时修

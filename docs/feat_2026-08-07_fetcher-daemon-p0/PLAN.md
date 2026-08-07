@@ -64,13 +64,13 @@
   - [x] 5 个用例全绿（先红后绿）
 
 ### Step 2.3 CLI daemon 子命令
-- 预估：10 min · 依赖：2.1 · 状态：pending
+- 预估：10 min · 依赖：2.1 · 状态：done（commits 24cfe7d, e377a29）
 - 内容：`cli/main.py` 顶层加 `daemon` parser（`add_common_args()` 全套）；`main()` 加 `args.site == "daemon"` 分支：get_site("1688") → make_task("contact") → DaemonTaskProxy 包装 → 复用 provider/policy 装配 → Engine.run()；daemon 启动时依次调 `reset_claimed_work_items` + `reset_in_progress`（SPEC §3.3 状态流）。
 - 交付物：main.py 改动。
 - 验收：
-  - [ ] `python -m fetcher daemon --help` 输出正常
-  - [ ] 既有子命令（1688 shop/contact/company、yiwugo）--help 与行为无变化
-  - [ ] `main()` daemon 分支装配参数与 site 分支逐项一致（provider/policy/Engine 参数）
+  - [x] `python -m fetcher daemon --help` 输出正常
+  - [x] 既有子命令（1688 shop/contact/company、yiwugo）--help 与行为无变化
+  - [x] `main()` daemon 分支装配参数与 site 分支逐项一致（provider/policy/Engine 参数）
 
 ### Step 2.4 直连冒烟脚本与执行
 - 预估：15 min · 依赖：2.3 · 状态：pending
