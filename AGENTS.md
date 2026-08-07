@@ -18,7 +18,8 @@ platform/         管理系统（前后端分离）
 .cache/1688.db    SQLite 主库（WAL 模式）：shops / contacts / tasks / task_events /
                   providers / proxy_channels / task_templates
 scraper/ util/    旧版脚本，**只读参考，禁止修改**（新代码一律进 fetcher/ 或 platform/）
-docs/             flow-architecture.md（fetcher 框架设计）、service-architecture.md（旧方案，存档）
+docs/             flow-architecture.md（fetcher 框架设计）、scheduler-architecture.md（调度器设计：
+                  队列+消费者池+跨站 IP 复用，跨任务编排以此为准）、service-architecture.md（旧方案，存档）
 ```
 
 ## 2. 必读文档（按改动范围）
