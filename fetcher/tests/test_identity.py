@@ -7,6 +7,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock
 
 from fetcher import IdentityStore, RunConfig, Session, ShopDB, WorkerContext
 from fetcher.atoms.identity_ops import ClearIdentity
@@ -247,6 +248,100 @@ class IdentityP2CompatibilityTest(unittest.TestCase):
             f"不同长度 identity 的请求列应对齐，实际 "
             f"{ident_short}={positions[ident_short]}, "
             f"{ident_long}={positions[ident_long]}")
+
+
+class SessionCloseDomainFilterTest(unittest.TestCase):
+    """Step 2.1: Session.close() 回写按 store.domain 过滤。
+
+    多站共存前提下的桶纯度保证——同 IP 两站点各存各桶，回写不串站。
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self._tmp.name) / "test.db"
+        self.db = ShopDB(self.db_path)
+        self.store_1688 = IdentityStore(self.db, domain="1688.com")
+        self.store_mic = IdentityStore(self.db, domain="made-in-china.com")
+
+    def tearDown(self):
+        self.db.close()
+        self._tmp.cleanup()
+
+    def test_close_filters_cookies_by_store_domain_1688(self):
+        """Session.close: store.domain='1688.com' 时只存 1688 域 Cookie。
+
+        RED 预期：close() 不过滤 → 3 个 Cookie 全入库 →
+        load 返回 3 个 → 断言 len==1 失败。
+        """
+        ctx = FakeBrowserContext([
+            ck("cna", domain=".1688.com"),
+            ck("_tb_", domain=".taobao.com"),
+            ck("cna", domain=".mmstat.com"),
+        ])
+        page = MagicMock(context=ctx)
+        session = Session(browser=MagicMock(), page=page,
+                          identity="1688:1.2.3.4")
+        session.close(store=self.store_1688)
+        loaded = self.store_1688.load("1688:1.2.3.4")
+        self.assertEqual(len(loaded), 1,
+                         f"应只存 1688 域 Cookie，实际={loaded}")
+        self.assertEqual(loaded[0]["name"], "cna")
+
+    def test_close_filters_cookies_by_store_domain_mic(self):
+        """Session.close: store.domain='made-in-china.com' 时只存 mic 域。"""
+        ctx = FakeBrowserContext([
+            ck("cna", domain=".1688.com"),
+            ck("q", domain=".made-in-china.com"),
+            ck("cna", domain=".mmstat.com"),
+        ])
+        page = MagicMock(context=ctx)
+        session = Session(browser=MagicMock(), page=page,
+                          identity="madeinchina:5.5.5.5")
+        session.close(store=self.store_mic)
+        loaded = self.store_mic.load("madeinchina:5.5.5.5")
+        self.assertEqual(len(loaded), 1,
+                         f"应只存 mic 域 Cookie，实际={loaded}")
+        self.assertEqual(loaded[0]["name"], "q")
+
+    def test_close_store_none_no_write(self):
+        """Session.close: store=None 时不过滤、不回写。"""
+        ctx = FakeBrowserContext([ck("cna")])
+        page = MagicMock(context=ctx)
+        session = Session(browser=MagicMock(), page=page,
+                          identity="1.2.3.4")
+        session.close(store=None)  # 不应抛异常
+        self.assertEqual(self.store_1688.load("1.2.3.4"), [])
+
+    def test_close_page_none_no_write(self):
+        """Session.close: page=None 时跳过回写，不抛异常。"""
+        session = Session(browser=MagicMock(), page=None,
+                          identity="1.2.3.4")
+        session.close(store=self.store_1688)  # 不抛异常
+        self.assertEqual(self.store_1688.load("1.2.3.4"), [])
+
+    def test_close_no_domain_attr_passthrough(self):
+        """Session.close: store 无 domain 属性时，getattr 返回 ''
+        → '' in any_domain → 恒真 → 全量回写（与 save_from_context
+        语义对齐）。用 Mock 模拟非 IdentityStore 的 store。"""
+        ctx = FakeBrowserContext([
+            ck("cna", domain=".1688.com"),
+            ck("_tb_", domain=".taobao.com"),
+        ])
+        page = MagicMock(context=ctx)
+        # 构造不暴露 domain 属性的 store（实际调用方都是 IdentityStore，
+        # getattr 纯粹防御）
+        mock_store = MagicMock(save=MagicMock())
+        # 确保 mock_store 没有 domain 属性
+        del mock_store.domain
+        session = Session(browser=MagicMock(), page=page,
+                          identity="1.2.3.4")
+        session.close(store=mock_store)
+        mock_store.save.assert_called_once()
+        args, _ = mock_store.save.call_args
+        saved_identity, saved_cookies = args
+        self.assertEqual(saved_identity, "1.2.3.4")
+        self.assertEqual(len(saved_cookies), 2,
+                         f"无 domain 属性应全量回写，实际={saved_cookies}")
 
 
 if __name__ == "__main__":

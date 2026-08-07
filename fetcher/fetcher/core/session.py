@@ -65,7 +65,10 @@ class Session:
         """
         if store is not None and self.page is not None:
             try:
-                cookies = [c for c in self.ctx.cookies()]
+                # 多站共存：按 store.domain 过滤，保证桶纯度——
+                # 同 IP 两站点各存各桶，回写不串站（与 save_from_context 同语义）
+                cookies = [c for c in self.ctx.cookies()
+                           if getattr(store, "domain", "") in c.get("domain", "")]
                 if cookies:
                     store.save(self.identity, cookies)
             except Exception as e:  # noqa: BLE001 - 回写失败不阻断关闭
