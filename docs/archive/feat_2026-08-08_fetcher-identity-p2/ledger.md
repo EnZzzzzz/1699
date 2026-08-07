@@ -37,3 +37,8 @@
   - Step 3.1: complete——用户裁定「继续」= 同意小修；修复 commit 5fc0dbd（Task.summary 签名加 db_path、engine 传 config.resolved_db_path()、8 处站点实现全改、test_summary_db_path.py +6、engine 装配测试），review 零 Critical/Important（3 Minor：基类 db_path 无类型标注、默认 None 允许省略、3 处无 ShopDB 站点参数未用——终审分诊）；全量 309 passed
   - Step 3.1: minor (deferred): 同上 3 条 Minor
   - **Phase 3 冒烟验收**：①✅ 1688:direct 桶；②✅ 行为与 P1 一致（2 item 因本机 IP 风控全 fail，如实记录）；③✅ 平台正则兼容（平台侧零改动）；④ 生产库零污染 → 降级为「除一次性设计迁移外零污染」（summary 路径提前触发迁移，已修复防复发）
+- Step 3.2: complete (commits 2732e78..HEAD, review clean)
+  - 文档同步：scheduler-architecture.md §7 四处裁定更新（指纹裸 IP、簿记键前缀零 schema、席位进程级证据、BrowserContext 移 P3）+ §10 P2 行标完成/P3 行补 BrowserContext；fetcher/README.md 补部署窗口提示；SPEC §6 变更记录补 summary 修复条目；AGENTS.md 无 identity 内容免同步
+  - 终审（最强模型）：✅ MERGE READY——零 Critical/Important；§3.3 七处逐条 diff 核实；单站点等价性（指纹/check_ip_fresh/直连/报表）逐字成立；迁移与 §3.4 一致；冒烟证据与日志逐项吻合；测试触达矩阵全覆盖（含装配层 _build_engine）；309 passed
+  - 终审分诊（全部可延期/非缺陷）：relaunch 行号右端点、test_migration 死代码（NOW_TS/_cookie_row，建议合并后随手清）、④a/④b 键级断言、check_ip_fresh site_name 观察、跨 store 注释、if/else 两站假设、summary db_path 类型标注/默认值/未用参数——均记 ledger，无阻塞项
+  - 归档：docs/feat_2026-08-08_fetcher-identity-p2 → docs/archive/（P0/P1 同约定）
