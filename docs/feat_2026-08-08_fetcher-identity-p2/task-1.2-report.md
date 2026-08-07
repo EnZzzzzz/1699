@@ -121,3 +121,27 @@ Python 侧字面量 `"direct"` 比较只剩 `is_direct()` 自己内部。`db.py:
 ## 疑虑
 
 无。本步为纯字符串级别修正，对当前无前缀旧键行为逐字等价，无运行时行为变化。
+
+---
+
+## 修复轮 1（review 反馈）
+
+### 改动
+
+1. **移除 RED 注释**：`:7` 行 `# 函数尚未实现，导入会失败——这是预期的 RED` 已删除，GREEN 态不需要。
+2. **边界测试**：新增 3 条 `bare_identity` 边界 case：
+   - `bare_identity("") == ""` — 空字符串原样
+   - `bare_identity("a:b:c") == "b:c"` — 多冒号只切第一个
+   - `bare_identity("1688:") == ""` — 仅前缀无值返回空串
+3. **延迟导入改模块级**：`from fetcher.core.session import bare_identity, is_direct` 移至文件顶部（TDD RED 阶段的方法内导入不再需要）。
+
+### 测试
+
+```bash
+cd fetcher && python -m pytest tests -x -q
+# 273 passed, 2 subtests passed in 12.81s
+```
+
+### commit
+
+`<待提交>` feat(identity-p2): Step 1.2 修复轮1 — 移除RED注释 + 3边界测试 + 模块级import
