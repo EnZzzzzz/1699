@@ -23,6 +23,7 @@ item 级重试循环 → 收尾清理），但风控状态机不再写死在控�
 from __future__ import annotations
 
 import random
+import time
 
 from fetcher.atoms.browser_ops import RelaunchBrowser
 from fetcher.control.board import wait_countdown
@@ -102,6 +103,23 @@ class CrawlLoop:
     def log(self, msg: str):
         self.ctx.log(f"{self.tag} {msg}")
 
+    # ---- 冷却 chokepoint（SPEC §3.3：唯一等待执行点）----
+
+    def _cooldown(self, seconds: float, reason: str,
+                  prefix: str | None = None) -> bool:
+        """登记冷却截止时间 + 执行可中断等待。返回 True=被 stop 中断。
+
+        cooldown_until 的唯一写入者（P1 只写不读，P3 调度器查询接口）。
+        展示两路径逐字保留现状：prefix 非空走 wait_countdown（秒级倒计
+        时状态行，长等待用）；prefix=None 走 ctx.wait（静默，短等待用）。
+        """
+        self.ctx.cooldown_until[reason] = time.time() + seconds
+        if prefix is None:
+            return self.ctx.wait(seconds)
+        return wait_countdown(self.board, self.ctx.wid, self.ctx.stop,
+                              seconds, prefix,
+                              set_status=self.ctx.set_status)
+
     # ---- 主流程 ----
 
     def run(self) -> dict:
@@ -131,9 +149,7 @@ class CrawlLoop:
                     self.log(f"⏸ 第 {self.batch_no} 批已采满 "
                              f"{cfg.batch_num} 个{self.task.batch_unit}，"
                              f"强制休息 {rest / 60:.1f} 分钟（防风控）...")
-                    if wait_countdown(self.board, self.ctx.wid, self.ctx.stop,
-                                      rest, "批次休息",
-                                      set_status=self.ctx.set_status):
+                    if self._cooldown(rest, "batch_rest", prefix="批次休息"):
                         return self.stats
                     self.batch_no += 1
                     self.done_in_batch = 0
@@ -196,7 +212,7 @@ class CrawlLoop:
                 hi = cfg.sample_max + self.ctx.wid * 2.5
                 t = random.uniform(lo, hi)
                 self.ctx.set_status(state=f"{self.task.unit}间隔 {t:.1f}s")
-                if self.ctx.wait(t):
+                if self._cooldown(t, "sample_interval"):
                     return self.stats
 
                 # ---- 周期性随机长休息（模拟真人连续浏览后的停顿）----
@@ -207,9 +223,7 @@ class CrawlLoop:
                     t = random.uniform(cfg.rest_min, cfg.rest_max)
                     self.log(f"☕ 已连续抓取 {n_rest} 个{self.task.unit}，"
                              f"随机长休息 {t / 60:.1f} 分钟 ...")
-                    if wait_countdown(self.board, self.ctx.wid, self.ctx.stop,
-                                      t, "长休息",
-                                      set_status=self.ctx.set_status):
+                    if self._cooldown(t, "periodic_rest", prefix="长休息"):
                         return self.stats
         except UserInterrupted:
             pass
@@ -243,9 +257,7 @@ class CrawlLoop:
                 backoff = min(30 * attempt, 120)
                 self.log(f"  [!] 启动浏览器第 {attempt}/{cfg.ip_retry} "
                          f"次失败: {e}，{backoff}s 后重试...")
-                if wait_countdown(self.board, self.ctx.wid, self.ctx.stop,
-                                  backoff, "启动退避",
-                                  set_status=self.ctx.set_status):
+                if self._cooldown(backoff, "launch_backoff", prefix="启动退避"):
                     raise UserInterrupted("用户中断") from e
         raise RuntimeError(f"启动浏览器重试 {cfg.ip_retry} 次仍失败: {last_err}")
 
@@ -392,6 +404,12 @@ class CrawlLoop:
             step = strategy.run(ctx)
             if step.solved:
                 self.log(f"✓ 策略 {decision.strategy} 完成: {step.detail}")
+            # 策略冷却经 chokepoint 执行（Step 2.1 起策略只算时长不自
+            # 等）；被 stop 中断按现状 stop 路径退出（与旧策略内
+            # ctx.wait 中断 → 循环条件退出 → return "stop" 的终局一致）
+            if step.cooldown and self._cooldown(
+                    step.cooldown, f"strategy:{decision.strategy}"):
+                return "stop", 0
         return "stop", 0
 
     # ---- 簿记 ----

@@ -14,7 +14,7 @@ from fetcher.atoms.browser_ops import RelaunchBrowser, SaveCookies
 from fetcher.atoms.human import WaitHumanLogin, WaitHumanVerify
 from fetcher.atoms.identity_ops import ClearIdentity
 from fetcher.atoms.refresh import Refresh
-from fetcher.atoms.sleep import BackoffSleep, Sleep
+from fetcher.atoms.sleep import human_pause_duration
 from fetcher.atoms.slider import SolveSlider
 from fetcher.core.types import Outcome
 from fetcher.strategy.base import StepResult
@@ -38,33 +38,63 @@ class _AtomStrategy:
         return StepResult(solved=solved, detail=result.detail, data=result.data)
 
 
-class SleepStrategy(_AtomStrategy):
-    name = "sleep"
-    atom_cls = Sleep
+class SleepStrategy:
+    """拟人随机等待：只算时长输出冷却，不自己等待（等待由控制层执行）。
 
-
-class BackoffSleepStrategy(_AtomStrategy):
-    """网络层错误的退避等待（base=30, cap=180，与旧引擎一致）。"""
-    name = "backoff_sleep"
-    atom_cls = BackoffSleep
-    params = {"base": 30, "cap": 180}
-
-
-class BlockRestStrategy(_AtomStrategy):
-    """风控原地休息：当前 IP 上长休息后再试（block_rest_min~max）。
-
-    时长在 run 时从 ctx.config 取，保证任务级覆盖生效。
+    时长分布与 Sleep 原子同款（对数正态，截断 [min*0.5, max*5]），
+    取参路径一致：min/max 来自 params，缺省 2.0/5.0。
     """
-    name = "block_rest"
-    atom_cls = Sleep
+
+    name = "sleep"
+
+    def __init__(self, **params):
+        self._params = params
 
     def run(self, ctx) -> StepResult:
-        self._params = {"min": ctx.config.block_rest_min,
-                        "max": ctx.config.block_rest_max}
+        lo = float(self._params.get("min", 2.0))
+        hi = float(self._params.get("max", 5.0))
+        t = human_pause_duration(lo, hi)
+        ctx.log(f"    ...随机等待 {t:.1f}s")
+        return StepResult(True, f"等待 {t:.1f}s", cooldown=t)
+
+
+class BackoffSleepStrategy:
+    """网络层错误的退避等待（base=30, cap=180，与旧引擎一致）。
+
+    只算时长输出冷却，不自己等待（等待由控制层执行）。
+    """
+
+    name = "backoff_sleep"
+    params = {"base": 30, "cap": 180}
+
+    def __init__(self, **params):
+        self._params = {**self.params, **params}
+
+    def run(self, ctx) -> StepResult:
+        base = float(self._params.get("base", 30.0))
+        cap = float(self._params.get("cap", 180.0))
+        attempt = self._params.get("attempt") or ctx.state.get("attempt", 1)
+        t = min(base * int(attempt), cap)
+        ctx.log(f"    ...退避等待 {t:.0f}s（第 {attempt} 次）")
+        return StepResult(True, f"退避 {t:.0f}s", cooldown=t)
+
+
+class BlockRestStrategy:
+    """风控原地休息：当前 IP 上长休息后再试（block_rest_min~max）。
+
+    时长在 run 时从 ctx.config 取，保证任务级覆盖生效；分布与 Sleep
+    同款（对数正态）。只算时长输出冷却，不自己等待（等待由控制层执行）。
+    """
+
+    name = "block_rest"
+
+    def run(self, ctx) -> StepResult:
+        lo = float(ctx.config.block_rest_min)
+        hi = float(ctx.config.block_rest_max)
         ctx.log(f"    ⚠ 风控休息：保持当前 IP {ctx.identity}，"
-                f"休息 {self._params['min'] / 60:.0f}~"
-                f"{self._params['max'] / 60:.0f} 分钟后重试")
-        return super().run(ctx)
+                f"休息 {lo / 60:.0f}~{hi / 60:.0f} 分钟后重试")
+        t = human_pause_duration(lo, hi)
+        return StepResult(True, f"等待 {t:.1f}s", cooldown=t)
 
 
 class RefreshStrategy(_AtomStrategy):
@@ -85,6 +115,8 @@ class RelaunchBrowserStrategy(_AtomStrategy):
 
 class SwapIPStrategy:
     """换 IP：重启浏览器绑定新出口 IP（通道不变，靠出口轮换/重连）。
+
+    冷却例外：内部等待夹在两次 relaunch 之间，不迁移（SPEC §2.2，P3 重议）。
 
     迁移旧引擎 block_stage==1 的完整逻辑：
         1. 重启浏览器（旧 Cookie 先回写）；

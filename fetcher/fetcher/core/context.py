@@ -107,6 +107,10 @@ class WorkerContext:
     last_result: Any = None
     # 控制层/策略层暂存（如 AttemptTracker）
     state: dict = field(default_factory=dict)
+    # 冷却截止时间登记处：reason → time.time()+seconds。唯一写入者是
+    # loop 的 chokepoint（Step 2.2 落地），P1 阶段只写不读，是 P3
+    # 调度器的查询接口。
+    cooldown_until: dict[str, float] = field(default_factory=dict)
 
     # ---- 便捷访问 ----
     @property
