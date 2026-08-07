@@ -24,3 +24,8 @@
   - Step 2.3: minor (deferred): deadline 断言容差 1s 相对小 seconds 偏宽（破坏 A 已锁「完全不写」，spy seconds 透传锁「算错」）
   - Step 2.3: minor (deferred): 组③未断言 spy 无意外 reason；:381 elapsed 下界有理论时序抖动空间
 - Step 3.1: 首次派发（agent-30）中途失联——B/C/D 段据其 todo 记录已跑完，但 /tmp 证据文件与 report 全部丢失，子 Agent 实例已不存在。裁定：Step 3.1 整体重跑（走查 Step 不接受口头声明），要求新 implementer 证据随跑随写 report、日志文件放 plan 目录下 docs/feat_2026-08-07_fetcher-cooldown-p1/smoke/ 而非 /tmp。
+- Step 3.1: complete（走查 Step，无代码 commit；证据 task-3.1-report.md + smoke/ 日志，主 Agent 亲自收尾 E/F 段并核实）
+  - 首次派发 agent-30 失联证据全丢 → 重跑 agent-31（超时 2h，证据随跑随写保住）→ 用户裁定滑块环境打住，主 Agent 收尾
+  - 等价性结论：daemon vs 旧 CLI 三档间隔同区间（样本 12/12 vs 16/15s、长休 21/23 vs 22/27s、批休 66 vs 67s 几乎逐秒一致），SPEC §5 第 4、5 条达成
+  - SIGTERM 严格批休窗口场景未完成（滑块墙环境），单元测试（30s 冷却 0.1s 打断 <5s 退出）+ 两次运行时 SIGTERM ≤11s 佐证，用户裁定接受
+  - 生产库零污染硬证据：ip_events/ip_stats MAX 时间戳（17:29/17:38）早于冒烟开始（20:24）
