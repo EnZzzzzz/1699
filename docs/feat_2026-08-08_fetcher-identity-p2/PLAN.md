@@ -7,7 +7,7 @@
 
 | Phase | 目标 | 预计 Step 数 | 依赖 | 状态 |
 |---|---|---|---|---|
-| P1 | 读码回填 + 核心改造（注入点/辅助函数/隐藏点修正）+ 既有测试更新 | 3 | 无 | pending |
+| P1 | 读码回填 + 核心改造（注入点/辅助函数/隐藏点修正）+ 既有测试更新 | 3 | 无 | done ✅ |
 | P2 | Cookie 域过滤收紧 + DB 迁移 + 隔离性单测 | 2 | P1 | pending |
 | P3 | 等价性冒烟 + 文档 + 终审 | 2 | P2 | pending |
 
@@ -34,12 +34,12 @@
   - [x] 全量无回归（TDD 先红后绿）
 
 ### Step 1.3 identity 诞生点拼前缀 + engine 注入 + 既有测试键格式更新
-- 预估：15 min · 依赖：1.2 · 状态：pending
+- 预估：15 min · 依赖：1.2 · 状态：done ✅
 - 内容：engine `_make_browser_manager` 传 site 注册名；`browser.py` launch 拼 `f"{site}:{exit_ip}"`（直连 `f"{site}:direct"`，找到 identity 赋值的全部点——含直连分支与 relaunch）；更新 `tests/test_identity.py`、`tests/test_control_loop.py` 等键格式断言（探索报告 §7 清单）；`engine.py` 种子日志等含 identity 的输出无需改（字符串自然带前缀）。
 - 交付物：代码 + 测试更新。
 - 验收：
-  - [ ] 拼键只出现在诞生点一处（grep 证据）
-  - [ ] 全量无回归；既有测试的语义断言（隔离/burn/统计）在带前缀键下仍成立
+  - [x] 拼键只出现在诞生点一处（grep 证据）
+  - [x] 全量无回归；既有测试的语义断言（隔离/burn/统计）在带前缀键下仍成立
 
 ---
 

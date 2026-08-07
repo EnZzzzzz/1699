@@ -14,3 +14,8 @@
   - 实现：core/session.py 模块级 bare_identity/is_direct；§3.3 #1-#6 逐条修正（check_ip_fresh 比 bare_identity、loop.py:451 not is_direct、identity_ops is_direct、db.py SQL 双滤、format_tmd_report 列宽 22、fingerprint 传 bare_identity）；TDD 21 新测试
   - 修复轮 1：reviewer 3 条（RED 注释残留、边界测试缺 "" / "a:b:c" / "1688:"、延迟导入改模块级）全部 ADDRESSED；RED 证据主 Agent 已核实（report 内真实断言失败输出）
   - 全量 273 passed；SPEC §5 grep 达成（Python 侧 "direct" 字面量比较只剩 is_direct 内部，db.py SQL 按 §3.3#4 豁免）
+- Step 1.3: complete (commits 09fb4c7..d96f977, review clean)
+  - 实现：Engine.site_name 新参（site 指定缺 site_name 报错）；BrowserManager.site_name 必传；launch 两处拼前缀（browser.py:221/:237）；CLI args.site / daemon "1688" 透传；测试键格式更新 5 文件；TDD 2 新测试
+  - 修复轮 1：reviewer 2 Critical（C1 CLI 装配无测试→_build_engine 抽辅函被两分支调用+3 测试；C2 Engine guard 无测试→3 测试）+ I1 docstring 缺 site_name + M1 or→if/else，全部 ADDRESSED
+  - 全量 281 passed；拼键唯一性 grep：f"{self.site_name}:" 仅 browser.py:221/:237
+  - **Phase 1 完成**（SPEC §4 假设 1/2 回填 + 核心改造 + 既有测试适配；键已开始带前缀，本 Phase 无运行时冒烟）
