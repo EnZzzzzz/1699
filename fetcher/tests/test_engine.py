@@ -5,6 +5,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock
 
 from fetcher import RunConfig, Session
 from fetcher.control import Engine, Task
@@ -128,6 +129,37 @@ class EngineTest(unittest.TestCase):
         self.assertEqual(sorted(engine.state["stats"]), [0, 1])
         self.assertEqual(engine.task.summary(engine.state["stats"]),
                          "汇总 2 个 worker")
+
+    # ---- Step 1.3: site_name guard ----
+
+    def test_site_without_site_name_raises_runtime_error(self):
+        """site 非空而 site_name=None → RuntimeError。
+
+        RED 预期（修正前）：没有 guard，site_name=None 静默通过，
+        后续拼键出 'None:direct' 才暴露问题。
+        """
+        with self.assertRaises(RuntimeError) as ctx:
+            Engine(self._config(), FakeTask(), site=MagicMock(),
+                   site_name=None)
+        self.assertIn("site_name 必传", str(ctx.exception))
+
+    def test_site_with_site_name_constructs_successfully(self):
+        """site 非空且 site_name 传入 → 正常构造（对照）。"""
+        engine = Engine(self._config(), FakeTask(), site=MagicMock(),
+                        site_name="1688",
+                        browser_manager_factory=lambda store: object(),
+                        loop_factory=FakeLoop)
+        self.assertEqual(engine.site_name, "1688")
+        self.assertIsNotNone(engine.site)
+
+    def test_site_none_without_site_name_constructs_successfully(self):
+        """site=None 时不触发 guard（允许不指定 site_name）。"""
+        engine = Engine(self._config(), FakeTask(), site=None,
+                        site_name=None,
+                        browser_manager_factory=lambda store: object(),
+                        loop_factory=FakeLoop)
+        self.assertIsNone(engine.site)
+        self.assertIsNone(engine.site_name)
 
     def test_each_worker_gets_own_store(self):
         provider = FakeProvider(2)

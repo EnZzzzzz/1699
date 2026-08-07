@@ -136,7 +136,8 @@ class BrowserManager:
 
     用法：
         cfg = RunConfig(use_proxy=True)
-        mgr = BrowserManager(cfg, store, provider=QingGuoProvider())
+        mgr = BrowserManager(cfg, store, site_name="1688",
+                             provider=QingGuoProvider())
         session = mgr.launch(seed_kit=kit)
         ...
         need, cur, reason = mgr.check_ip_fresh(session)

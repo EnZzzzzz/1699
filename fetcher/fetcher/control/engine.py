@@ -124,7 +124,8 @@ class Engine:
             from fetcher.atoms.slider import make_auto_solve  # 延迟导入
             auto_solve = make_auto_solve(max_attempts=5)
         return BrowserManager(self.config, store,
-                              site_name=self.site_name or "unknown",
+                              site_name=(self.site_name
+                                         if self.site_name else "unknown"),
                               provider=self.provider,
                               auto_solve=auto_solve,
                               homepage=getattr(self.site, "homepage", None),
