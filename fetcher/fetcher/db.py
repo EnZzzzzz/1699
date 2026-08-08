@@ -248,6 +248,12 @@ class ShopDB:
         if "req_since_block" not in evt_cols:
             self.conn.execute(
                 "ALTER TABLE ip_events ADD COLUMN req_since_block INTEGER")
+        # work_items 补 attempts 列（P3 多队列：release 重试计数，达上限熔断置 failed）
+        wi_cols = {r[1] for r in self.conn.execute("PRAGMA table_info(work_items)")}
+        if "attempts" not in wi_cols:
+            self.conn.execute(
+                "ALTER TABLE work_items ADD COLUMN attempts"
+                " INTEGER NOT NULL DEFAULT 0")
         # cookies 表裸键按 domain→site 映射加前缀（P2 identity 升级：
         # identity 键从裸 IP 升级为 site:ip）。部署窗口：旧进程裸键读不到
         # 新前缀 Cookie → 白板重启一次（SPEC §3.4 运维注意）。
@@ -512,6 +518,78 @@ class ShopDB:
             " claimed_at=NULL WHERE status='claimed'")
         self.conn.commit()
         return cur.rowcount
+
+    def release_work_item(self, item_id: int, max_attempts: int = 3) -> str:
+        """工作项释放回 pending（attempts+1）；attempts 达上限置 failed。
+
+        单事务（BEGIN IMMEDIATE）：attempts = attempts + 1，清空
+        claimed_by/claimed_at；attempts >= max_attempts 时置 failed
+        （写 finished_at、result_json="attempts exhausted"），否则置
+        pending。返回终态字符串："pending" / "failed"。
+
+        只对 claimed 状态的行生效；rowcount=0（非 claimed/不存在）时
+        返回 "failed"（调用方视为不可恢复，防御性兜底）。
+        """
+        try:
+            self.conn.execute("BEGIN IMMEDIATE")
+            cur = self.conn.execute(
+                "UPDATE work_items SET attempts = attempts + 1,"
+                " claimed_by = NULL, claimed_at = NULL"
+                " WHERE id=? AND status='claimed'", (item_id,))
+            if cur.rowcount == 0:
+                self.conn.commit()
+                return "failed"
+            attempts = self.conn.execute(
+                "SELECT attempts FROM work_items WHERE id=?",
+                (item_id,)).fetchone()[0]
+            if attempts >= max_attempts:
+                self.conn.execute(
+                    "UPDATE work_items SET status='failed', finished_at=?,"
+                    " result_json=? WHERE id=?",
+                    (_now(), json.dumps("attempts exhausted"), item_id))
+                self.conn.commit()
+                return "failed"
+            self.conn.execute(
+                "UPDATE work_items SET status='pending' WHERE id=?",
+                (item_id,))
+            self.conn.commit()
+            return "pending"
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def claim_next_eligible(self, queues: list[str],
+                            consumer_id: str) -> dict | None:
+        """跨队列原子认领最老 pending 工作项（FIFO 按 id，无优先级）。
+
+        单事务（BEGIN IMMEDIATE）：WHERE status='pending' AND queue IN (...)
+        ORDER BY id LIMIT 1 → 置 claimed（claimed_by/claimed_at）。返回
+        {"id", "queue", "site", "payload"}（payload 为 json.loads 解码后
+        的字典）；无货（含空 queues）返回 None。
+        """
+        if not queues:
+            return None
+        placeholders = ",".join("?" * len(queues))
+        try:
+            self.conn.execute("BEGIN IMMEDIATE")
+            row = self.conn.execute(
+                f"SELECT * FROM work_items WHERE status='pending'"
+                f" AND queue IN ({placeholders})"
+                " ORDER BY id LIMIT 1", queues).fetchone()
+            if not row:
+                self.conn.commit()
+                return None
+            self.conn.execute(
+                "UPDATE work_items SET status='claimed', claimed_by=?,"
+                " claimed_at=? WHERE id=?",
+                (consumer_id, _now(), row["id"]))
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        return {"id": row["id"], "queue": row["queue"],
+                "site": row["site"],
+                "payload": json.loads(row["payload_json"])}
 
     # ---------- category_progress ----------
     def get_category_progress(self, keyword: str) -> dict | None:
