@@ -65,3 +65,15 @@
   contact 版；payload.domain=群 URL 拼接）代码质量 ✅（无 park）
 - 裁定落实：payload.domain 由 group_id 拼 https://www.facebook.com/groups/{gid}
   （冲突扫描 #4）
+
+### Step 1.2 — FacebookPlugin 接线 + policy_overrides
+- commit 范围：`fetcher/fetcher/sites/facebook/__init__.py`（task_names=[post]、
+  make_task 延迟 import、policy_overrides）、`fetcher/tests/test_fb_plugin.py`
+  （6 例）、`fetcher/tests/test_facebook.py`（1 处断言更新）、brief/ledger/PLAN
+- TDD：4 failed → 6 passed；全量 599 passed 零回归
+- **plan-mandated 测试更新**：`test_site_registered` 原断言 task_names()==[]
+  （一期无任务状态），与 PLAN 1.2 明确要求 task_names→["post"] 冲突；原子
+  行为（FetchFbPost/parse_post/detectors）未动，仅更新该断言为 ["post"]
+- review：spec 合规 ✅（policy_overrides 逐条对照 madeinchina 同款退化、
+  SPEC §3.2「BLOCKED→block_rest→swap_ip→give_up」）代码质量 ✅（无 park）
+- 说明：make_task("post") 实例化断言留给 1.3（FbPostTask 未存在前不可测）

@@ -43,7 +43,7 @@ P2 与 P3 互不依赖，P1 完成后可并行推进。
   - 验收：TDD 先行——`fetcher/tests/test_db_fb.py` 覆盖：建表幂等、
     topup 状态流转与防重、并发 topup 无双写（线程对跑）、save_fb_contacts
     去重与 wa_source 规则、mark_* 流转；全绿。
-- [ ] **1.2 FacebookPlugin 接线 + policy_overrides**（预估 15min，依赖：无）
+- [x] **1.2 FacebookPlugin 接线 + policy_overrides**（预估 15min，依赖：无）
   - `sites/facebook/__init__.py`：`task_names()` → `["post"]`；`make_task`
     延迟 import `post_task.FbPostTask`；补 `policy_overrides`（去
     solve_slider，BLOCKED → block_rest → swap_ip → give_up，参照

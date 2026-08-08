@@ -241,7 +241,8 @@ class TestPluginRegistration(unittest.TestCase):
         plugin = get_site("facebook")
         self.assertEqual(plugin.name, "facebook")
         self.assertEqual(plugin.cookie_domain, "facebook.com")
-        self.assertEqual(plugin.task_names(), [])
+        # 二期接线（PLAN 1.2）：task_names 注册 post 任务（一期为空）
+        self.assertEqual(plugin.task_names(), ["post"])
         self.assertEqual(len(plugin.detectors()), 4)
 
 

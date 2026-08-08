@@ -11,6 +11,7 @@ permalink + 联系方式分桶提取），不提供控制层任务（发现层 G
 
 from __future__ import annotations
 
+from fetcher.core.types import Scenario
 from fetcher.sites.facebook.features import (
     HOMEPAGE,
     make_detectors,
@@ -35,14 +36,32 @@ class FacebookPlugin:
         """「是否被拦」的统一口径（含登录墙与空白页）。"""
         return page_block_reason(page)
 
-    # ---- 任务注册表（一期无控制层任务）----
+    # ---- 策略覆盖 ----
+
+    # FB 匿名抓 permalink 无阿里式滑块：默认策略链里的 solve_slider（轨迹
+    # 回放）对它无效，退化为「原地休息 → 换 IP → 放弃」（与 madeinchina
+    # 同款退化，sites/madeinchina/__init__.py:53-59）。
+    # 链长 ≤3：单帖全链最多 4 次失败计数 < 熔断上限 5，被拦的帖走放弃
+    # 而不是烧穿熔断中止整个任务。
+    policy_overrides = {
+        Scenario.RISK_SLIDER_PAGE: [("block_rest", 1), ("swap_ip", 2),
+                                    ("give_up", None)],
+        Scenario.RISK_SLIDER_EMBED: [("block_rest", 1), ("swap_ip", 1),
+                                     ("give_up", None)],
+    }
+
+    # ---- 任务注册表 ----
 
     def task_names(self) -> list[str]:
-        return []
+        return ["post"]
 
     def make_task(self, name: str):
-        raise KeyError(f"facebook 插件暂不提供任务: {name!r}"
-                       "（一期仅原子能力 fetch_fb_post）")
+        """按名创建任务实例（控制层 Task 协议）。"""
+        if name == "post":
+            from fetcher.sites.facebook.post_task import FbPostTask
+            return FbPostTask()
+        raise KeyError(f"未知任务: {name!r}（可选: "
+                       f"{', '.join(self.task_names())}）")
 
 
 # 自注册：sites 包自动发现本目录并 import 时生效
