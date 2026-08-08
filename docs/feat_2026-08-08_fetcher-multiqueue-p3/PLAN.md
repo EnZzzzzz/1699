@@ -9,7 +9,7 @@
 |---|---|---|---|---|
 | P3-0 | CloakBrowser 多 context 席位 spike（C1 实测） | 1 | 无 | done |
 | P3-1 | 调度内核：work_items 扩展 + 冷却表改建 + 让出型 chokepoint | 3 | P3-0（可并行，不依赖其结果） | done |
-| P3-2 | 浏览器层：Session/BrowserManager 多 context + 种子池 (worker,site) 粒度 | 3 | P3-0 结论回填 SPEC §4 | pending |
+| P3-2 | 浏览器层：Session/BrowserManager 多 context + 种子池 (worker,site) 粒度 | 3 | P3-0 结论回填 SPEC §4 | done |
 | P3-3 | QueueRouter + daemon CLI + SwapIP 两阶段 | 3 | P3-1、P3-2 | pending |
 | P3-4 | madeinchina 队列接入（contact + shop feeder） | 2 | P3-3 | pending |
 | P3-5 | 1688 shop/company feeder 接入 | 2 | P3-4 | pending |
@@ -49,7 +49,7 @@
 - [x] **Step 2.1** Session/SiteView 重构（估 40min，依赖 P3-0，状态 pending）
   - `Session.views[site]` + `ensure_site` 懒建 + `close_site`/全量 `close` 两层语义；`ctx.page` 路由活动 view；`session.ctx` property 同步。
   - 验收：SPEC §6.1 清单中 session/browser 两侧消费方全部迁移；C2 隔离单测（同 browser 两 context Cookie 互不可见）。
-- [ ] **Step 2.2** relaunch/warmup/种子池适配（估 30min，依赖 2.1，状态 pending）
+- [x] **Step 2.2** relaunch/warmup/种子池适配（估 30min，依赖 2.1，状态 pending）
   - relaunch 全 view 回写后关进程、views 清空懒重建；`_alloc_seed_kits` 改 (worker, site) 粒度；`needs_relaunch` 状态位。
   - 验收：单测 + 旧 CLI `1688 contact --workers 1` 直连冒烟等价。
 - [ ] **Step 2.3** 原子/策略消费方迁移（估 30min，依赖 2.1，状态 pending）
