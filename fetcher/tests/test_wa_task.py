@@ -256,6 +256,16 @@ class RegistryGuardTest(unittest.TestCase):
             specs = _build_registry()
         self.assertIn("wa_check", [s.queue for s in specs])
 
+    def test_wa_check_spec_has_no_site_and_local_requires(self):
+        """wa_check spec：site=None、requires={"local"}（结构性互斥基准）。"""
+        from fetcher.cli.main import _build_registry
+        with patch("shutil.which", return_value="/usr/local/bin/node"), \
+                patch("pathlib.Path.is_file", return_value=True):
+            specs = _build_registry()
+        wa = [s for s in specs if s.queue == "wa_check"][0]
+        self.assertIsNone(wa.site)
+        self.assertEqual(wa.requires, {"local"})
+
 
 if __name__ == "__main__":
     unittest.main()

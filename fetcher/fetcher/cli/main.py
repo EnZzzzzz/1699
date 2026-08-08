@@ -353,23 +353,28 @@ def _run_daemon(args) -> int:
     if getattr(args, "status_report", True):
         status_store = ConsumerStatusStore(cfg.resolved_db_path())
 
-    # 策略表：对 registry 涉及的每个 site 建 Policy
+    # 策略表：对 registry 涉及的每个 site 建 Policy（site=None 的本地队列跳过）
     from fetcher.strategy.policy import Policy
     policies = {}
     site_set = set()
     for spec in registry:
-        if spec.site not in site_set:
-            site_set.add(spec.site)
-            site = get_site(spec.site)
-            policy = Policy(max_consecutive_fail=cfg.max_consecutive_fail)
-            overrides = getattr(site, "policy_overrides", None)
-            if overrides:
-                policy = policy.with_overrides(overrides)
-            policies[spec.site] = policy
+        if spec.site is None or spec.site in site_set:
+            continue
+        site_set.add(spec.site)
+        site = get_site(spec.site)
+        policy = Policy(max_consecutive_fail=cfg.max_consecutive_fail)
+        overrides = getattr(site, "policy_overrides", None)
+        if overrides:
+            policy = policy.with_overrides(overrides)
+        policies[spec.site] = policy
 
-    # daemon 用注册表首个 site 的默认 policy 作为 Engine 级 policy
-    first_site = registry[0].site
-    default_policy = policies[first_site]
+    # 浏览器 spec 集合（site 非空）：Engine 级 policy / 默认 site 从它取；
+    # 纯本地队列（如只跑 wa_check）时无浏览器 spec → 不装配浏览器引擎位。
+    browser_specs = [spec for spec in registry if spec.site is not None]
+
+    # daemon 用注册表首个浏览器 site 的默认 policy 作为 Engine 级 policy
+    first_site = browser_specs[0].site if browser_specs else None
+    default_policy = (policies[first_site] if first_site else None)
 
     # 站点 dict（供 loop _bind_item_site 按 active_site 切换）
     sites = {}
@@ -387,14 +392,17 @@ def _run_daemon(args) -> int:
           f"{total_shops} 个 in_progress 店铺 → pending"
           f"（逐 site: {', '.join(spec.domain_suffix for spec in registry)}）")
 
-    # Engine 装配：site 用首个注册 site（BrowserManager 初始 view identity 前缀），
-    # policy 用 default_policy（多 site 的 _bind_item_site 会动态切换）
-    first_site_obj = get_site(first_site)
+    # Engine 装配：site 用首个浏览器 site（BrowserManager 初始 view identity
+    # 前缀）；纯本地队列时 site=None（Engine 不装浏览器，只跑 local consumers）
+    first_site_obj = get_site(first_site) if first_site else None
     engine = Engine(cfg, task=router, site=first_site_obj,
                     provider=provider, policy=default_policy,
                     sites=sites, policies=policies,
                     site_name=first_site, status_store=status_store,
-                    local_workers=getattr(args, "local_workers", 2))
+                    local_workers=getattr(args, "local_workers", 2),
+                    # 有浏览器 spec：保持原推导（None 不覆盖）；
+                    # 纯本地队列：显式 0（不启动浏览器 worker）
+                    browser_workers=None if browser_specs else 0)
     return engine.run()
 
 

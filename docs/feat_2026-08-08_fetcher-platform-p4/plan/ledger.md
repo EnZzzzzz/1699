@@ -103,6 +103,32 @@
     ≥5 + 守卫条件 wa_check。
 - **测试**：test_wa_task.py 13 用例（TDD 先失败后转绿：切块/幂等/账号轮换/
   写回/歧义/原子透传/守卫）。全量 581 passed。
+- **commits**：be09e72
+- **状态**：complete
+
+### P4-1 Step 1.3 — wa_check 真实冒烟
+
+- **冒烟**：plan/smoke-step1.3/run.log + run2.log（临时库 /tmp 已清理）。
+  daemon `--queues wa_check --local-workers 1` + 专用查号号 xiaohao-4
+  （WA_CHECK_ACCOUNTS）真实查号 1 个测试号。
+  证据：claim（site=None）→ 原子连接 WhatsApp → `8613800138000 ❌ 未注册`
+  → 写回 1 行 → finish done；contacts 验证
+  `1|13800138000|0|2026-08-08 22:31:52`（wa_registered=0、wa_checked_at
+  北京时间）；consumer_status 运行期 `local0|local`。
+- **修复（冒烟抓到 2 个真 bug）**：
+  1) `_run_daemon` 对 site=None spec（wa_check）调 get_site 崩——跳过
+     site=None 的策略/站点装配，纯本地队列时 Engine browser_workers=0
+     （新增 browser_workers 覆盖参数）不装浏览器 worker；
+  2) local 消费者 consumer_id 命名不一致（router 生成 w0，Engine 心跳/
+     清理用 local0）→ 退出清理漏行。新增 consumer_id_for(ctx) 按
+     consumer_kind 统一命名（browser→w{wid}、local→local{wid}），
+     三处统一 + 命名单测。
+- **备注**：SIGTERM 后 daemon 退出需等 condvar 30s 自醒（P0 既有语义，
+  stop 不 notify condvar）；stop.sh 有 5s 后 SIGKILL 兜底，平台纳管
+  路径不受影响。清理残留：Step 0.3 冒烟时误产生的 4 个
+  `fetcher/<ShopDB object>` 垃圾文件已删除（未跟踪）。
+- **测试**：test_wa_task.py 14 用例（+守卫 spec 断言）、test_local_consumer
+  +consumer_id 断言。全量 583 passed。
 - **commits**：待提交
 - **状态**：complete
 

@@ -42,7 +42,8 @@ class Engine:
                  policies: dict | None = None,
                  status_store=None,
                  local_workers: int = 0,
-                 local_loop_factory=None):
+                 local_loop_factory=None,
+                 browser_workers: int | None = None):
         if site is not None and site_name is None:
             raise RuntimeError(
                 "site_name 必传（CLI/daemon 传入注册名），"
@@ -66,6 +67,9 @@ class Engine:
             from fetcher.control.local_loop import LocalLoop
             local_loop_factory = LocalLoop
         self.local_loop_factory = local_loop_factory
+        # 浏览器 worker 数显式覆盖（daemon 纯本地队列时传 0——不启动浏览器
+        # worker；None=按 cfg.workers/通道数推导，CLI 与常规 daemon 不变）
+        self.browser_workers = browser_workers
         # 心跳线程（10s 批量刷新 updated_at），daemon 路径启动
         self._heartbeat_thread: threading.Thread | None = None
         self._heartbeat_stop = threading.Event()
@@ -84,8 +88,20 @@ class Engine:
     # ---- worker 装配 ----
 
     def _alloc_workers(self) -> tuple[int, list]:
-        """并发度与通道分配（一 worker 一通道，IP + Cookie 配套）。"""
+        """并发度与通道分配（一 worker 一通道，IP + Cookie 配套）。
+
+        browser_workers 非 None 时显式覆盖（daemon 纯本地队列传 0——
+        不启动浏览器 worker，只跑 local consumers）。
+        """
         cfg = self.config
+        if self.browser_workers is not None:
+            workers = self.browser_workers
+            if cfg.use_proxy and workers:
+                if self.provider is None:
+                    raise RuntimeError("use_proxy=True 但未配置 ProxyProvider")
+            channels = ([self.provider.acquire() for _ in range(workers)]
+                        if cfg.use_proxy and workers else [None] * workers)
+            return workers, channels
         if cfg.use_proxy:
             if self.provider is None:
                 raise RuntimeError("use_proxy=True 但未配置 ProxyProvider")

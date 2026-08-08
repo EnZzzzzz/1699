@@ -125,8 +125,9 @@ class WaCheckTask(Task):
     def acquire_item(self, ctx):
         """从 wa_check 队列认领（LocalLoop 经 QueueRouter 路由时不用本方法；
         保留实现供直接调用/测试）。"""
+        from fetcher.control.queue_router import consumer_id_for
         item = ctx.store.db.claim_next_eligible([self.QUEUE],
-                                                f"w{ctx.wid}")
+                                                consumer_id_for(ctx))
         if item is None:
             return None
         payload = dict(item["payload"])

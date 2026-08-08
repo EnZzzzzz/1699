@@ -28,6 +28,14 @@ from fetcher.core.types import ActionResult, Outcome
 class EligibleQueuesLocalTest(unittest.TestCase):
     """browser/local 消费者跨 requires 互斥 + 冷却键泛化。"""
 
+    def test_consumer_id_prefix_by_kind(self):
+        """consumer_id：browser→w{wid}、local→local{wid}（心跳/清理命名基准）。"""
+        from fetcher.control.queue_router import consumer_id_for
+        b = type("Ctx", (), {"consumer_kind": "browser", "wid": 3})()
+        l = type("Ctx", (), {"consumer_kind": "local", "wid": 1})()
+        self.assertEqual(consumer_id_for(b), "w3")
+        self.assertEqual(consumer_id_for(l), "local1")
+
     def _registry(self):
         return [
             # browser 队列（现状）

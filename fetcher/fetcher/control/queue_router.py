@@ -20,6 +20,17 @@ _WAIT_TIMEOUT = 30.0
 _STATE_KEY = "daemon_work_item_id"
 
 
+def consumer_id_for(ctx) -> str:
+    """按消费者类型生成 consumer_id：browser→"w{wid}"、local→"local{wid}"。
+
+    consumer_status 主键/心跳/退出清理都以它为准（P4-1 起 local 消费者
+    与浏览器消费者同池并存，命名必须区分）。
+    """
+    prefix = "local" if getattr(ctx, "consumer_kind", "browser") == "local" \
+        else "w"
+    return f"{prefix}{ctx.wid}"
+
+
 @dataclass
 class QueueSpec:
     """队列注册表条目。"""
@@ -249,7 +260,7 @@ class QueueRouter:
         2. 未命中 → topup 只对冷却到期的 contact 队列逐队列补货 → 补到则 notify_all + 重试
         3. 仍无 → condvar wait（多队列取各冷却中最小值，无冷却 30s）→ 醒后查 stop
         """
-        consumer_id = f"w{ctx.wid}"
+        consumer_id = consumer_id_for(ctx)
         db = self._db(ctx)
         limit = self._topup_limit(ctx)
         with self._cond:
@@ -363,7 +374,7 @@ class QueueRouter:
             if store is not None:
                 try:
                     store.upsert(
-                        f"w{ctx.wid}", ctx.consumer_kind,
+                        consumer_id_for(ctx), ctx.consumer_kind,
                         queue=None, item_id=None, batch_id=None,
                         cooldowns=ctx.cooldown_until)
                 except Exception as e:  # noqa: BLE001
