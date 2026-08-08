@@ -1,0 +1,67 @@
+# SDD ledger — plan: docs/feat_2026-08-09_facebook-daemon-integration/PLAN.md
+
+> 执行方式适配（诚实记录）：本 session **无子 agent 派发工具**，以单 agent
+> 严格模拟 SDD 纪律执行——逐 Step TDD（先失败测试→最小实现）、每 Step 后
+> 双重自查（spec 合规 + 代码质量，切换审查视角不自我豁免）、ledger 全程
+> 记账、运行时冒烟证据留档、终审。隔离上下文的收益由「brief 文件驱动 +
+> 每 Step 独立心智」近似替代。
+>
+> BASE（分支起点）= `0e17b24da1c7e169464f0d101836c5be330a885c`
+> 分支 = `feat/facebook-daemon-integration`
+
+## 冲突扫描裁定（开工前一次性裁决，2026-08-09）
+
+1. **APIFY_TOKEN 缺失**：环境变量/仓库/配置均无 token（facebook-groups.md
+   §12 明确「key 仅存于验证会话」）。→ P1/P3 照常推进；P2 Step 2.1 spike
+   到达时若无 token：按熔断路径（P2 暂缓、回填文档，P3 照常）。
+2. **生产 daemon 冲突**：现网 daemon（`--queues crawl_1688_contact
+   crawl_mic_contact`）与 uvicorn(8765)/vite(3000) 在线。新 daemon 启动会
+   全量 `reset_claimed_work_items`。→ 冒烟前 stop 生产 daemon，冒烟后按
+   原参数重启；后端改动后 stop.sh/start.sh 重启 uvicorn。
+3. **PoC 基线帖 URL 不可恢复**（§9 明细在 /tmp 已消失）→ 冒烟种子改用 §12
+   实测验证真实帖：
+   - `https://www.facebook.com/groups/185879310028412/posts/1437583168191347/`
+     （Shenzhen Expats 2026，test_facebook_group.py fixture 同源）
+   - `https://www.facebook.com/groups/1305282597018167/posts/1796051251274630/`
+     （third-party-brightdata.md 实测样本）
+4. **payload.domain 语义**：fb_posts 只有 group_id/group_name，无群 URL 列
+   → topup 时 domain 由 `https://www.facebook.com/groups/{group_id}` 拼接
+   （SPEC §3.2「domain=群 URL」，平台 SSE `_item_label` 用它显示）。
+5. **policy_overrides 键**：覆盖 `RISK_SLIDER_PAGE`/`RISK_SLIDER_EMBED`
+   两场景（去 solve_slider，链 = block_rest → swap_ip → give_up），参照
+   madeinchina/__init__.py:53-59。
+6. **wa_check 双源回写**：fb_contacts 按 `number` 直接匹配（normalize 后）；
+   fb 侧附带 `wa_source='checked'`；contacts 侧无 wa_source 列不写。
+
+## Step 进度
+
+- [ ] 1.1 fetcher 数据面：fb_posts/fb_contacts 两表 + 4 写函数
+- [ ] 1.2 FacebookPlugin 接线 + policy_overrides
+- [ ] 1.3 FbPostTask 实现
+- [ ] 1.4 daemon 队列注册 + 本地冒烟
+- [ ] 1.5 平台 fb_post 批次类型
+- [ ] 1.6 前端 fb_post
+- [ ] 1.7 平台端到端冒烟
+- [ ] 2.1 Apify spike（熔断点；待 APIFY_TOKEN）
+- [ ] 2.2 FetchApifySerp 原子 + permalink 解析
+- [ ] 2.3 FbDiscoverTask + discover_fb 队列
+- [ ] 2.4 平台 fb_discover 批次类型
+- [ ] 2.5 前端 fb_discover
+- [ ] 2.6 发现→抓取闭环冒烟
+- [ ] 3.1 fetcher wa_check 双源挑号 + 回写双表
+- [ ] 3.2 declared 桶抽样校准混入
+- [ ] 3.3 平台 enqueue_wa_batch 双源扩展
+- [ ] 3.4 wa_check 端到端冒烟
+- [ ] 终审 / 文档同步 / 归档
+
+## 执行记录
+
+### Step 1.1 — fetcher 数据面（两表 + 4 写函数）
+- commit 范围：`fetcher/fetcher/db.py`（SCHEMA 加 fb_posts/fb_contacts +
+  4 写函数）、`fetcher/tests/test_db_fb.py`（10 例）、brief/ledger/PLAN checkbox
+- TDD：先写测试亲眼看 10 failed → 最小实现 → 10 passed；全量 593 passed
+  （583 基线 + 10 新增）零回归
+- review：spec 合规 ✅（schema 逐字段对照 §4.1/4.2；topup 事务模式复刻
+  contact 版；payload.domain=群 URL 拼接）代码质量 ✅（无 park）
+- 裁定落实：payload.domain 由 group_id 拼 https://www.facebook.com/groups/{gid}
+  （冲突扫描 #4）

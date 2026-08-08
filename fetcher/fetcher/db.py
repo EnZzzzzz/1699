@@ -193,6 +193,40 @@ CREATE INDEX IF NOT EXISTS idx_work_items_claim ON work_items(queue, status, id)
 -- 平台批次聚合/停止兜底用（sweeper GROUP BY + UPDATE WHERE batch_id）
 CREATE INDEX IF NOT EXISTS idx_work_items_batch ON work_items(batch_id, status);
 
+-- FB 群帖发现表（二期：Facebook 采集接入 daemon 调度）
+-- 状态机对齐 shops：pending → in_progress → done/failed。in_progress 是
+-- 「已入队未终态」的互斥标记，双写入方（平台 enqueue / daemon topup）
+-- 靠它防重复喂货。
+CREATE TABLE IF NOT EXISTS fb_posts (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    url           TEXT NOT NULL UNIQUE,      -- 帖子 permalink
+    group_id      TEXT,                      -- 群 id（URL 解析）
+    group_name    TEXT,                      -- 群名（发现层取自 SERP 标题）
+    keyword       TEXT,                      -- 溯源：发现所用查询词
+    source        TEXT NOT NULL DEFAULT 'apify',  -- apify / google（后续自建）
+    status        TEXT NOT NULL DEFAULT 'pending', -- pending/in_progress/done/failed
+    has_contact   INTEGER,                   -- 抓取后回写：是否提到联系方式
+    first_seen_at TEXT NOT NULL,             -- 北京时间字符串
+    fetched_at    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_fb_posts_status ON fb_posts(status, id);
+
+-- FB 群帖号码表（二期）：parse_post 四桶分桶输出，按号码 UNIQUE 天然去重。
+-- 写入规则：declared_wa 桶 wa_source='declared'；cn_uncertain/overseas 桶
+-- wa_source=NULL、wa_registered=NULL；查号后回写 wa_registered +
+-- wa_checked_at + wa_source='checked'。
+CREATE TABLE IF NOT EXISTS fb_contacts (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    number        TEXT NOT NULL UNIQUE,   -- 中国号裸 11 位；国际号纯数字带原国家码
+    bucket        TEXT NOT NULL,          -- declared_wa / cn_uncertain / overseas
+    wa_source     TEXT,                   -- 'declared'(自声明) / 'checked'(协议验证) / NULL
+    wa_registered INTEGER,                -- 1/0/NULL（三态语义同 contacts）
+    wa_checked_at TEXT,
+    post_url      TEXT NOT NULL,          -- 来源帖
+    group_id      TEXT,
+    first_seen_at TEXT NOT NULL
+);
+
 -- daemon 消费者状态心跳表（P4 daemon 可观测）：写方 = fetcher daemon
 -- （claim/finish/release/冷却登记即时 + 10s 心跳 + 退出清空）；
 -- 读方 = 平台 dispatcher API（看板）。stale（updated_at 超 30s）由
@@ -711,6 +745,90 @@ class ShopDB:
         except Exception:
             self.conn.rollback()
             raise
+
+    # ---------- FB 数据面（二期：Facebook 采集接入 daemon 调度）----------
+
+    def topup_fb_post_work_items(self, queue: str, site: str,
+                                 limit: int) -> int:
+        """从 fb_posts 补货 work_items：最老的 pending 帖子入队并置
+        in_progress（BEGIN IMMEDIATE 单事务，与平台 enqueue 互斥不双喂）。
+
+        payload 键 {"url","domain","name"}（SPEC §3.2：domain=群 URL、
+        name=群名、url=帖子 permalink）；fb_posts 无群 URL 列，domain 由
+        group_id 拼 https://www.facebook.com/groups/{gid}（空则 ""）。
+        limit>0 限量（<=0 不限）。返回入队行数。
+        """
+        try:
+            self.conn.execute("BEGIN IMMEDIATE")
+            sql = ("SELECT * FROM fb_posts WHERE status='pending'"
+                   " ORDER BY first_seen_at, id")
+            params: list = []
+            if limit > 0:
+                sql += " LIMIT ?"
+                params.append(limit)
+            rows = self.conn.execute(sql, params).fetchall()
+            now = _now()
+            for r in rows:
+                domain = (f"https://www.facebook.com/groups/{r['group_id']}"
+                          if r["group_id"] else "")
+                payload = json.dumps(
+                    {"url": r["url"], "domain": domain,
+                     "name": r["group_name"] or ""},
+                    ensure_ascii=False)
+                self.conn.execute(
+                    "INSERT INTO work_items (queue, site, payload_json,"
+                    " created_at) VALUES (?, ?, ?, ?)",
+                    (queue, site, payload, now))
+                self.conn.execute(
+                    "UPDATE fb_posts SET status='in_progress' WHERE id=?",
+                    (r["id"],))
+            self.conn.commit()
+            return len(rows)
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def save_fb_contacts(self, post_url: str, group_id: str | None,
+                         phones: list[dict]) -> int:
+        """帖子提取的号码分桶落 fb_contacts（INSERT OR IGNORE，按 number
+        去重；同号后帖不覆盖 first_seen_at/post_url）。
+
+        phones: parse_post 输出 [{"number","bucket","source"}, ...]。
+        declared_wa 桶 → wa_source='declared'；cn_uncertain/overseas →
+        wa_source=NULL。返回本次实际新增行数。
+        """
+        now = _now()
+        inserted = 0
+        for p in phones:
+            number = (p.get("number") or "").strip()
+            bucket = p.get("bucket") or ""
+            if not number or bucket not in ("declared_wa", "cn_uncertain",
+                                            "overseas"):
+                continue
+            cur = self.conn.execute(
+                "INSERT OR IGNORE INTO fb_contacts (number, bucket,"
+                " wa_source, post_url, group_id, first_seen_at)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (number, bucket,
+                 "declared" if bucket == "declared_wa" else None,
+                 post_url, group_id, now))
+            inserted += cur.rowcount
+        self.conn.commit()
+        return inserted
+
+    def mark_fb_post_done(self, url: str, has_contact: bool) -> None:
+        """帖子抓取完成：status=done + has_contact + fetched_at。"""
+        self.conn.execute(
+            "UPDATE fb_posts SET status='done', has_contact=?, fetched_at=?"
+            " WHERE url=?",
+            (1 if has_contact else 0, _now(), url))
+        self.conn.commit()
+
+    def mark_fb_post_failed(self, url: str) -> None:
+        """帖子抓取失败：status=failed（--retry 语义后续可按需加）。"""
+        self.conn.execute(
+            "UPDATE fb_posts SET status='failed' WHERE url=?", (url,))
+        self.conn.commit()
 
     # ---------- category_progress ----------
     def get_category_progress(self, keyword: str) -> dict | None:
