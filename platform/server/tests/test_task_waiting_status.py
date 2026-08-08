@@ -25,8 +25,6 @@ def _row(status, params=None, stop_requested=0,
         "started_at": "2026-08-05 10:19:43",
         "created_at": "2026-08-05 02:18:05",
         "error": None,
-        "celery_id": None,
-        "flow_id": None,
     }
 
 

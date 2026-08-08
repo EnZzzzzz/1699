@@ -97,6 +97,44 @@ def migrate() -> None:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_work_items_batch"
                 " ON work_items(batch_id, status)")
+        # P5：tasks 表重建——删除 celery_id/flow_id 死列与 flows 表（方案 B 交换式）
+        # 守卫：旧 schema 才重建；已迁移库重跑 migrate() 零变化（幂等）。
+        # 交换顺序（建 tasks_new → INSERT SELECT → DROP tasks → RENAME）保证
+        # task_events/proxy_channels 的 REFERENCES tasks(id) 不被 SQLite RENAME
+        # 重写成指向被删表名（RENAME-first 会让外键悬空）。
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(tasks)")}
+        if "celery_id" in cols:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute("""
+                    CREATE TABLE tasks_new (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        type TEXT NOT NULL,
+                        params_json TEXT NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'pending',
+                        progress_json TEXT,
+                        stop_requested INTEGER NOT NULL DEFAULT 0,
+                        error TEXT,
+                        created_at TEXT NOT NULL,
+                        started_at TEXT,
+                        finished_at TEXT
+                    )""")
+                conn.execute("""
+                    INSERT INTO tasks_new (id, type, params_json, status,
+                                           progress_json, stop_requested, error,
+                                           created_at, started_at, finished_at)
+                    SELECT id, type, params_json, status, progress_json,
+                           stop_requested, error, created_at, started_at,
+                           finished_at
+                    FROM tasks""")
+                conn.execute("DROP TABLE tasks")
+                conn.execute("ALTER TABLE tasks_new RENAME TO tasks")
+                conn.execute("DROP TABLE IF EXISTS flows")
+                conn.execute("CREATE INDEX idx_tasks_status ON tasks(status)")
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")  # 失败留原表（tasks 未动）
+                raise
         conn.commit()
     finally:
         conn.close()
