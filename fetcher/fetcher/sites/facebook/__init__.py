@@ -25,6 +25,9 @@ class FacebookPlugin:
     name = "facebook"
     cookie_domain = "facebook.com"   # 匿名抓取不注入 Cookie，仅作协议字段
     homepage = HOMEPAGE              # = https://www.facebook.com/
+    # 匿名站点标记（SPEC §7.2）：白板匿名抓取不带 Cookie，直连模式
+    # ensure_site 放行空会话启动（非匿名站点维持无 Cookie 硬报错）
+    anonymous = True
 
     # ---- 判断侧 ----
 

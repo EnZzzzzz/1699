@@ -58,7 +58,7 @@ P2 与 P3 互不依赖，P1 完成后可并行推进。
   - 验收：TDD——`tests/test_fb_post_task.py`（mock ctx/page/原子）覆盖：
     fetch 透传原子结果、validate 边界、on_success 落库调用与返回值、
     prepare 重置 in_progress、on_giveup 标记 failed；全绿。
-- [ ] **1.4 daemon 队列注册 + 本地冒烟**（预估 20min，依赖：1.3）
+- [x] **1.4 daemon 队列注册 + 本地冒烟**（预估 20min，依赖：1.3）
   - `cli/main.py _build_registry` 注册 `crawl_fb_post` QueueSpec（SPEC
     §5.2）；`--queues` choices 自动包含。
   - 验收（运行时冒烟）：`.cache/1688.db` 手工灌 3 条 pending fb_posts

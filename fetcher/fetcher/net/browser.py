@@ -30,6 +30,20 @@ import time
 from pathlib import Path
 
 from fetcher.core.context import RunConfig
+
+
+def _site_cookie_optional(site_name: str) -> bool:
+    """该站点是否允许无 Cookie 空会话白板启动（匿名站点，如 facebook）。
+
+    SPEC §7.2：FB 匿名抓取按设计不注入 Cookie；直连模式（无代理）下
+    ensure_site 对非匿名站点无 Cookie 会硬 raise，匿名站点放行白板路径。
+    延迟 import get_site 防循环依赖；未知站点返回 False（保守）。
+    """
+    from fetcher.sites import get_site  # 延迟导入
+    try:
+        return bool(getattr(get_site(site_name), "anonymous", False))
+    except KeyError:
+        return False
 from fetcher.core.errors import (
     BrowserLaunchError,
     ExitIPError,
@@ -438,9 +452,13 @@ class BrowserManager:
         else:
             identity = f"{site_name}:direct"
 
+        # 匿名站点（FB 白板匿名抓取，SPEC §7.2）：直连模式允许无 Cookie
+        # 空会话启动；非匿名站点维持既有硬性要求
+        is_anonymous = _site_cookie_optional(site_name)
+
         # ---- Cookie 装载（与 launch 现状逐字一致）----
         cookies = self.store.load(identity)
-        if not cookies and not cfg.use_proxy:
+        if not cookies and not cfg.use_proxy and not is_anonymous:
             seed_json = cfg.resolved_cookie_json()
             if not seed_json.exists():
                 raise BrowserLaunchError(
@@ -466,9 +484,12 @@ class BrowserManager:
         elif cfg.use_proxy and not cookies:
             self.log(f"    [cookie] 无种子身份，新出口 IP 空会话白板启动，"
                      f"warmup 时由站点为 {identity} 现场签发全新匿名身份")
-        if not cookies and not cfg.use_proxy:
+        if not cookies and not cfg.use_proxy and not is_anonymous:
             raise BrowserLaunchError(
                 f"identity={identity} 下没有可用 Cookie（可能全部过期）")
+        if not cookies and not cfg.use_proxy and is_anonymous:
+            self.log(f"    [cookie] 匿名站点 {site_name}：直连空会话白板启动"
+                     f"（不注入 Cookie，warmup 由站点现场签发匿名身份）")
 
         # ---- 创建 context + 注入 Cookie + new_page ----
         ctx = session.browser.new_context(locale="zh-CN")

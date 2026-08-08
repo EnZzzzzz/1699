@@ -99,3 +99,40 @@
 - review：spec 合规 ✅（SPEC §5.2：site=facebook、topup 走
   topup_fb_post_work_items、domain_suffix=""、reset 走 Task.prepare）
 - **运行时冒烟（证据见下节）**
+
+### Step 1.4 冒烟阻塞修复 — SPEC §7.2 假设修正（匿名白板直连）
+- **发现**：冒烟时 daemon 启动浏览器失败——“identity=facebook:direct
+  下没有可用 Cookie（可能全部过期）”。ensure_site 的白板路径（无 Cookie
+  + 无种子 → 空 context）只在 use_proxy 分支生效（browser.py:466-468），
+  直连模式无 Cookie 硬 raise。SPEC §7.2 假设（“白板路径正常工作”）对
+  直连模式不成立——PoC 是单站点脚本直连，绕过了 ensure_site。
+- **裁定**（实现 SPEC §7.2 描述路径，非违背 plan）：SitePlugin 加
+  `anonymous` 标记（FacebookPlugin.anonymous=True），ensure_site 对匿名
+  站点直连模式放行空会话白板启动（不注入 Cookie、不要求种子）；非匿名
+  站点行为零变化。
+- commit 范围：`fetcher/fetcher/net/browser.py`（_site_cookie_optional
+  helper + ensure_site 分支）、`fetcher/fetcher/sites/facebook/__init__.py`
+  （anonymous=True）、`fetcher/tests/test_browser_anonymous.py`（6 例）
+- TDD：RED（_site_cookie_optional 缺失）→ 6 passed；全量 624 passed 零回归
+- review：spec 合规 ✅（§7.2 意图落地）代码质量 ✅（延迟 import 防循环；
+  未知站点保守 False）
+
+### Step 1.4 运行时冒烟（真实执行，2026-08-09 03:29 北京时间）
+- 环境：停生产 daemon（pid 65735）→ 种子 2 条 §12 验证真实帖
+  （Shenzhen Expats 2026 `…/posts/1437583168191347/` + BD 实测样本
+  `…/posts/1796051251274630/`）→ `daemon --queues crawl_fb_post
+  --workers 1 --limit 2 --sample-min 0 --sample-max 1` 跑通
+- 日志证据：`/tmp/fb_smoke_daemon.log`（claim 10386/10387 → finish done）
+- DB 验证（.cache/1688.db）：
+  - fb_posts：2 行全部 done（帖 1 has_contact=1、帖 2 has_contact=0）
+  - fb_contacts：1 行 `18588244213` bucket=cn_uncertain wa_source=NULL
+    （真实页内容为“WeChat/WhatsApp: 18588244213”，parse_post 基线逻辑
+    分桶，非 declared）
+  - work_items：crawl_fb_post 两 item done；侧车 result_json 落库
+    （{"wechat_ids": ["18588244213"]}）
+  - identity：`facebook:direct`（直连模式；SPEC 的 facebook:<ip> 是代理
+    形态，直连为 facebook:direct，前缀分桶一致）
+- 收尾：删残留 pending work_items、重启生产 daemon（原参数）
+- 偏差记录：计划 3 条种子，实际 2 条（§9 PoC 基线 URL 不可恢复，冲突
+  扫描 #3 已裁定用 §12 URL；仅 2 条验证过存在）
+- **Step 1.4 完成**（commits 920520f..），review clean
