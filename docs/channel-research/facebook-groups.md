@@ -97,12 +97,18 @@
 
 ## 7. 落地路径建议
 
-1. **fetcher 新增 `facebook` 站点插件（subprocess 类任务）**：
+1. **fetcher 新增 `facebook` 站点插件（批次类任务）**：
+
+   > 2026-08-08 架构修订：scheduler P4/P5 已落地（docs/scheduler-architecture.md §10），subprocess 采集路径退役（`TASK_COMMANDS` 仅剩 yiwugo_search），新采集任务一律走 **BATCH_TYPES → work_items 队列 → daemon 消费者**。接入点随之改变：
+   > - `cli/main.py _build_registry()` 注册 `QueueSpec(queue="crawl_fb_post", site="facebook", task=FbPostTask(), requires={"channel","browser"})`——BrowserConsumer 消费，天然获得跨站冷却填充（FB 冷却期间通道可跑 1688/mic）与 `(facebook:ip)` 身份分桶（P2 已落地，无需额外改造）；
+   > - 站点插件侧需实现 Task 协议（`control/task.py`）包装 `FetchFbPost` 原子（`make_task` 目前抛 KeyError）；
+   > - 平台侧走 `runner.py BATCH_TYPES` 注册（kind 类似 feeder），不再拼 CLI 起子进程；
+   > - 第三方 API 路线（`FetchFbGroupPosts`，调 BD/Apify HTTPS 接口、不需要代理通道）适合 `requires={"local"}` 的无浏览器消费者（wa_check 同型）。
    - Step 1 发现：对关键词矩阵（外贸/货代/跨境电商/亚马逊卖家/china sourcing × whatsapp/微信/+86/chat.whatsapp.com）做 Google `site:facebook.com/groups` 搜索，解析出帖子 permalink，落库去重（表：`fb_posts`，字段：url、group_id、discovered_at、status）。
    - Step 2 抓取：**一律渲染抓 DOM + og**（PoC 实测修正：纯 HTTP GET 被 FB 以 TLS/HTTP 指纹识别，一律 400，拿不到任何 HTML，"便宜的免渲染 GET"不存在）。实现可选 Playwright / WebBridge / curl-impersonate（待验证）。og:description 与 DOM 正文同页取得，og 截断点之后的号码有实测增量（PoC 10 帖中 3 帖靠 DOM 多捞到 4 个号）。
    - Step 3 提取：正则集 `1[3-9]\d{9}`、`\+86[\s-]?\d{11}`、`\+?\d{7,15}`（ws 号）、`chat\.whatsapp\.com/\S+`、`wa\.me/\S+`，附带微信/TG 号入 contacts 备注。**同时抓首屏评论**（PoC 实测部分帖子评论区匿名可见，含留号，侦察时未发现的增量）。
    - Step 4 查号（分层，**不全量过 wa_check**，见 §8）。
-2. **速率**：Google 查询 ≤ 1 req/3-5s、query 轮换；FB permalink 抓取 ≤ 1 req/2s、住宅出口。ProxyChannel 直接复用现有 `proxy_channels` 表。
+2. **速率**：Google 查询 ≤ 1 req/3-5s、query 轮换；FB permalink 抓取 ≤ 1 req/2s、住宅出口。通道由 daemon 统一持有（单 dispatcher 消除跨进程撞通道），冷却时长由策略层输出、消费者冷却表执行（P1 模型），原子内不 sleep。
 3. **角色区分**：`+86`/`1[3-9]` 号标记为「中国供给侧」（主目标）；其他国际号标记「海外买家」入独立分桶，暂不查号。
 4. **不建议**：登录态批量进群翻 feed（封号风险高、收益边际低）；mbasic 路径（匿名已死）。
 5. 后续可选增量：若用户日后登录 FB，可加「群 feed 评论扫描」作为二期，但不阻塞一期。
@@ -144,7 +150,11 @@ wa_check 走 WhatsApp 协议、有封号成本且吞吐受风控节奏限制，�
 - 号码口径：中国号存裸 11 位（86 由 wa 链路补）；国际号保留原国家码纯数字。
 - **真机验证**（CloakBrowser 无头直连，10 基线帖全量）：**10/10 Outcome.OK**，og 层号码 8/8 全对、分桶全部正确（双标帖归 declared_wa、+86 国际格式去码入 cn_uncertain、产品名 WhatsApp 零误标）。
 - **评论增量的局限**：WebBridge（真实 Chrome 窗口）里帖 8/9/10 评论区多捞到 4 个号，但 CloakBrowser 无头匿名会话两轮（含滚动触发懒加载）均未渲染出这些评论——评论是否匿名渲染**随会话/客户端随机**，不能作为稳定采集面，只能算"碰上就收"的机会增量。稳定采集面 = og:description + 帖子正文。
-- 未做：Google 发现层、控制层任务/CLI、落库（`fb_posts` 表）、平台任务类型接入——均属二期编排工作。
+- 未做（2026-08-09 二期落地后更新）：Google 发现层（P2 Apify SERP 路线
+  规划就绪，待 APIFY_TOKEN 实调 spike，见 docs/feat_2026-08-09_facebook-
+  daemon-integration/）；其余二期项（落库 fb_posts/fb_contacts、daemon
+  队列 crawl_fb_post + FbPostTask、平台 fb_post 批次类型+前端、wa_check
+  双源衔接）已全部落地并冒烟通过。
 
 ## 11. 附：其他渠道全景（2026-08 调研）
 
@@ -210,7 +220,10 @@ wa_check 走 WhatsApp 协议、有封号成本且吞吐受风控节奏限制，�
 - `fetcher/fetcher/atoms/facebook_group.py`：`FetchFbGroupPosts`（name=`fetch_fb_group_posts`），双 provider（默认 brightdata），输入群 URL + limit，输出归一化帖子 + 复用 `parse_post` 的四桶分桶（跨帖按号码去重）。Outcome 口径：402/429→BLOCKED（额度/限流）、401/403→FATAL、0 帖→EMPTY、轮询中断→SKIPPED。只用标准库 urllib；key 走 `api_key` 参数或环境变量 `BRIGHTDATA_API_KEY` / `APIFY_TOKEN`。
 - 测试：`fetcher/tests/test_facebook_group.py` 17 例（mock HTTP，样本取自本次实测）。
 - 真机验证：两家各采 5 帖均 `ok`，结果一致；花费 BD 5 credits + Apify $0.025，均在免费额度内。
-- 未做：runner 任务类型、CLI、落库、平台前端（同 §10 末尾的二期编排范围）；两家 key 当前仅存于验证会话，二期接入时建议入 DB 按 provider 配置管理。
+- 未做（2026-08-09 更新）：二期接入已完成——runner BATCH_TYPES 注册
+  fb_post、daemon 队列 crawl_fb_post、落库 fb_posts/fb_contacts、平台
+  前端 fb_post 任务类型；两家 key 沿用环境变量（APIFY_TOKEN 未入 DB，
+  本期明确非目标，见 SPEC 非目标清单）；发现层 P2 待 token 推进。
 
 ## 附：实测原始数据
 

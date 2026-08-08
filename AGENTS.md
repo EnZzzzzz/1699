@@ -9,9 +9,10 @@ fetcher/          采集框架（Python 包，可独立安装）：
                   核心层 core/（ActionResult/Outcome/WorkerContext）· 原子层 atoms/（Atom 协议）
                   网络层 net/ · 判断层 detect/ · 策略层 strategy/ · 站点插件 sites/
                   CLI：python -m fetcher 1688 shop|contact|company / yiwugo search / taobao search
-                  CLI 另有 daemon 常驻模式：多队列调度（5 条 work_items 队列：1688/madeinchina
-                  双站 contact + shop/company feeder），按站点冷却跨队列填充（`--queues` 指定子集，
-                  默认全量；与旧 CLI 同站互斥），见 docs/scheduler-architecture.md
+                  CLI 另有 daemon 常驻模式：多队列调度（7 条 work_items 队列：1688/madeinchina
+                  双站 contact + shop/company feeder + wa_check + crawl_fb_post），按站点冷却跨队列
+                  填充（`--queues` 指定子集，默认全量；与旧 CLI 同站互斥），见
+                  docs/scheduler-architecture.md
                   vendor/wa-check/：内置 Node/Baileys CLI（WhatsApp 查号协议实现）
 platform/         管理系统（前后端分离）
   server/         FastAPI 后端（端口 8765）：app/api/ REST + SSE · app/runner.py 任务监督器
@@ -19,7 +20,7 @@ platform/         管理系统（前后端分离）
   web/            React 18 + Vite + TS + Tailwind + shadcn/ui 前端（端口 3000，vite dev 有 HMR）
   start.sh        一键启动后端+前端；stop.sh 停止
 .cache/1688.db    SQLite 主库（WAL 模式）：shops / contacts / tasks / task_events /
-                  providers / proxy_channels / task_templates
+                  providers / proxy_channels / task_templates / fb_posts / fb_contacts
 scraper/ util/    旧版脚本，**只读参考，禁止修改**（新代码一律进 fetcher/ 或 platform/）
 docs/             flow-architecture.md（fetcher 框架设计）、scheduler-architecture.md（调度器设计：
                   队列+消费者池+跨站 IP 复用，跨任务编排以此为准）、service-architecture.md（旧方案，存档）
@@ -59,7 +60,7 @@ docs/             flow-architecture.md（fetcher 框架设计）、scheduler-arc
 ## 5. 任务系统（三类执行模型）
 
 - **subprocess 类**：`TASK_COMMANDS` 注册类型 → `build_command()` 拼 fetcher CLI → Popen，输出泵逐行写 task_events。现唯一 subprocess 类型为 yiwugo_search。
-- **批次类**：`BATCH_TYPES` 注册类型 → 入队 work_items 批次 → daemon dispatcher 消费；平台 sweeper 派生状态/聚合进度（1688/madeinchina 采集与 wa_check 均走此模型）。
+- **批次类**：`BATCH_TYPES` 注册类型 → 入队 work_items 批次 → daemon dispatcher 消费；平台 sweeper 派生状态/聚合进度（1688/madeinchina 采集、wa_check、fb_post 均走此模型）。
 - **daemon 纳管**：fetcher daemon 常驻（start.sh 拉起，stop.sh 优雅退出），队列+消费者池调度、跨站冷却填充，见 docs/scheduler-architecture.md。
 - 任务终态：`pending / running / done / failed / stopped`；停止先置 `stop_requested=1`；`repeat_interval>0` 走循环重启（Timer）。
 - 新增任务类型需同步：`runner.py` 注册 + `api/tasks.py` 的 `TaskParams` 字段 + 前端 `TaskFormDialog.tsx` 表单分支 + `task-ui.tsx` 的 `TASK_TYPE_OPTIONS`。

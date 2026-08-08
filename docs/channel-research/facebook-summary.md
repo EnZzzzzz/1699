@@ -62,7 +62,7 @@
 ## 3. 下一步待办（二期）
 
 1. **爬坡实测**：1 个通道半天，从 5s/帖逐步加压，记录 BLOCKED 出现速率 → 确定单 IP 安全日量（当前唯一估算空白）。
-2. Google 发现层落地（自建 or Apify SERP 外包，¥13-32/万帖）。
-3. 控制层任务/CLI + `fb_posts` 落库表 + 平台任务类型接入（subprocess 类）。
+2. Google 发现层落地（Apify SERP 外包路线规划就绪，**2026-08-09：P2 熔断待 APIFY_TOKEN** 实调 spike，见 docs/feat_2026-08-09_facebook-daemon-integration/）。
+3. daemon 队列接入（**2026-08-09 已完成**）：`crawl_fb_post` QueueSpec + FacebookPlugin Task 协议 + `fb_posts`/`fb_contacts` 落库表 + runner `BATCH_TYPES` 注册 + `TaskParams` + 前端 `TaskFormDialog`/`task-ui.tsx` + wa_check 双源衔接，已端到端冒烟。
 4. Bright Data 免费层实测群帖端点字段完整性（灾备验证）。
 5. 网页版广告库采集（二期候选，识别在投广告的中国供应商）。
