@@ -58,6 +58,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_daemon.add_argument("--queues", nargs="+", default=None,
                           help="消费的 work_items 队列列表（默认全量；可选: "
                                "crawl_1688_contact, crawl_mic_contact）")
+    p_daemon.add_argument("--local-workers", type=int, default=2,
+                          help="无浏览器 local 消费者线程数（wa_check 等"
+                               "非站点队列消费用，默认 2，不占浏览器席位）")
     add_common_args(p_daemon, default_rest_every=20)
     return ap
 
@@ -367,7 +370,8 @@ def _run_daemon(args) -> int:
     engine = Engine(cfg, task=router, site=first_site_obj,
                     provider=provider, policy=default_policy,
                     sites=sites, policies=policies,
-                    site_name=first_site, status_store=status_store)
+                    site_name=first_site, status_store=status_store,
+                    local_workers=getattr(args, "local_workers", 2))
     return engine.run()
 
 

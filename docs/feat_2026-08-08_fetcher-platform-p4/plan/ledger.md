@@ -59,6 +59,27 @@
   预期结构证据。
 - **备注**：发现 P3 遗留 daemon（pid 28917，/tmp/smoke_p3_61b.db）仍在跑，
   占 1 席——非本任务范围，未处理，记录备查。
+- **commits**：87f27d7
+- **状态**：complete
+
+### P4-1 Step 1.1 — LocalExecutor 消费者 + requires="local" 互斥
+
+- **实现**：
+  - queue_router：eligible_queues 冷却键泛化（site or queue，wa_check 无 site
+    时退 queue 名）；condvar_timeout_multi 入参改 keys；topup 冷却判断同步；
+  - loop._cooldown：登记键 active_site or queue（非站点队列用 queue 名）；
+  - 新模块 control/local_loop.py：LocalLoop（无浏览器执行循环，outcome 直接
+    处置 OK→on_success / FATAL→giveup(fatal) 停止 / SKIPPED→收工 /
+    NET_ERROR→giveup(net) 继续）；
+  - engine：local_workers 参数 + _local_worker 线程（resources={"local"}，
+    consumer_kind="local"，不建 BrowserManager/不分配通道/不认种子，
+    wid+10000 隔离 stats/board）+ local_loop_factory 注入点；run 装配
+    local 线程与心跳 consumer 列表扩展；
+  - cli：daemon 加 --local-workers（默认 2）并传给 Engine。
+- **测试**：test_local_consumer.py 10 用例（TDD 先失败后转绿：互斥双向/
+  冷却键泛化/LocalLoop 各 outcome 分支/Engine local 装配）。全量 568 passed。
+- **review**：自检通过。测试修正：假 task acquire 推进 index（防死循环）、
+  on_success 写 ctx.state（与真实 task 一致）、FATAL 断言补 fetch 顺序。
 - **commits**：待提交
 - **状态**：complete
 

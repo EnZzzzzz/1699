@@ -32,30 +32,34 @@ class QueueSpec:
 
 
 def eligible_queues(registry, ctx, now: float) -> list[str]:
-    """当前消费者可认领的队列名列表：资源满足 ∧ 该站点冷却已到期。
+    """当前消费者可认领的队列名列表：资源满足 ∧ 该站点/队列冷却已到期。
 
     registry: 可迭代的 QueueSpec。
-    ctx: 有 .resources（set）与 .cooldown_until（dict[site, float]）的对象。
+    ctx: 有 .resources（set）与 .cooldown_until（dict[str, float]）的对象。
     纯函数，无副作用；返回按注册表顺序。
+
+    冷却键泛化（P4-1）：site 非空用 site 名；site 为空（wa_check 等
+    非站点队列）退 queue 名。
     """
     result = []
     for q in registry:
         if q.requires <= ctx.resources \
-                and now >= ctx.cooldown_until.get(q.site, 0):
+                and now >= ctx.cooldown_until.get(q.site or q.queue, 0):
             result.append(q.queue)
     return result
 
 
 def condvar_timeout_multi(cooldown_until: dict[str, float],
-                          sites: list[str], now: float,
+                          keys: list[str], now: float,
                           cap: float = 30.0) -> float:
-    """多队列 condvar timeout：取所有冷却中 site 的剩余时间的最小值。
+    """多队列 condvar timeout：取所有冷却中键的剩余时间的最小值。
 
-    无任何 site 在冷却 → cap。
+    无任何键在冷却 → cap。keys 为冷却键列表（site 或 queue 名，
+    由调用方展开 spec.site or spec.queue）。
     """
     min_remaining = None
-    for site in sites:
-        deadline = cooldown_until.get(site, 0)
+    for key in keys:
+        deadline = cooldown_until.get(key, 0)
         if now < deadline:
             remaining = deadline - now
             if min_remaining is None or remaining < min_remaining:
@@ -291,7 +295,8 @@ class QueueRouter:
                 any_topped = False
                 for spec in self._specs:
                     if spec.topup is not None \
-                            and now >= ctx.cooldown_until.get(spec.site, 0):
+                            and now >= ctx.cooldown_until.get(
+                                spec.site or spec.queue, 0):
                         n = spec.topup(db, limit)
                         if n:
                             any_topped = True
@@ -300,9 +305,10 @@ class QueueRouter:
                     continue
 
                 # condvar wait：多队列取各冷却中剩余的最小值
+                # （冷却键泛化 P4-1：site 或 queue 名）
                 timeout = condvar_timeout_multi(
                     ctx.cooldown_until,
-                    [spec.site for spec in self._specs],
+                    [spec.site or spec.queue for spec in self._specs],
                     now, cap=_WAIT_TIMEOUT)
                 self._cond.wait(timeout=timeout)
                 if ctx.stopped():

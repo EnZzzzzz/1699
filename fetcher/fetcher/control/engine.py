@@ -40,7 +40,9 @@ class Engine:
                  site_name: str | None = None,
                  sites: dict | None = None,
                  policies: dict | None = None,
-                 status_store=None):
+                 status_store=None,
+                 local_workers: int = 0,
+                 local_loop_factory=None):
         if site is not None and site_name is None:
             raise RuntimeError(
                 "site_name 必传（CLI/daemon 传入注册名），"
@@ -56,6 +58,14 @@ class Engine:
         self.policies = policies
         # P4 daemon 可观测：ConsumerStatusStore（None=CLI 路径不启用）
         self.status_store = status_store
+        # P4-1：无浏览器 local 消费者线程数（wa_check 等非站点队列；
+        # 不占 CloakBrowser 席位，不分配通道/种子）
+        self.local_workers = max(0, int(local_workers or 0))
+        # local 消费者循环工厂（默认 LocalLoop；测试可注入）
+        if local_loop_factory is None:
+            from fetcher.control.local_loop import LocalLoop
+            local_loop_factory = LocalLoop
+        self.local_loop_factory = local_loop_factory
         # 心跳线程（10s 批量刷新 updated_at），daemon 路径启动
         self._heartbeat_thread: threading.Thread | None = None
         self._heartbeat_stop = threading.Event()
@@ -215,6 +225,43 @@ class Engine:
         with self.lock:
             self.state["stats"][wid] = stats
 
+    def _local_worker(self, wid: int, board):
+        """无浏览器 local 消费者线程入口（P4-1）。
+
+        不建 BrowserManager / 不分配通道 / 不认种子身份（resources={"local"}），
+        跑 LocalLoop：acquire → fetch → on_success/giveup。用于 wa_check 等
+        非站点队列（requires={"local"} 结构性互斥，浏览器消费者领不到）。
+        """
+        tag = f"[local{wid}]"
+        store = self.store_factory(wid + 10000)  # 独立 DB 连接（wid 隔离）
+
+        def log(msg: str):
+            text = (msg or "").strip()
+            if not text:
+                return
+            if board is not None:
+                if ("[X]" in text or "[!]" in text or
+                        "[claim]" in text or "[finish]" in text or
+                        "[release]" in text):
+                    board.log(text)
+                else:
+                    board.set(wid + 10000, detail=text[:80])
+            else:
+                print(text, flush=True)
+
+        ctx = WorkerContext(config=self.config, store=store,
+                            stop=self.stop, log=log, wid=wid, tag=tag,
+                            resources={"local"}, consumer_kind="local")
+        if self.status_store is not None:
+            ctx.status_store = self.status_store
+        if board is not None:
+            ctx.set_status = lambda **kw: board.set(wid + 10000, **kw)
+        from fetcher.control.local_loop import LocalLoop
+        loop = self.local_loop_factory(ctx, self.task)
+        stats = loop.run()
+        with self.lock:
+            self.state["stats"][wid + 10000] = stats
+
     # ---- main 编排 ----
 
     def run(self) -> int:
@@ -271,10 +318,22 @@ class Engine:
                 target=self._worker, args=args_i, kwargs=kwargs_i,
                 name=f"worker-{i}", daemon=True))
 
+        # P4-1：无浏览器 local 消费者线程（不占席位，不进浏览器错开启动）
+        local_threads = []
+        for i in range(self.local_workers):
+            local_threads.append(threading.Thread(
+                target=self._local_worker, args=(i, board),
+                name=f"local-{i}", daemon=True))
+        if self.local_workers:
+            print(f"[2] 另启动 {self.local_workers} 个 local 消费者"
+                  f"（无浏览器，wa_check 等非站点队列）")
+
         # P4 daemon 可观测：启动前租约通道（按 tunnel 匹配）+ 启动心跳线程
         status_consumers: list[str] = []
         if self.status_store is not None:
-            status_consumers = [f"w{i}" for i in range(workers)]
+            status_consumers = ([f"w{i}" for i in range(workers)]
+                                + [f"local{i}" for i in range(
+                                    self.local_workers)])
             try:
                 if cfg.use_proxy:
                     tunnels = [c.server for c in channels if c is not None]
@@ -296,15 +355,21 @@ class Engine:
                 d = random.uniform(cfg.stagger_min, cfg.stagger_max)
                 print(f"    错开启动：{d:.0f}s 后启动下一个 worker ...")
                 time.sleep(d)
+        for t in local_threads:
+            t.start()
 
         try:
             for t in threads:
+                t.join()
+            for t in local_threads:
                 t.join()
         except KeyboardInterrupt:
             (board.log if board else print)(
                 "[!] 用户中断，等待各 worker 完成当前任务后退出...")
             self.stop.set()
             for t in threads:
+                t.join(timeout=90)
+            for t in local_threads:
                 t.join(timeout=90)
             (board.log if board else print)("[!] 进度已保存，下次运行自动续爬")
 

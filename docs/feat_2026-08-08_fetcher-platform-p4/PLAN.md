@@ -19,13 +19,13 @@
 
 **准入**：SPEC §3.0 工作区裁定已落地（用户提交/stash 其 wa 改动）。**完成标准**：批次相关 DB 语义单测全绿；daemon 跑批时 consumer_status/proxy_channels 有真实写入（冒烟）。
 
-- [ ] **Step 0.1** work_items stopped 态 + 批次入队函数 + batch 索引（估 30min，依赖无，状态 pending）
+- [x] **Step 0.1** work_items stopped 态 + 批次入队函数 + batch 索引（估 30min，依赖无，状态 done）
   - fetcher db.py：DDL 注释 + `idx_work_items_batch(batch_id, status)` 幂等迁移；`enqueue_contact_batch`（topup 同事务语义 + batch_id + limit）；`enqueue_feeder_batch`（discover + iter_active_categories 种子 + batch_id）；终态集合注释更新。
   - 验收：TDD——入队幂等/限量/与 topup 不双喂（同事务互斥）、stopped 不被 claim。
-- [ ] **Step 0.2** feeder 批次继承与限量收束（估 30min，依赖 0.1，状态 pending）
+- [x] **Step 0.2** feeder 批次继承与限量收束（估 30min，依赖 0.1，状态 done）
   - discover 产出、链式续喂、失败补插继承父 batch_id；续喂/补插前 done 计数 ≥ payload.batch_limit 则收束；batch_id NULL 自喂路径逐字不变。
   - 验收：TDD——继承链、收束边界（limit=0 不限）、现状路径零变化（既有测试不 regress）。
-- [ ] **Step 0.3** consumer_status 心跳 + proxy_channels 租约（估 30min，依赖无，状态 pending）
+- [x] **Step 0.3** consumer_status 心跳 + proxy_channels 租约（估 30min，依赖无，状态 done）
   - consumer_status 建表（幂等迁移）+ daemon 侧写入钩子（claim/finish/release/冷却登记即时 + 10s 心跳线程 + 退出清空）；启动按 tunnel 写 used_by_task=consumer_id、退出清零。
   - 验收：TDD + 冒烟（`--workers 1` 临时库？**注意**：租约写 proxy_channels 是平台表——冒烟用临时库整体拷贝，绝不碰生产库）；日志证据落 plan 目录。
 

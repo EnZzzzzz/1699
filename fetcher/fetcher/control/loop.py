@@ -131,17 +131,19 @@ class CrawlLoop:
           等待用，如 launch_backoff；策略冷却待 P3-3 router 接 release
           后改让出）。
 
-        cooldown_until 按 site 注册名登记（有 active_site 时才写入）；
-        reason 参数保留，仅用于日志/展示。无 active_site 时不登记（如
-        launch_backoff 在 acquire 前，active_site 未设置时天然跳过）。
+        cooldown_until 按冷却键登记（P4-1 泛化：active_site 非空用
+        site 名，否则退 queue 名——wa_check 等非站点队列）；reason
+        参数保留，仅用于日志/展示。无 active_site 且无 queue 时不登记
+        （如 launch_backoff 在 acquire 前，两键都未设置时天然跳过）。
 
         展示两路径仅原地型使用：prefix 非空走 wait_countdown（秒级倒计
         时状态行，长等待用）；prefix=None 走 ctx.wait（静默，短等待用）。
         让出型不展示倒计时状态行（P3-3 后由 board 的「等货/等冷却」取代）。
         """
-        active_site = self.ctx.state.get("active_site")
-        if active_site is not None:
-            self.ctx.cooldown_until[active_site] = time.time() + seconds
+        cooldown_key = (self.ctx.state.get("active_site")
+                        or self.ctx.state.get("queue"))
+        if cooldown_key is not None:
+            self.ctx.cooldown_until[cooldown_key] = time.time() + seconds
         # P4 daemon 可观测：冷却登记即时上报（cooldowns_json）。
         # 仅让出型登记后上报（原地型等待结束再上报等价，避免重复写）；
         # status_store 由 QueueRouter 装配注入，CLI 路径为 None 无操作。
