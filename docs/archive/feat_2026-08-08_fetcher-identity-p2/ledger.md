@@ -42,3 +42,10 @@
   - 终审（最强模型）：✅ MERGE READY——零 Critical/Important；§3.3 七处逐条 diff 核实；单站点等价性（指纹/check_ip_fresh/直连/报表）逐字成立；迁移与 §3.4 一致；冒烟证据与日志逐项吻合；测试触达矩阵全覆盖（含装配层 _build_engine）；309 passed
   - 终审分诊（全部可延期/非缺陷）：relaunch 行号右端点、test_migration 死代码（NOW_TS/_cookie_row，建议合并后随手清）、④a/④b 键级断言、check_ip_fresh site_name 观察、跨 store 注释、if/else 两站假设、summary db_path 类型标注/默认值/未用参数——均记 ledger，无阻塞项
   - 归档：docs/feat_2026-08-08_fetcher-identity-p2 → docs/archive/（P0/P1 同约定）
+
+## 主 Agent 独立检视（合并前第二双眼睛，2026-08-08）
+
+- 自查：全量 309 passed（主 Agent 亲跑）；无残留 "direct" 字面量比较；拼前缀仅 browser.py:222/:238；指纹传参 bare_identity；§3.3 七处隐藏点逐一核实；platform/ 零改动；生产库迁移计数吻合（17385 前缀 + 710 裸键 = 18095）
+- 独立 reviewer（agent-39）结论：通过可合并——三个修复 commit 无次生问题（8 处 summary 站点实现逐核对、DaemonTaskProxy __getattr__ 透传签名匹配）；迁移时序无只读连接冲突；测试抽查无假绿
+- 唯一 Important：第三方域 Cookie 信任链切断未裁定 → 主 Agent ruling：接受（理由已写入 SPEC §6 变更记录：不跨 IP 复制身份标识的既有原则 + 风险方向保守 + tmd 率可观测兜底）
+- 终审 deferred（合并后跟进）：db.py:226 _migrate docstring 漂移；test_cli.py:239-250 daemon 装配测试同语反复；test_browser_fresh 代理模式指纹入参未捕获；test_migration 死代码 NOW_TS/_cookie_row；db.py:837 __main__ 调试入口触生产库迁移

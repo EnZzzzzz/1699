@@ -130,6 +130,8 @@ def is_direct(identity: str) -> bool:
 
 ## 6. 变更记录
 
+- 2026-08-08（独立交叉复核裁定）：第三方域 Cookie（.mmstat.com 的 cna 等阿里设备标识，存量 710 行留在裸键）在 P2 后不再跨会话沉淀——`Session.close` 域过滤使会话内新签发的第三方 Cookie 不回落库，裸键存量行也不再被 load。裁定：**接受该行为变化**，理由：① 与 identity.py 既有风控原则一致（匿名身份标识不跨 IP 复制，防 Cookie 重放特征）；② 每次重启呈「同指纹、无 cna」的新设备态，风险方向偏保守；③ 可观测——若生产 tmd 率上升，再评估把 mmstat 等域纳入站点级域列表（P3 设计项）。
+
 - **2026-08-08 Step 3.1 冒烟发现（summary 路径修复）**：冒烟收尾发现 `Task.summary()`（各站点 exit 汇总）内部 `ShopDB()` 不带路径默认开生产库——P2 的 `_migrate` cookies 迁移使该既有路径获得一次性写副作用（冒烟期间已提前触发生产库迁移，完整幂等无数据损失）。已修复：Task.summary 签名透传 `db_path`，engine 传 `config.resolved_db_path()`，8 处站点实现同步（`fix(identity-p2): summary 透传 db_path`）；临时库运行不再触碰生产库。生产库迁移已实际发生（17385 行带前缀 + 710 行第三方域保持裸键），部署窗口后果（旧代码白板重启一次）提前生效。
 
 - **2026-08-08 Step 1.1 回填**：§4 假设 1 被推翻——插件对象的 `name` 属性不可直接用于拼前缀（1688 的 `plugin.name="alibaba1688"` ≠ 注册名 `"1688"`，见 `alibaba1688/__init__.py:27` vs `:85`）。该假设原文为「站点注册名可从 engine 的插件对象获得」，实际无法获得，改为 CLI/daemon 透传方案。方案：CLI/daemon 把注册名（`args.site` / `"1688"`）透传给 BrowserManager（§3.1）。§4 假设 2 已验证——生产库 domain→site 映射清单完整回填 §3.4（含无法映射第三方域 `.mmstat.com`、`.ynuf.aliapp.org`）。identity 诞生点精确行号 `browser.py:217/233` 确认——relaunch 不携带旧 identity，唯一诞生点即 launch（§3.1）。
