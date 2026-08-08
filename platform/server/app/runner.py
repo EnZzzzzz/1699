@@ -25,16 +25,47 @@ from app.db import DB_PATH, migrate
 PROJECT_ROOT = "/Volumes/DataDrive/proj/public/1699"
 PYTHON_BIN = os.path.join(PROJECT_ROOT, "platform/server/.venv/bin/python")
 
-# 任务类型 → fetcher CLI 子命令
+# 任务类型 → fetcher CLI 子命令（P4：只剩 yiwugo_search，其余批次化）
 TASK_COMMANDS = {
-    "1688_shop": ["1688", "shop"],
-    "1688_contact": ["1688", "contact"],
-    "1688_company": ["1688", "company"],
     "yiwugo_search": ["yiwugo", "search"],
 }
 
-# 进程内任务类型：不起 subprocess，在 API 进程内线程执行（见 app/wa_tasks.py）
-IN_PROCESS_TYPES = {"wa_check"}
+# 进程内任务类型（P4：清空——wa_check 迁入 daemon LocalExecutor；
+# wa_tasks.py 冻结不删，P5 移除）
+IN_PROCESS_TYPES: set[str] = set()
+
+# 批次任务类型 → 队列映射（P4：平台创建/停止/监控全流程走 dispatcher）。
+# 值：{"queue", "enqueue"}——enqueue 为平台侧批次入队函数。
+# contact 类带 domain_suffix（按来源过滤）；feeder/wa 无。
+BATCH_TYPES = {
+    "1688_contact": {
+        "queue": "crawl_1688_contact", "site": "1688",
+        "domain_suffix": ".1688.com", "kind": "contact",
+    },
+    "madeinchina_contact": {
+        "queue": "crawl_mic_contact", "site": "madeinchina",
+        "domain_suffix": ".cn.made-in-china.com", "kind": "contact",
+    },
+    "1688_shop": {
+        "queue": "crawl_1688_shop", "site": "1688",
+        "domain_suffix": "", "kind": "feeder",
+    },
+    "1688_company": {
+        "queue": "crawl_1688_company", "site": "1688",
+        "domain_suffix": "", "kind": "feeder",
+    },
+    "madeinchina_shop": {
+        "queue": "crawl_mic_shop", "site": "madeinchina",
+        "domain_suffix": "", "kind": "feeder",
+    },
+    "wa_check": {
+        "queue": "wa_check", "site": None,
+        "domain_suffix": "", "kind": "wa",
+    },
+}
+
+# 批次任务类型集合（TASK_TYPES = TASK_COMMANDS ∪ BATCH_TYPES）
+BATCH_TYPE_NAMES = set(BATCH_TYPES)
 
 BJ_TZ = timezone(timedelta(hours=8))
 
@@ -137,6 +168,163 @@ _WORKER_NUM_RE = re.compile(r"^\s*\[(\d+)\]")
 _WORKER_IDENTITY_RE = re.compile(r"identity=([^\s)，、]+)")
 
 
+# ==================== P4 批次 sweeper（模块级函数，测试可直接调用） ====================
+
+
+def _batch_items_stats(batch_id: int) -> dict:
+    """聚合某批次 work_items 状态计数。"""
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        conn.execute("PRAGMA busy_timeout = 30000")
+        rows = conn.execute(
+            "SELECT status, COUNT(*) FROM work_items WHERE batch_id=?"
+            " GROUP BY status", (batch_id,)).fetchall()
+    finally:
+        conn.close()
+    stats = {"pending": 0, "claimed": 0, "done": 0, "failed": 0,
+             "stopped": 0}
+    for st, cnt in rows:
+        if st in stats:
+            stats[st] = cnt
+    return stats
+
+
+def _derive_batch_status(stats: dict, stop_requested: bool) -> str:
+    """按 work_items 聚合派生批次任务状态。
+
+    - 存在 pending/claimed → running（有活项）；
+    - 全部终态（done/failed/stopped）且无 pending/claimed：
+      stop_requested 且无 pending → stopped；否则 done（有 failed 也
+      done，failed 计数进 progress——与现状 CLI 部分失败=整体跑完一致）；
+    - 无任何 work_items（批次未入队/空）→ pending 保持（sweeper 不动）。
+    """
+    if stats["pending"] > 0 or stats["claimed"] > 0:
+        return "running"
+    if stats["pending"] == 0 and (stats["done"] > 0 or stats["failed"] > 0
+                                   or stats["stopped"] > 0):
+        if stop_requested and stats["pending"] == 0:
+            return "stopped"
+        return "done"
+    return "pending"  # 无任何项（未入队）
+
+
+def sweep_batch_tasks() -> None:
+    """批次任务 sweeper 单次 tick：状态派生 + stopped 兜底 + progress 节流。
+
+    遍历所有非终态批次任务（tasks.status NOT IN done/failed/stopped
+    或 waiting 派生），逐项：
+    1. stopped 兜底：stop_requested=1 的批次，pending 项压 stopped；
+    2. 聚合 work_items → 派生状态写回 tasks.status；
+    3. progress_json 节流（1s）写 {total,done,failed,stopped,claimed,
+       pending,updated_at}。
+    """
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout = 30000")
+        rows = conn.execute(
+            "SELECT id, type, params_json, stop_requested, status"
+            " FROM tasks WHERE type IN ("
+            + ",".join("?" * len(BATCH_TYPE_NAMES)) + ")",
+            tuple(BATCH_TYPE_NAMES)).fetchall()
+    finally:
+        conn.close()
+    for row in rows:
+        if row["status"] in ("done", "failed", "stopped"):
+            continue  # 终态不动（waiting 由 API 层派生）
+        tid = row["id"]
+        stop_req = bool(row["stop_requested"])
+        # 1. stopped 兜底：防 daemon 重启 reset_claimed 复活 pending
+        if stop_req:
+            conn = sqlite3.connect(DB_PATH, timeout=30)
+            try:
+                conn.execute("PRAGMA busy_timeout = 30000")
+                conn.execute(
+                    "UPDATE work_items SET status='stopped'"
+                    " WHERE batch_id=? AND status='pending'", (tid,))
+                conn.commit()
+            finally:
+                conn.close()
+        # 2. 状态派生
+        stats = _batch_items_stats(tid)
+        derived = _derive_batch_status(stats, stop_req)
+        if derived == "running":
+            # 已 running 且非 stop：只更新 progress
+            pass
+        now = beijing_now()
+        if derived != "pending":
+            conn = sqlite3.connect(DB_PATH, timeout=30)
+            try:
+                conn.execute("PRAGMA busy_timeout = 30000")
+                conn.execute(
+                    "UPDATE tasks SET status=?, finished_at=? WHERE id=?",
+                    (derived, now if derived in ("done", "stopped") else None,
+                     tid))
+                conn.commit()
+            finally:
+                conn.close()
+        # 3. progress 节流
+        _write_batch_progress(tid, stats)
+
+
+def _write_batch_progress(task_id: int, stats: dict) -> None:
+    """写批次进度（1s 节流由调用方/线程控制；此处只写库）。"""
+    progress = {
+        "total": sum(stats.values()),
+        "done": stats["done"],
+        "failed": stats["failed"],
+        "stopped": stats["stopped"],
+        "claimed": stats["claimed"],
+        "pending": stats["pending"],
+        "updated_at": beijing_now(),
+    }
+    _db_write(
+        "UPDATE tasks SET progress_json=? WHERE id=?",
+        (json.dumps(progress, ensure_ascii=False), task_id))
+
+
+def enqueue_batch_for_task(task_id: int, task_type: str,
+                           params: dict) -> int:
+    """批次任务入队：按 BATCH_TYPES 分派 contact/feeder/wa。返回 item 数。
+
+    contact：limit 限量；feeder：discover+category 种子；wa：账号清单
+    （params.accounts）50/块。batch_id = task_id。
+    """
+    spec = BATCH_TYPES.get(task_type)
+    if spec is None:
+        raise ValueError(f"非批次任务类型: {task_type}")
+    params = params or {}
+    limit = int(params.get("limit") or 0)
+    from app.db import (enqueue_contact_batch, enqueue_feeder_batch,
+                        enqueue_wa_batch)
+    if spec["kind"] == "contact":
+        return enqueue_contact_batch(spec["queue"], spec["site"],
+                                     spec["domain_suffix"], task_id, limit)
+    if spec["kind"] == "feeder":
+        n_cat, n_disc = enqueue_feeder_batch(
+            spec["queue"], spec["site"], task_id, limit)
+        return n_cat + n_disc
+    if spec["kind"] == "wa":
+        accounts = params.get("accounts") or []
+        return enqueue_wa_batch(task_id, accounts, limit)
+    return 0
+
+
+def stop_batch_task(task_id: int) -> None:
+    """批次任务停止：置 stop_requested + pending 项压 stopped（sweeper 兜底
+    会持续压，claimed 项跑完自然终态）。"""
+    _db_write("UPDATE tasks SET stop_requested=1 WHERE id=?", (task_id,))
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        conn.execute("PRAGMA busy_timeout = 30000")
+        conn.execute(
+            "UPDATE work_items SET status='stopped'"
+            " WHERE batch_id=? AND status='pending'", (task_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _extract_worker(line: str):
     """提取日志的 worker 标识，供前端分色。
     支持：行首编号标记 "[2] ..."；代理身份 identity=出口IP（每 worker 一个）。
@@ -167,24 +355,66 @@ class _RunEntry:
 class TaskRunner:
     """进程注册表在内存；随 FastAPI lifespan 初始化。"""
 
+    # sweeper tick 间隔（秒）与进度节流
+    SWEEPER_TICK = 5.0
+    PROGRESS_THROTTLE = 1.0
+
     def __init__(self):
         self._runs = {}  # task_id -> _RunEntry
         self._timers = {}  # task_id -> threading.Timer（循环模式待重启）
         self._lock = threading.Lock()
+        # P4 批次 sweeper 守护线程（批次任务无子进程，状态由它派生）
+        self._sweeper_stop = threading.Event()
+        self._sweeper_thread: threading.Thread | None = None
+        self._last_progress: dict[int, float] = {}
+
+    # ---------- 批次 sweeper ----------
+
+    def _start_sweeper(self) -> None:
+        """启动批次 sweeper 守护线程（5s tick，短事务）。"""
+        if self._sweeper_thread is not None:
+            return
+        self._sweeper_stop.clear()
+        self._sweeper_thread = threading.Thread(
+            target=self._sweeper_loop, name="batch-sweeper", daemon=True)
+        self._sweeper_thread.start()
+
+    def _sweeper_loop(self) -> None:
+        while not self._sweeper_stop.wait(self.SWEEPER_TICK):
+            try:
+                sweep_batch_tasks()
+            except Exception as e:  # noqa: BLE001
+                print(f"[sweeper] tick 异常: {e}")
+
+    def _stop_sweeper(self) -> None:
+        self._sweeper_stop.set()
+        if self._sweeper_thread is not None:
+            self._sweeper_thread.join(timeout=2)
+        self._sweeper_thread = None
 
     # ---------- 生命周期 ----------
 
     def startup(self) -> None:
-        """服务启动：幂等迁移 + 清理孤儿 running + 恢复循环模式待重启。"""
+        """服务启动：幂等迁移 + 清理孤儿 running + 恢复循环模式待重启。
+
+        P4：孤儿清理跳过批次类型（由 daemon 服务，uvicorn 重启不影响）；
+        启动批次 sweeper（对非终态批次做状态重建）。
+        """
         migrate()
         conn = sqlite3.connect(DB_PATH, timeout=30)
         try:
             conn.execute("PRAGMA busy_timeout = 30000")
-            cur = conn.execute(
-                "UPDATE tasks SET status='failed', error=?, finished_at=? "
-                "WHERE status='running'",
-                ("服务重启，进程丢失", beijing_now()),
-            )
+            if BATCH_TYPE_NAMES:
+                cur = conn.execute(
+                    "UPDATE tasks SET status='failed', error=?, finished_at=? "
+                    "WHERE status='running' AND type NOT IN ("
+                    + ",".join("?" * len(BATCH_TYPE_NAMES)) + ")",
+                    ("服务重启，进程丢失", beijing_now(), *BATCH_TYPE_NAMES))
+            else:
+                cur = conn.execute(
+                    "UPDATE tasks SET status='failed', error=?, finished_at=? "
+                    "WHERE status='running'",
+                    ("服务重启，进程丢失", beijing_now()))
             conn.commit()
             if cur.rowcount:
                 print(f"[runner] 清理孤儿 running 任务 {cur.rowcount} 个")
@@ -196,9 +426,14 @@ class TaskRunner:
             self._recover_loop_restarts()
         except Exception as e:
             print(f"[runner] 恢复循环重启失败: {e}")
+        # P4：启动批次 sweeper（对非终态批次任务做状态重建/进度聚合）
+        self._start_sweeper()
 
     def shutdown(self) -> None:
-        """服务关闭：取消待重启 Timer；终止仍在跑的子进程 / 通知进程内任务停止。"""
+        """服务关闭：停 sweeper；取消待重启 Timer；终止仍在跑的子进程 /
+        通知进程内任务停止。"""
+        # P4：停批次 sweeper
+        self._stop_sweeper()
         with self._lock:
             timers = list(self._timers.values())
             self._timers.clear()
@@ -227,7 +462,22 @@ class TaskRunner:
     # ---------- 启动 / 停止 ----------
 
     def start(self, task_id: int, task_type: str, params: dict):
-        """启动任务：进程内类型走线程执行器，其余起子进程。返回 pid 或 None。"""
+        """启动任务：批次类型走平台入队；yiwugo 走 subprocess。
+
+        返回 pid（subprocess）或 None（批次）。
+        """
+        if task_type in BATCH_TYPE_NAMES:
+            try:
+                n = enqueue_batch_for_task(task_id, task_type, params)
+            except Exception as e:  # noqa: BLE001
+                print(f"[runner] 批次 {task_id} 入队失败: {e}")
+                raise
+            _insert_event(
+                task_id, "info",
+                f"批次已提交：{BATCH_TYPES[task_type]['queue']}，"
+                f"{n} 个工作项",
+                {"queue": BATCH_TYPES[task_type]["queue"], "items": n})
+            return None
         if task_type in IN_PROCESS_TYPES:
             return self._start_in_process(task_id, task_type, params)
         cmd = build_command(task_type, params)
@@ -313,8 +563,17 @@ class TaskRunner:
                 print(f"[runner] 进程内任务 {task_id} 重启调度失败: {e}")
 
     def stop(self, task_id: int) -> bool:
-        """先置 stop_requested=1；取消待重启 Timer；进程内任务置 stop_event，子进程 terminate。"""
+        """先置 stop_requested=1；取消待重启 Timer；批次任务压 stopped
+        pending 项；进程内任务置 stop_event，子进程 terminate。"""
         _db_write("UPDATE tasks SET stop_requested=1 WHERE id=?", (task_id,))
+        # P4 批次：pending 项压 stopped（claimed 跑完自然终态）
+        try:
+            with self._lock:
+                entry = self._runs.get(task_id)
+            if task_id not in self._runs:
+                stop_batch_task(task_id)
+        except Exception as e:  # noqa: BLE001
+            print(f"[runner] 批次 {task_id} 停止失败: {e}")
         timer_canceled = self.cancel_timer(task_id)
         with self._lock:
             entry = self._runs.get(task_id)
@@ -483,7 +742,15 @@ class TaskRunner:
                 "stop_requested=0, started_at=?, finished_at=NULL WHERE id=?",
                 (beijing_now(), task_id))
             _insert_event(task_id, "info", "循环模式：自动重启任务")
-            self.start(task_id, row["type"], params)
+            # P4 批次：循环重启走批次入队（新批次 item）
+            if row["type"] in BATCH_TYPE_NAMES:
+                n = enqueue_batch_for_task(task_id, row["type"], params)
+                _insert_event(
+                    task_id, "info",
+                    f"批次已提交：{BATCH_TYPES[row['type']]['queue']}，"
+                    f"{n} 个工作项")
+            else:
+                self.start(task_id, row["type"], params)
         except Exception as e:
             print(f"[runner] 任务 {task_id} 自动重启失败: {e}")
             try:
@@ -499,6 +766,7 @@ class TaskRunner:
         with self._lock:
             entry = self._runs.get(task_id)
         if not entry:
+            # P4 批次任务无进程/线程：由 sweeper 派生状态，这里返回 False
             return False
         if entry.proc is not None:
             return entry.proc.poll() is None

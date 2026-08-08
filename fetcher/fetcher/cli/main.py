@@ -8,10 +8,13 @@ CLI 只做装配：参数 → RunConfig → 站点插件 → 策略表（可被�
 from __future__ import annotations
 
 import argparse
+import shutil
 import sys
+from pathlib import Path
 
 from fetcher.core.context import RunConfig
 from fetcher.sites import get_site, site_names
+from fetcher.wa_task import WaCheckTask, wa_check_topup
 
 # 任务默认批量（新站点未登记时用 DEFAULT_NUM）
 TASK_NUM_DEFAULTS = {"contact": 10, "shop": 200, "company": 200}
@@ -58,6 +61,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_daemon.add_argument("--queues", nargs="+", default=None,
                           help="消费的 work_items 队列列表（默认全量；可选: "
                                "crawl_1688_contact, crawl_mic_contact）")
+    p_daemon.add_argument("--local-workers", type=int, default=2,
+                          help="无浏览器 local 消费者线程数（wa_check 等"
+                               "非站点队列消费用，默认 2，不占浏览器席位）")
     add_common_args(p_daemon, default_rest_every=20)
     return ap
 
@@ -271,6 +277,23 @@ def _build_registry(selected_queues: list[str] | None = None) -> list:
         requires={"channel", "browser"},
     ))
 
+    # wa_check（本地队列：无 site、无浏览器，LocalExecutor 消费）。
+    # 条件守卫（SPEC §3.4）：vendor check.js 存在 + node 可用才注册，
+    # 否则跳过并告警（防御性——wa_check 不是所有部署都启用）。
+    wa_dir = Path(__file__).resolve().parents[2] / "vendor" / "wa-check"
+    if (wa_dir / "check.js").is_file() and shutil.which("node"):
+        specs.append(QueueSpec(
+            queue="wa_check",
+            site=None,
+            task=WaCheckTask(),
+            topup=wa_check_topup,
+            domain_suffix="",
+            requires={"local"},
+        ))
+    else:
+        print("[daemon] [!] wa_check 未注册：vendor wa-check/check.js 或"
+              " node 不可用（跳过本地队列）")
+
     if selected_queues:
         specs = [s for s in specs if s.queue in selected_queues]
     return specs
@@ -286,7 +309,10 @@ def reset_daemon_state(db, registry: list) -> tuple[int, int]:
     n_items = db.reset_claimed_work_items()
     total_shops = 0
     for spec in registry:
-        if spec.topup is not None:
+        # 只重置有 domain_suffix 的 contact 类队列（feeder/wa_check 的
+        # topup 不产生 in_progress shops；wa_check 无 domain_suffix，
+        # 若误用空后缀会重置所有站点 in_progress）
+        if spec.topup is not None and spec.domain_suffix:
             n = db.reset_in_progress(spec.domain_suffix)
             total_shops += n
     return n_items, total_shops
@@ -320,23 +346,35 @@ def _run_daemon(args) -> int:
 
     provider = make_provider(cfg)
 
-    # 策略表：对 registry 涉及的每个 site 建 Policy
+    # P4 daemon 可观测：装配 ConsumerStatusStore（心跳/租约/claim 上报）。
+    # 线程本地连接（sqlite 不可跨线程），用 daemon 同一数据库。
+    from fetcher.control.status import ConsumerStatusStore
+    status_store = None
+    if getattr(args, "status_report", True):
+        status_store = ConsumerStatusStore(cfg.resolved_db_path())
+
+    # 策略表：对 registry 涉及的每个 site 建 Policy（site=None 的本地队列跳过）
     from fetcher.strategy.policy import Policy
     policies = {}
     site_set = set()
     for spec in registry:
-        if spec.site not in site_set:
-            site_set.add(spec.site)
-            site = get_site(spec.site)
-            policy = Policy(max_consecutive_fail=cfg.max_consecutive_fail)
-            overrides = getattr(site, "policy_overrides", None)
-            if overrides:
-                policy = policy.with_overrides(overrides)
-            policies[spec.site] = policy
+        if spec.site is None or spec.site in site_set:
+            continue
+        site_set.add(spec.site)
+        site = get_site(spec.site)
+        policy = Policy(max_consecutive_fail=cfg.max_consecutive_fail)
+        overrides = getattr(site, "policy_overrides", None)
+        if overrides:
+            policy = policy.with_overrides(overrides)
+        policies[spec.site] = policy
 
-    # daemon 用注册表首个 site 的默认 policy 作为 Engine 级 policy
-    first_site = registry[0].site
-    default_policy = policies[first_site]
+    # 浏览器 spec 集合（site 非空）：Engine 级 policy / 默认 site 从它取；
+    # 纯本地队列（如只跑 wa_check）时无浏览器 spec → 不装配浏览器引擎位。
+    browser_specs = [spec for spec in registry if spec.site is not None]
+
+    # daemon 用注册表首个浏览器 site 的默认 policy 作为 Engine 级 policy
+    first_site = browser_specs[0].site if browser_specs else None
+    default_policy = (policies[first_site] if first_site else None)
 
     # 站点 dict（供 loop _bind_item_site 按 active_site 切换）
     sites = {}
@@ -354,13 +392,17 @@ def _run_daemon(args) -> int:
           f"{total_shops} 个 in_progress 店铺 → pending"
           f"（逐 site: {', '.join(spec.domain_suffix for spec in registry)}）")
 
-    # Engine 装配：site 用首个注册 site（BrowserManager 初始 view identity 前缀），
-    # policy 用 default_policy（多 site 的 _bind_item_site 会动态切换）
-    first_site_obj = get_site(first_site)
+    # Engine 装配：site 用首个浏览器 site（BrowserManager 初始 view identity
+    # 前缀）；纯本地队列时 site=None（Engine 不装浏览器，只跑 local consumers）
+    first_site_obj = get_site(first_site) if first_site else None
     engine = Engine(cfg, task=router, site=first_site_obj,
                     provider=provider, policy=default_policy,
                     sites=sites, policies=policies,
-                    site_name=first_site)
+                    site_name=first_site, status_store=status_store,
+                    local_workers=getattr(args, "local_workers", 2),
+                    # 有浏览器 spec：保持原推导（None 不覆盖）；
+                    # 纯本地队列：显式 0（不启动浏览器 worker）
+                    browser_workers=None if browser_specs else 0)
     return engine.run()
 
 

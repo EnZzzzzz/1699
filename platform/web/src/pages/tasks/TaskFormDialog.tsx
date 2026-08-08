@@ -106,6 +106,9 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
   const [waAccounts, setWaAccounts] = useState<WaAccount[]>([])
   const [selectedAccounts, setSelectedAccounts] = useState<string[]>([])
 
+  // P4 批次采集专用：limit（contact=条数、shop/company=页数）
+  const [batchLimit, setBatchLimit] = useState('')
+
   // 命令预览
   const [preview, setPreview] = useState<TaskPreview | null>(null)
 
@@ -125,6 +128,9 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
   const [tplManageOpen, setTplManageOpen] = useState(false)
 
   const isWaCheck = type === 'wa_check'
+  // P4 批次采集类型：表单只留 limit + repeat_interval（节奏/代理收敛 daemon 级）
+  const isBatch = ['1688_shop', '1688_company', '1688_contact',
+                   'madeinchina_shop', 'madeinchina_contact'].includes(type)
 
   const setValue = (key: string, v: string) =>
     setValues((prev) => ({ ...prev, [key]: v }))
@@ -142,6 +148,7 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
     setAutoSolve(p.auto_solve !== false)
     setRetryFailed(p.retry_failed === true)
     setWaLimit(typeof p.limit === 'number' ? String(p.limit) : '')
+    setBatchLimit(typeof p.limit === 'number' ? String(p.limit) : '')
     // 节奏参数：sample_min/max 缺省时用旧参数 interval 回填（向后兼容）
     const legacyInterval = typeof p.interval === 'number' ? String(p.interval) : ''
     setWaSampleMin(typeof p.sample_min === 'number' ? String(p.sample_min) : legacyInterval)
@@ -211,6 +218,18 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
 
   // 由当前表单构造 params（宽松模式：无法解析的数字直接跳过，供预览使用）
   const buildParams = (): TaskParams => {
+    if (isBatch) {
+      // P4 批次采集：只提交 limit + repeat_interval（其余 daemon 级收敛）
+      const params: TaskParams = {}
+      const limitN = Number(batchLimit)
+      if (batchLimit.trim() !== '' && Number.isInteger(limitN) && limitN >= 0) {
+        params.limit = limitN
+      }
+      const riRaw = (values.repeat_interval ?? '').trim()
+      const riN = Number(riRaw)
+      if (riRaw !== '' && Number.isInteger(riN) && riN > 0) params.repeat_interval = riN
+      return params
+    }
     if (isWaCheck) {
       const params: TaskParams = { accounts: selectedAccounts }
       const limitN = Number(waLimit)
@@ -277,6 +296,16 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
 
   // 严格校验（提交时）：已填写的数字必须是合法的非负整数
   const validate = (): boolean => {
+    if (isBatch) {
+      if (batchLimit.trim() !== '') {
+        const n = Number(batchLimit)
+        if (!Number.isInteger(n) || n < 0) {
+          toast.error('采集上限需为不小于 0 的整数（0 = 不限）')
+          return false
+        }
+      }
+      return true
+    }
     if (isWaCheck) {
       if (waLimit.trim() !== '') {
         const n = Number(waLimit)
@@ -561,7 +590,43 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
             </Select>
           </div>
 
-          {isWaCheck ? (
+          {isBatch ? (
+            <>
+              <div className="space-y-2">
+                <Label htmlFor="batch-limit">采集上限</Label>
+                <Input
+                  id="batch-limit"
+                  type="number"
+                  min={0}
+                  value={batchLimit}
+                  placeholder="0 = 不限"
+                  onChange={(e) => setBatchLimit(e.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  {type === '1688_contact' || type === 'madeinchina_contact'
+                    ? '联系方式采集：条数上限（0 = 不限）'
+                    : '店铺/公司采集：页数上限（0 = 不限）'}
+                </p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="batch-repeat">循环间隔（秒）</Label>
+                <Input
+                  id="batch-repeat"
+                  type="number"
+                  min={0}
+                  value={values.repeat_interval ?? ''}
+                  placeholder="0 = 不循环"
+                  onChange={(e) => setValue('repeat_interval', e.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  批次跑完后 N 秒自动重启同参数批次（0 = 不循环）
+                </p>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                节奏/代理/并发已收敛到 daemon 启动参数，不再逐任务下发。
+              </p>
+            </>
+          ) : isWaCheck ? (
             <>
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-2">

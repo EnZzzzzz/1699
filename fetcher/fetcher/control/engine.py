@@ -39,7 +39,11 @@ class Engine:
                  loop_factory=None,
                  site_name: str | None = None,
                  sites: dict | None = None,
-                 policies: dict | None = None):
+                 policies: dict | None = None,
+                 status_store=None,
+                 local_workers: int = 0,
+                 local_loop_factory=None,
+                 browser_workers: int | None = None):
         if site is not None and site_name is None:
             raise RuntimeError(
                 "site_name 必传（CLI/daemon 传入注册名），"
@@ -53,6 +57,22 @@ class Engine:
         self.site_name = site_name
         self.sites = sites
         self.policies = policies
+        # P4 daemon 可观测：ConsumerStatusStore（None=CLI 路径不启用）
+        self.status_store = status_store
+        # P4-1：无浏览器 local 消费者线程数（wa_check 等非站点队列；
+        # 不占 CloakBrowser 席位，不分配通道/种子）
+        self.local_workers = max(0, int(local_workers or 0))
+        # local 消费者循环工厂（默认 LocalLoop；测试可注入）
+        if local_loop_factory is None:
+            from fetcher.control.local_loop import LocalLoop
+            local_loop_factory = LocalLoop
+        self.local_loop_factory = local_loop_factory
+        # 浏览器 worker 数显式覆盖（daemon 纯本地队列时传 0——不启动浏览器
+        # worker；None=按 cfg.workers/通道数推导，CLI 与常规 daemon 不变）
+        self.browser_workers = browser_workers
+        # 心跳线程（10s 批量刷新 updated_at），daemon 路径启动
+        self._heartbeat_thread: threading.Thread | None = None
+        self._heartbeat_stop = threading.Event()
         # 可注入工厂（测试用；默认每 worker 独立 ShopDB / BrowserManager /
         # CrawlLoop）
         self.store_factory = store_factory or (
@@ -68,8 +88,20 @@ class Engine:
     # ---- worker 装配 ----
 
     def _alloc_workers(self) -> tuple[int, list]:
-        """并发度与通道分配（一 worker 一通道，IP + Cookie 配套）。"""
+        """并发度与通道分配（一 worker 一通道，IP + Cookie 配套）。
+
+        browser_workers 非 None 时显式覆盖（daemon 纯本地队列传 0——
+        不启动浏览器 worker，只跑 local consumers）。
+        """
         cfg = self.config
+        if self.browser_workers is not None:
+            workers = self.browser_workers
+            if cfg.use_proxy and workers:
+                if self.provider is None:
+                    raise RuntimeError("use_proxy=True 但未配置 ProxyProvider")
+            channels = ([self.provider.acquire() for _ in range(workers)]
+                        if cfg.use_proxy and workers else [None] * workers)
+            return workers, channels
         if cfg.use_proxy:
             if self.provider is None:
                 raise RuntimeError("use_proxy=True 但未配置 ProxyProvider")
@@ -191,6 +223,9 @@ class Engine:
         ctx = WorkerContext(config=self.config, store=store,
                             browser_manager=mgr, site=self.site,
                             stop=self.stop, log=log, wid=wid, tag=tag)
+        # P4 daemon 可观测：注入消费者状态写入口（冷却登记/claim 上报共用）
+        if self.status_store is not None:
+            ctx.status_store = self.status_store
         if board is not None:
             ctx.set_status = lambda **kw: board.set(wid, **kw)
         loop_kw = {}
@@ -205,6 +240,37 @@ class Engine:
         stats = loop.run()
         with self.lock:
             self.state["stats"][wid] = stats
+
+    def _local_worker(self, wid: int, board):
+        """无浏览器 local 消费者线程入口（P4-1）。
+
+        不建 BrowserManager / 不分配通道 / 不认种子身份（resources={"local"}），
+        跑 LocalLoop：acquire → fetch → on_success/giveup。用于 wa_check 等
+        非站点队列（requires={"local"} 结构性互斥，浏览器消费者领不到）。
+        """
+        tag = f"[local{wid}]"
+        store = self.store_factory(wid + 10000)  # 独立 DB 连接（wid 隔离）
+
+        def log(msg: str):
+            text = (msg or "").strip()
+            if not text:
+                return
+            # local 消费者不进状态板（board 只对浏览器 worker 有意义），
+            # 直接打印（daemon.log 可见）
+            print(text, flush=True)
+
+        ctx = WorkerContext(config=self.config, store=store,
+                            stop=self.stop, log=log, wid=wid, tag=tag,
+                            resources={"local"}, consumer_kind="local")
+        if self.status_store is not None:
+            ctx.status_store = self.status_store
+        # local 消费者无状态板行（board.fields 只分配了浏览器 worker）
+        ctx.set_status = lambda **kw: None
+        from fetcher.control.local_loop import LocalLoop
+        loop = self.local_loop_factory(ctx, self.task)
+        stats = loop.run()
+        with self.lock:
+            self.state["stats"][wid + 10000] = stats
 
     # ---- main 编排 ----
 
@@ -261,6 +327,37 @@ class Engine:
             threads.append(threading.Thread(
                 target=self._worker, args=args_i, kwargs=kwargs_i,
                 name=f"worker-{i}", daemon=True))
+
+        # P4-1：无浏览器 local 消费者线程（不占席位，不进浏览器错开启动）
+        local_threads = []
+        for i in range(self.local_workers):
+            local_threads.append(threading.Thread(
+                target=self._local_worker, args=(i, board),
+                name=f"local-{i}", daemon=True))
+        if self.local_workers:
+            print(f"[2] 另启动 {self.local_workers} 个 local 消费者"
+                  f"（无浏览器，wa_check 等非站点队列）")
+
+        # P4 daemon 可观测：启动前租约通道（按 tunnel 匹配）+ 启动心跳线程
+        status_consumers: list[str] = []
+        if self.status_store is not None:
+            status_consumers = ([f"w{i}" for i in range(workers)]
+                                + [f"local{i}" for i in range(
+                                    self.local_workers)])
+            try:
+                if cfg.use_proxy:
+                    tunnels = [c.server for c in channels if c is not None]
+                    self.status_store.lease_channels(
+                        "daemon", tunnels)
+            except Exception as e:  # noqa: BLE001
+                print(f"[!] daemon 通道租约失败: {e}")
+            self._heartbeat_stop.clear()
+            self._heartbeat_thread = threading.Thread(
+                target=self._heartbeat_loop,
+                args=(status_consumers,),
+                name="daemon-heartbeat", daemon=True)
+            self._heartbeat_thread.start()
+
         for i, t in enumerate(threads):
             t.start()
             if i < len(threads) - 1:
@@ -268,9 +365,13 @@ class Engine:
                 d = random.uniform(cfg.stagger_min, cfg.stagger_max)
                 print(f"    错开启动：{d:.0f}s 后启动下一个 worker ...")
                 time.sleep(d)
+        for t in local_threads:
+            t.start()
 
         try:
             for t in threads:
+                t.join()
+            for t in local_threads:
                 t.join()
         except KeyboardInterrupt:
             (board.log if board else print)(
@@ -278,7 +379,34 @@ class Engine:
             self.stop.set()
             for t in threads:
                 t.join(timeout=90)
+            for t in local_threads:
+                t.join(timeout=90)
             (board.log if board else print)("[!] 进度已保存，下次运行自动续爬")
+
+        # P4 daemon 可观测：退出停心跳、清 consumer_status 行、释放租约
+        if self.status_store is not None:
+            self._heartbeat_stop.set()
+            if self._heartbeat_thread is not None:
+                self._heartbeat_thread.join(timeout=2)
+            try:
+                for cid in status_consumers:
+                    self.status_store.clear(cid)
+                if cfg.use_proxy:
+                    self.status_store.release_channels("daemon")
+            except Exception as e:  # noqa: BLE001
+                print(f"[!] daemon 状态清理失败: {e}")
+            try:
+                self.status_store.close()
+            except Exception as e:  # noqa: BLE001
+                print(f"[!] daemon 状态连接关闭失败: {e}")
 
         print(f"[OK] {self.task.summary(self.state['stats'], self.config.resolved_db_path())}")
         return 0
+
+    def _heartbeat_loop(self, consumers: list[str]) -> None:
+        """10s 心跳：批量刷新在册消费者的 updated_at（不 clobber 其他字段）。"""
+        while not self._heartbeat_stop.wait(10.0):
+            try:
+                self.status_store.heartbeat_all(consumers)
+            except Exception as e:  # noqa: BLE001
+                print(f"[!] daemon 心跳失败: {e}")

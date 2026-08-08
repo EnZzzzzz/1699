@@ -10,7 +10,7 @@ fetcher/      采集框架（Python 包）：网络层 / 原子能力层 / 判�
 platform/     管理系统（前后端分离）
   server/     FastAPI 后端（任务监督器 subprocess、SSE 日志、供应商与 WhatsApp 账号管理）
   web/        React 18 + Vite + TS + Tailwind + shadcn/ui 前端
-  start.sh    一键启动（后端 8765 + 前端 3000）；stop.sh 停止
+  start.sh    一键启动（后端 8765 + 前端 3000 + 调度器 daemon）；stop.sh 停止
 .cache/1688.db  SQLite 主库（shops/contacts/tasks/providers/proxy_channels/task_events 等）
 scraper/ util/  旧版脚本，可独立运行
 ```
@@ -19,8 +19,13 @@ scraper/ util/  旧版脚本，可独立运行
 
 ```bash
 cd platform && ./start.sh     # 前端 http://127.0.0.1:3000，后端 http://127.0.0.1:8765
-cd platform && ./stop.sh      # 停止
+                              # 同时拉起调度器 daemon（fetcher daemon，消费 work_items 队列）
+cd platform && ./stop.sh      # 停止（含 daemon 优雅退出）
 ```
+
+**重要**：平台已纳管调度器 daemon（start.sh 自动拉起、stop.sh 优雅停止），
+**不要再手动启动** `python -m fetcher daemon`（会双 daemon 抢队列）。daemon
+运行日志见 `platform/logs/daemon.log`，运行状态可在前端「调度器」看板查看。
 
 后端 venv 重建要点见 `platform/server/requirements.txt` 头部注释
 （fetcher 需 `pip install --no-deps -e ../../fetcher`）。

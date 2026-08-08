@@ -20,6 +20,17 @@ _WAIT_TIMEOUT = 30.0
 _STATE_KEY = "daemon_work_item_id"
 
 
+def consumer_id_for(ctx) -> str:
+    """按消费者类型生成 consumer_id：browser→"w{wid}"、local→"local{wid}"。
+
+    consumer_status 主键/心跳/退出清理都以它为准（P4-1 起 local 消费者
+    与浏览器消费者同池并存，命名必须区分）。
+    """
+    prefix = "local" if getattr(ctx, "consumer_kind", "browser") == "local" \
+        else "w"
+    return f"{prefix}{ctx.wid}"
+
+
 @dataclass
 class QueueSpec:
     """队列注册表条目。"""
@@ -32,30 +43,34 @@ class QueueSpec:
 
 
 def eligible_queues(registry, ctx, now: float) -> list[str]:
-    """当前消费者可认领的队列名列表：资源满足 ∧ 该站点冷却已到期。
+    """当前消费者可认领的队列名列表：资源满足 ∧ 该站点/队列冷却已到期。
 
     registry: 可迭代的 QueueSpec。
-    ctx: 有 .resources（set）与 .cooldown_until（dict[site, float]）的对象。
+    ctx: 有 .resources（set）与 .cooldown_until（dict[str, float]）的对象。
     纯函数，无副作用；返回按注册表顺序。
+
+    冷却键泛化（P4-1）：site 非空用 site 名；site 为空（wa_check 等
+    非站点队列）退 queue 名。
     """
     result = []
     for q in registry:
         if q.requires <= ctx.resources \
-                and now >= ctx.cooldown_until.get(q.site, 0):
+                and now >= ctx.cooldown_until.get(q.site or q.queue, 0):
             result.append(q.queue)
     return result
 
 
 def condvar_timeout_multi(cooldown_until: dict[str, float],
-                          sites: list[str], now: float,
+                          keys: list[str], now: float,
                           cap: float = 30.0) -> float:
-    """多队列 condvar timeout：取所有冷却中 site 的剩余时间的最小值。
+    """多队列 condvar timeout：取所有冷却中键的剩余时间的最小值。
 
-    无任何 site 在冷却 → cap。
+    无任何键在冷却 → cap。keys 为冷却键列表（site 或 queue 名，
+    由调用方展开 spec.site or spec.queue）。
     """
     min_remaining = None
-    for site in sites:
-        deadline = cooldown_until.get(site, 0)
+    for key in keys:
+        deadline = cooldown_until.get(key, 0)
         if now < deadline:
             remaining = deadline - now
             if min_remaining is None or remaining < min_remaining:
@@ -89,12 +104,25 @@ class QueueRouter:
     cold_start_before_acquire = False
 
     def __init__(self, registry: list[QueueSpec], cond=None,
-                 db_factory=None):
+                 db_factory=None, status_store=None):
         self._registry = {spec.queue: spec for spec in registry}
         self._specs = registry  # 保持顺序
         self._cond = cond or threading.Condition()
         self._db_factory = db_factory
+        self._status_store = status_store
         self._tls = threading.local()
+
+    def _status(self, ctx) -> object | None:
+        """取当前 worker 的状态写入口（ConsumerStatusStore 或 None）。
+
+        优先 ctx.status_store（loop 冷却上报用同一 store）；无则回退
+        本 router 持有的 store 并注入 ctx（供 loop._cooldown 使用）。
+        """
+        store = getattr(ctx, "status_store", None)
+        if store is None and self._status_store is not None:
+            ctx.status_store = self._status_store
+            store = self._status_store
+        return store
 
     @property
     def ip_request_budget(self):
@@ -232,7 +260,7 @@ class QueueRouter:
         2. 未命中 → topup 只对冷却到期的 contact 队列逐队列补货 → 补到则 notify_all + 重试
         3. 仍无 → condvar wait（多队列取各冷却中最小值，无冷却 30s）→ 醒后查 stop
         """
-        consumer_id = f"w{ctx.wid}"
+        consumer_id = consumer_id_for(ctx)
         db = self._db(ctx)
         limit = self._topup_limit(ctx)
         with self._cond:
@@ -252,6 +280,22 @@ class QueueRouter:
                         payload = dict(item["payload"])
                         # 保留 id 键：测试/DB 验证用（site 插件只依赖 domain/name/url）
                         payload["id"] = item["id"]
+                        # P4 批次：把 batch_id 注入 payload（feeder 续喂/
+                        # 补插继承用；daemon 自喂为 None 时不注入）
+                        if item.get("batch_id") is not None:
+                            payload["batch_id"] = item["batch_id"]
+                        # P4 daemon 可观测：claim 即时上报（队列/工作项/批次）
+                        store = self._status(ctx)
+                        if store is not None:
+                            try:
+                                store.upsert(
+                                    consumer_id, ctx.consumer_kind,
+                                    queue=item["queue"],
+                                    item_id=item["id"],
+                                    batch_id=item.get("batch_id"),
+                                    cooldowns=ctx.cooldown_until)
+                            except Exception as e:  # noqa: BLE001
+                                ctx.log(f"[!] claim 状态上报失败: {e}")
                         from datetime import datetime
                         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         ctx.log(f"[claim] queue={item['queue']} item={item['id']} "
@@ -262,7 +306,8 @@ class QueueRouter:
                 any_topped = False
                 for spec in self._specs:
                     if spec.topup is not None \
-                            and now >= ctx.cooldown_until.get(spec.site, 0):
+                            and now >= ctx.cooldown_until.get(
+                                spec.site or spec.queue, 0):
                         n = spec.topup(db, limit)
                         if n:
                             any_topped = True
@@ -271,9 +316,10 @@ class QueueRouter:
                     continue
 
                 # condvar wait：多队列取各冷却中剩余的最小值
+                # （冷却键泛化 P4-1：site 或 queue 名）
                 timeout = condvar_timeout_multi(
                     ctx.cooldown_until,
-                    [spec.site for spec in self._specs],
+                    [spec.site or spec.queue for spec in self._specs],
                     now, cap=_WAIT_TIMEOUT)
                 self._cond.wait(timeout=timeout)
                 if ctx.stopped():
@@ -323,6 +369,16 @@ class QueueRouter:
             return
         try:
             self._db(ctx).finish_work_item(item_id, status, result)
+            # P4 daemon 可观测：finish 清空 current_*（保留心跳字段）
+            store = self._status(ctx)
+            if store is not None:
+                try:
+                    store.upsert(
+                        consumer_id_for(ctx), ctx.consumer_kind,
+                        queue=None, item_id=None, batch_id=None,
+                        cooldowns=ctx.cooldown_until)
+                except Exception as e:  # noqa: BLE001
+                    ctx.log(f"[!] finish 状态上报失败: {e}")
             from datetime import datetime
             ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             ctx.log(f"[finish] item={item_id} status={status} @{ts}")

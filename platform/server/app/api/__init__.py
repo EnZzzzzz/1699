@@ -3,7 +3,7 @@
 
 from fastapi import APIRouter
 
-from app.api import dashboard, data, health, providers, task_templates, tasks, wa
+from app.api import dashboard, data, dispatcher, health, providers, task_templates, tasks, wa
 
 api_router = APIRouter(prefix="/api")
 api_router.include_router(health.router)
@@ -13,3 +13,4 @@ api_router.include_router(tasks.router)
 api_router.include_router(task_templates.router)
 api_router.include_router(providers.router)
 api_router.include_router(wa.router)
+api_router.include_router(dispatcher.router)

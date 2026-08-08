@@ -76,6 +76,23 @@ function lastLine(task: Task): string | null {
   return v.length > 60 ? `${v.slice(0, 60)}…` : v
 }
 
+// P4 批次进度：progress_json 含 total/done/failed → 展示「done/total（failed 标红）」
+function batchProgress(task: Task): { done: number; total: number; failed: number } | null {
+  const p = task.progress as Record<string, unknown> | null
+  if (!p) return null
+  const total = p.total
+  const done = p.done
+  if (typeof total !== 'number' || typeof done !== 'number') return null
+  const failed = typeof p.failed === 'number' ? (p.failed as number) : 0
+  if (total <= 0) return null
+  return { done, total, failed }
+}
+
+// P4 批次采集类型（progress 为 work_items 聚合，非 last_line）
+const BATCH_TYPE_NAMES = new Set(['1688_shop', '1688_company', '1688_contact',
+                                  'madeinchina_shop', 'madeinchina_contact',
+                                  'wa_check'])
+
 function TaskRow({
   task,
   selected,
@@ -90,6 +107,7 @@ function TaskRow({
   onShowLogs: () => void
 }) {
   const line = lastLine(task)
+  const bp = BATCH_TYPE_NAMES.has(task.type) ? batchProgress(task) : null
   return (
     <TableRow data-state={selected ? 'selected' : undefined}>
       <TableCell className="w-10">
@@ -116,11 +134,19 @@ function TaskRow({
             />
           )}
         </div>
-        {line && (
+        {/* P4 批次：进度 done/total，failed 标红；非批次回退 last_line */}
+        {bp ? (
+          <div className="mt-1 text-xs text-muted-foreground">
+            <span className={bp.failed > 0 ? 'text-destructive' : undefined}>
+              {bp.done}/{bp.total}
+            </span>
+            {bp.failed > 0 && <span className="text-destructive">（{bp.failed} 失败）</span>}
+          </div>
+        ) : line ? (
           <div className="mt-1 truncate text-xs text-muted-foreground" title={line}>
             {line}
           </div>
-        )}
+        ) : null}
       </TableCell>
       <TableCell className="text-sm">{formatTime(task.created_at)}</TableCell>
       <TableCell className="text-sm">{formatDuration(task.started_at, task.finished_at)}</TableCell>
