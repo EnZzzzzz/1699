@@ -363,5 +363,35 @@ class WorkItemsTest(unittest.TestCase):
         self.assertEqual(row["status"], "pending")  # 不碰任何行
 
 
+    # 用例 10：payload_json 非法时不泄漏（review Important-1）
+    def test_claim_next_eligible_invalid_payload_does_not_leak(self):
+        iid = self._insert_item("q1", {"domain": "shop1.1688.com"})
+        # 手工破坏 payload_json（模拟上游 bug / 手工修库）
+        self.db.conn.execute(
+            "UPDATE work_items SET payload_json='not-json{' WHERE id=?",
+            (iid,))
+        self.db.conn.commit()
+
+        # 调用方能看到异常
+        with self.assertRaises(json.JSONDecodeError):
+            self.db.claim_next_eligible(["q1"], "w0")
+
+        # 行未被认领：保持 pending，不产生无法回收的 claimed 泄漏
+        row = self.db.conn.execute(
+            "SELECT status, claimed_by FROM work_items WHERE id=?",
+            (iid,)).fetchone()
+        self.assertEqual(row["status"], "pending")
+        self.assertIsNone(row["claimed_by"])
+
+        # 修复 payload 后可正常认领（行未被卡死）
+        self.db.conn.execute(
+            "UPDATE work_items SET payload_json=? WHERE id=?",
+            (json.dumps({"domain": "shop1.1688.com"}), iid))
+        self.db.conn.commit()
+        got = self.db.claim_next_eligible(["q1"], "w1")
+        self.assertEqual(got["id"], iid)
+        self.assertEqual(got["payload"], {"domain": "shop1.1688.com"})
+
+
 if __name__ == "__main__":
     unittest.main()

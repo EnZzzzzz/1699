@@ -537,7 +537,8 @@ class ShopDB:
                 " claimed_by = NULL, claimed_at = NULL"
                 " WHERE id=? AND status='claimed'", (item_id,))
             if cur.rowcount == 0:
-                self.conn.commit()
+                # 非 claimed/不存在：无任何写发生，rollback 结束事务（防御性兜底）
+                self.conn.rollback()
                 return "failed"
             attempts = self.conn.execute(
                 "SELECT attempts FROM work_items WHERE id=?",
@@ -566,6 +567,10 @@ class ShopDB:
         ORDER BY id LIMIT 1 → 置 claimed（claimed_by/claimed_at）。返回
         {"id", "queue", "site", "payload"}（payload 为 json.loads 解码后
         的字典）；无货（含空 queues）返回 None。
+
+        payload 解析在 commit 前完成：payload_json 非法（手工修库/上游
+        bug）时 JSONDecodeError 走 except → rollback，行保持 pending，
+        不会产生已 claimed 却拿不到 id 的泄漏行。
         """
         if not queues:
             return None
@@ -573,23 +578,23 @@ class ShopDB:
         try:
             self.conn.execute("BEGIN IMMEDIATE")
             row = self.conn.execute(
-                f"SELECT * FROM work_items WHERE status='pending'"
-                f" AND queue IN ({placeholders})"
+                f"SELECT id, queue, site, payload_json FROM work_items"
+                f" WHERE status='pending' AND queue IN ({placeholders})"
                 " ORDER BY id LIMIT 1", queues).fetchone()
             if not row:
                 self.conn.commit()
                 return None
+            payload = json.loads(row["payload_json"])
             self.conn.execute(
                 "UPDATE work_items SET status='claimed', claimed_by=?,"
                 " claimed_at=? WHERE id=?",
                 (consumer_id, _now(), row["id"]))
             self.conn.commit()
+            return {"id": row["id"], "queue": row["queue"],
+                    "site": row["site"], "payload": payload}
         except Exception:
             self.conn.rollback()
             raise
-        return {"id": row["id"], "queue": row["queue"],
-                "site": row["site"],
-                "payload": json.loads(row["payload_json"])}
 
     # ---------- category_progress ----------
     def get_category_progress(self, keyword: str) -> dict | None:
