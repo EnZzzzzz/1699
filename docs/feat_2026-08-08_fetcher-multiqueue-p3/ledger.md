@@ -48,3 +48,8 @@
   - fix round 1/5: review 需修复——F1 (阻断) 冒烟证据不实（人工注释非 raw 输出）→ 重新真实冒烟 smoke-fix1-raw.txt（60 行 raw：launch→创建初始 view→Cookie 装载→滑块求解全链路）；F2 (阻断) warmup 签名破坏性变更→旧形态可调用兼容；F3 ensure_site 重复查 IP + req_proxies None 静默回退→IP 缓存 + 防御；F4 域过滤重复→_write_view_cookies 提取；F5 report 修正；全部 ADDRESSED 零新破坏
   - Step 2.1: minor (deferred): _write_view_cookies 签名 log 参数未使用（Trivial）
   - 注：本 Step 冒烟显示直连 1688 滑块墙在 solve 阶段连续失败（环境噪声，已如实记录）
+- Step 2.2: complete (commits 564659b..c13f564, fix round 1/5 clean)
+  - 实现：mark_needs_relaunch/clear_needs_relaunch + ensure_site 懒建消费（置位→完整 relaunch→清除）；_alloc_seed_kits(workers, sites=None) 多站点 (worker,site) 粒度（CLI sites=None 返回 list 逐字不变）；TDD 16 新用例（全量 379→395 passed）
+  - fix round 1/5: review 需修复——C1 (Critical) seed_x5sec 多站点路径 0 覆盖→补两站点+sites 非空 A/B 断言；I2 Session 状态迁移字段逐一拷贝脆弱→copy_state_from 集中迁移；I3 缺 clear_needs_relaunch(site)→加 API 成对 + 单测；M4 无效测试→改 API；M5 类型注解；全部 ADDRESSED 零新破坏
+  - **Phase 2（P3-2）完成**：Session views 多 context + ensure_site 懒建 + needs_relaunch + 种子池 (worker,site)；395 passed；单站点等价（smoke-step2.1/smoke-fix1-raw.txt）
+  - Step 2.2: minor (deferred): 无
