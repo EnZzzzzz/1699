@@ -32,3 +32,14 @@
 - 主 Agent 复核：app/ 源码 grep 零残留（仅陈旧 .pyc）；tests/ 56 passed（wa_tasks 用例净减，62→56）；pyc 未被 git 跟踪。
 - minor (deferred)：三处「进程内」注释清理超清单（可接受，终审确认）；陈旧 test_wa_tasks *.pyc 已手工清理。
 
+
+### Step 1.2（cmdparse + 死字段删除）— complete
+
+- BASE 7b5401c → HEAD c46fc60 `refactor(p5): 删除 cmdparse 从命令导入链路与 TaskParams 死字段`（+ docs commit 27f1f5b）
+- implementer 状态 DONE_WITH_CONCERNS，三疑虑均已裁决为非缺陷：
+  ① wa_check preview 走批次分支返回 200（wa_check 在 BATCH_TYPES，queue=wa_check）——正确活行为，brief 预期 422 是主 Agent 预期错误；
+  ② 队列名 crawl_1688_contact（代码 BATCH_TYPES 权威）；③ retry_failed 注释过期 → 归 Step 2.1。
+- review：通过（spec ✅，无 Critical/Important）。Minor：tasks.py:117 retry_failed 注释过期（并入 Step 2.1 清理）；陈旧 .pyc。
+- 修复轮：0
+- 主 Agent 复核：冒烟四组 curl 证据落 plan（批次/yiwugo 200 + wa_check 批次文案 + 未知类型 422）；全量 56 passed 持平；app/ grep 零残留。
+- minor (deferred)：tasks.py:117 retry_failed 注释同步清理（Step 2.1 与 api.ts 注释一起）；陈旧 pyc 已清理。

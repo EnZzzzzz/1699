@@ -21,7 +21,7 @@
 - [x] **Step 1.1** wa_tasks + 进程内机械删除（估 30min，依赖无，状态 done 2026-08-08）
   - 删 `app/wa_tasks.py` + `tests/test_wa_tasks_cooldown.py` + `tests/test_wa_tasks_guard.py`；runner.py 删 `IN_PROCESS_TYPES` 及 start 引用分支、`_start_in_process`、`_run_in_process`、`_RunEntry.stop_event` 与 shutdown stop_event 分支；api/tasks.py 删 preview IN_PROCESS 死分支。
   - 验收：平台 pytest 全绿（repeat Timer 看门测试 test_loop_restart.py 必须保绿）；grep `wa_tasks\|_start_in_process\|_run_in_process\|IN_PROCESS_TYPES` 在 app/ 零命中。
-- [ ] **Step 1.2** cmdparse + 死字段删除（估 20min，依赖 1.1，状态 pending）
+- [x] **Step 1.2** cmdparse + 死字段删除（估 20min，依赖 1.1，状态 done 2026-08-08）
   - 删 `app/cmdparse.py` + `/tasks/parse` 端点；build_command 删 retry_failed 死分支（runner.py:142-143）；TaskParams 删 `interval`/`batch_rest_min`/`batch_rest_max`。
   - 验收：平台 pytest 绿；grep 零命中；uvicorn 重启冒烟（preview 端点批次/yiwugo 两活分支 curl 验证，输出落 plan 目录）。
 
