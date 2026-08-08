@@ -191,7 +191,7 @@
     buildParams/fillFromParams 适配）；
   - Tasks.tsx：批次进度列 done/total + failed 标红（text-destructive）。
 - **验收**：npx tsc -b 零错误；浏览器走查（playwright 截图见 Step 3.2）。
-- **commits**：待提交
+- **commits**：6ecf36f
 - **状态**：complete
 
 ### P4-3 Step 3.2 — 调度器看板页
@@ -210,6 +210,22 @@
   smoke-step3.2/）：看板页标题/StatCard/队列表/消费者表/导航全部渲染；
   任务表单三分支（默认 1688_shop 批次表单 + 切 madeinchina_contact 条数
   文案 + 预览文案）。DESIGN.md 逐条对照自查通过。
+- **commits**：6ecf36f
+- **状态**：complete
+
+### P4-4 Step 4.1 — 全链路验收冒烟
+
+- **冒烟**（plan/smoke-step4.1/daemon.log + 临时库 /tmp/p4_e2e.db 已清理）：
+  临时库建批次任务 101 → 平台 enqueue_contact_batch 入队 3 items
+  （batch_id=101）→ daemon（--workers 1）claim 执行 → finish failed（直连
+  滑块墙=环境噪声）→ sweeper 派生 tasks.done + progress{failed:3} → SSE
+  合成 `✗ e2e1.1688.com ... 已解析联系方式页` + 增量游标正确。自喂 item
+  （batch_id NULL）与批次 item 并存互不干扰。
+- **SPEC §7 逐条取证**：1) 全链路 ✓（本条冒烟）；2) 跨站填充可见 ✓
+  （Step 2.2 dispatcher 聚合真实数据 + Step 3.2 看板渲染）；3) wa_check
+  写回 ✓（Step 1.3 真实查号）；4) 脚本纳管 ✓（Step 2.3 真起真停）；
+  5) uvicorn 重启不丢 ✓（Step 2.1 单测）；6) 测试/tsc 绿 ✓（fetcher 583
+  + 平台 62 + tsc 零错误）；7) daemon.log 无 ERROR ✓（滑块噪声除外）。
 - **commits**：待提交
 - **状态**：complete
 

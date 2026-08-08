@@ -65,7 +65,7 @@
 - [x] **Step 3.1** 任务类型表单 + 批次进度（估 40min，依赖 2.1，状态 done）
   - api.ts TaskType/TaskParams；task-ui.tsx TASK_TYPE_OPTIONS/paramsSummary；TaskFormDialog 三分支（批次采集只留 limit+repeat_interval；wa_check 保留）；Tasks 列表批次进度列（done/total + failed 标红）。
   - 验收：`npx tsc -b` + vite dev 浏览器走查（建批次任务表单渲染、旧模板兼容读取）。
-- [ ] **Step 3.2** 调度器看板页（估 40min，依赖 2.2，状态 pending）
+- [x] **Step 3.2** 调度器看板页（估 40min，依赖 2.2，状态 done）
   - `/dispatcher` 路由 + navItems 入口；StatCard 行 + 队列深度表 + 消费者表（chip/冷却倒计时/amber 冷却徽标）；useApiData 自适应轮询；PageState 三态；离线灰显。
   - 验收：`npx tsc -b` + 浏览器走查（daemon 在线/离线两态截图落 plan 目录）；DESIGN.md 逐条对照自查（token/徽标/排版/圆角）。
 
