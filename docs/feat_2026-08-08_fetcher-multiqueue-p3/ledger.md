@@ -115,3 +115,8 @@
   - 终审 deferred 分诊：11 条全部可延后（D1~D3 spike 文档、D4 eligible_queues 类型标注、D5 测试时序缓冲、D6 _write_view_cookies log 死参、D7 fmt=x2 播种局限、D8 shop 死变量、D9 company exhausted 残留计算、D10 _insert_work_item 三文件重复、D11 company mtop 断言缺口）——均已记 ledger，合并后随手清理
   - Scope 检查：零 platform/vendor/scraper/util 提交；他人未提交改动未被带入
   - 已知行为观察（呈用户，未修）：5 队列混合时 contact 队列被 feeder 高产出挤占致 topup 不触发（lazy fallback 设计内行为，SPEC §3.2 FIFO 无优先级裁定代价）；双队列 contact-only 冒烟已补全 contact 手递手证据；是否开 issue 由用户定
+
+### 验收补记（2026-08-08，合并前）
+
+- Step 2.3 补勾：无独立 commit，内容经核实被 2.1/2.2/3.1/3.2/3.3 吸收（吸收路径逐条核实记录于 PLAN.md Step 2.3 行），非代码缺口。
+- 验收亲核：全量 523 passed（本地复跑）；diff 范围仅 fetcher/ + docs/（platform/scraper/util 零触碰）；smoke-step6.1 日志 [claim] 时间戳双向手递手为原始证据。

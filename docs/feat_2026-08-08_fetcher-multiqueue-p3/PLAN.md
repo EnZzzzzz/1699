@@ -52,7 +52,8 @@
 - [x] **Step 2.2** relaunch/warmup/种子池适配（估 30min，依赖 2.1，状态 pending）
   - relaunch 全 view 回写后关进程、views 清空懒重建；`_alloc_seed_kits` 改 (worker, site) 粒度；`needs_relaunch` 状态位。
   - 验收：单测 + 旧 CLI `1688 contact --workers 1` 直连冒烟等价。
-- [ ] **Step 2.3** 原子/策略消费方迁移（估 30min，依赖 2.1，状态 pending）
+- [x] **Step 2.3** 原子/策略消费方迁移（估 30min，依赖 2.1，状态 done——无独立 commit，内容被相邻 Step 吸收，验收时核实补勾）
+  - 吸收路径核实（2026-08-08 验收）：`Session._active_site` 路由 + `page`/`ctx` property（2.1，`session.py:97-119`）；`save_cookies` 遍历 views / relaunch 全 view 回写（2.1）；`RelaunchBrowser` 经 `browser_manager.relaunch` 会话级操作（2.1/2.2）；SwapIP/WaitHuman* 策略经 `ctx.page` 活动 view（3.2）；loop `_bind_item_site` 逐 item 绑站（3.1/3.3）。grep 无残留跨 item 持有 page 引用。
   - RelaunchBrowser、WaitHumanLogin/WaitHumanVerify、loop 的 `_relaunch`/`_ensure_fresh_ip`/`_check_budget`/`_cleanup` 全部走活动 view。
   - 验收：全量测试绿；grep 无残留直接持有 page 跨 item 的引用。
 
