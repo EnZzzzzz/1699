@@ -43,3 +43,18 @@
 - 修复轮：0
 - 主 Agent 复核：冒烟四组 curl 证据落 plan（批次/yiwugo 200 + wa_check 批次文案 + 未知类型 422）；全量 56 passed 持平；app/ grep 零残留。
 - minor (deferred)：tasks.py:117 retry_failed 注释同步清理（Step 2.1 与 api.ts 注释一起）；陈旧 pyc 已清理。
+
+### Step 2.1（前端同步）— complete
+
+- BASE cc5c163 → HEAD b9ee35d `refactor(p5): 前端同步——wa 表单裁剪 + 删从命令导入 UI + api.ts 类型失配修复`（+ commit B 63e758d 后端注释）
+- review：通过（spec ✅，无 Critical/Important）。Minor×2（均前置遗留/范围外，终审分诊）：
+  ① channels 非整数边界（isFinite 放行 "1.5"，后端 int 会 422）——非本 Step 回归；
+  ② batchLimit 不在 paramsKey 依赖（批次表单改 limit 预览不刷新）——P4 遗留。
+- 修复轮：0
+- 主 Agent 复核：tsc -b 零错误；走查 4 截图存在（wa 新表单/历史任务 73/yiwugo/批次）；grep 零残留；diff -251 行净删。
+- minor (deferred)：① channels 加 Number.isInteger 守卫；② batchLimit 补进 paramsKey 依赖（终审分诊）。
+
+### Step 3.1（DB 死列迁移）— pending
+
+- 生产库核对：tasks 仅 idx_tasks_status 索引；flows 表存在；4 行 celery_id/flow_id 全 NULL。
+- 测试 fixture：Step 1.1 已删 2 个 wa_tasks 测试文件，剩 4 个含死列（test_batch_tasks/test_dispatcher_api/test_loop_restart/test_task_waiting_status(dict 形式)）。
