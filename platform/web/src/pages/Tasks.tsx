@@ -91,7 +91,7 @@ function batchProgress(task: Task): { done: number; total: number; failed: numbe
 // P4 批次采集类型（progress 为 work_items 聚合，非 last_line）
 const BATCH_TYPE_NAMES = new Set(['1688_shop', '1688_company', '1688_contact',
                                   'madeinchina_shop', 'madeinchina_contact',
-                                  'wa_check'])
+                                  'wa_check', 'fb_post'])
 
 function TaskRow({
   task,

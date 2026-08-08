@@ -77,6 +77,7 @@ export const TASK_TYPE_OPTIONS: { value: TaskType; label: string }[] = [
   { value: 'madeinchina_contact', label: '中国制造网 联系方式采集' },
   { value: 'yiwugo_search', label: '义乌购搜索' },
   { value: 'wa_check', label: 'WhatsApp 查号' },
+  { value: 'fb_post', label: 'Facebook 帖子采集' },
 ]
 
 export function taskTypeLabel(type: string): string {
@@ -143,10 +144,11 @@ export function paramsSummary(task: { type: string; params: Record<string, unkno
     return parts.length > 0 ? parts.join(' ') : '默认参数'
   }
 
-  // P4 批次采集类型（1688/madeinchina shop/company/contact）：
+  // P4 批次采集类型（1688/madeinchina shop/company/contact + fb_post）：
   // 只读 limit（contact=条数、shop/company=页数）+ repeat_interval
   const BATCH_TYPES = new Set(['1688_shop', '1688_company', '1688_contact',
-                               'madeinchina_shop', 'madeinchina_contact'])
+                               'madeinchina_shop', 'madeinchina_contact',
+                               'fb_post'])
   if (BATCH_TYPES.has(task.type)) {
     const parts: string[] = []
     const limit = num('limit')

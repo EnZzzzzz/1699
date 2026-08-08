@@ -83,6 +83,7 @@ export type TaskType =
   | 'madeinchina_shop'
   | 'yiwugo_search'
   | 'wa_check'
+  | 'fb_post'
 
 // 采集类参数全量可选键：留空即不传，由 CLI 默认值生效。
 // 批次类型（1688/madeinchina 采集 + wa_check）只读 limit / repeat_interval /

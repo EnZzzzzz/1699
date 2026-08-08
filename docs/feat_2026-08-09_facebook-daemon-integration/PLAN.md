@@ -75,7 +75,7 @@ P2 与 P3 互不依赖，P1 完成后可并行推进。
   - 验收：平台侧测试（参照现有 enqueue_* 测试模式）：入队行数/幂等/
     in_progress 互斥、与 daemon topup 并发无双写（SPEC §7.4）；类型
     校验/preview/start/stop 自动兼容冒烟（API 层 curl 验证）。
-- [ ] **1.6 前端 fb_post**（预估 20min，依赖：1.5 接口约定）
+- [x] **1.6 前端 fb_post**（预估 20min，依赖：1.5 接口约定）
   - `lib/api.ts`（TaskType+TaskParams）、`task-ui.tsx`（TASK_TYPE_OPTIONS
     「Facebook 帖子采集」+ paramsSummary 批次集合）、`Tasks.tsx`
     （BATCH_TYPE_NAMES）、`TaskFormDialog.tsx`（isBatch 列表加 fb_post，

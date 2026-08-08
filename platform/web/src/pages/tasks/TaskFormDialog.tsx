@@ -119,7 +119,8 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
   const isWaCheck = type === 'wa_check'
   // P4 批次采集类型：表单只留 limit + repeat_interval（节奏/代理收敛 daemon 级）
   const isBatch = ['1688_shop', '1688_company', '1688_contact',
-                   'madeinchina_shop', 'madeinchina_contact'].includes(type)
+                   'madeinchina_shop', 'madeinchina_contact',
+                   'fb_post'].includes(type)
 
   const setValue = (key: string, v: string) =>
     setValues((prev) => ({ ...prev, [key]: v }))
@@ -494,7 +495,9 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
                 <p className="text-xs text-muted-foreground">
                   {type === '1688_contact' || type === 'madeinchina_contact'
                     ? '联系方式采集：条数上限（0 = 不限）'
-                    : '店铺/公司采集：页数上限（0 = 不限）'}
+                    : type === 'fb_post'
+                      ? '帖子采集：条数上限（0 = 不限）'
+                      : '店铺/公司采集：页数上限（0 = 不限）'}
                 </p>
               </div>
               <div className="space-y-2">

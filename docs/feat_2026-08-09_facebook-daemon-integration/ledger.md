@@ -152,3 +152,14 @@
 - review：spec 合规 ✅（§6.1 四处同步铁律的 runner 侧 + §7.4 并发互斥
   测试）代码质量 ✅
 - minor (deferred)：无
+
+### Step 1.6 — 前端 fb_post
+- commit 范围：`platform/web/src/lib/api.ts`（TaskType 加 fb_post）、
+  `task-ui.tsx`（TASK_TYPE_OPTIONS「Facebook 帖子采集」+ paramsSummary
+  批次集合）、`Tasks.tsx`（BATCH_TYPE_NAMES）、`TaskFormDialog.tsx`
+  （isBatch + 采集上限提示分支）、brief/ledger/PLAN
+- 验收：`npx tsc -b` 通过；DESIGN.md 自查 ✅（无新增颜色 token、无新组件，
+  提示文案沿用 text-xs text-muted-foreground）
+- review：spec 合规 ✅（SPEC §6.2：fb_post 进 isBatch 列表、label
+  「Facebook 帖子采集」）代码质量 ✅
+- minor (deferred)：无
