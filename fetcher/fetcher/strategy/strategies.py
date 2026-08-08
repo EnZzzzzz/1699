@@ -190,6 +190,10 @@ class SwapIPStrategy:
                 ctx.browser_manager.mark_needs_relaunch(ctx.session, site)
             except Exception:  # noqa: BLE001
                 pass
+        else:
+            # site 未设置：无法登记两阶段（无头路径标记 active_site 是上游职责）
+            ctx.log(f"    [WARNING] active_site 未设置，无法登记两阶段")
+            return StepResult(False, "active_site 未设置，无法登记两阶段")
         return StepResult(False, f"未轮换，已登记两阶段", cooldown=rest)
 
 

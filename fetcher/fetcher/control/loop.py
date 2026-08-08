@@ -451,8 +451,10 @@ class CrawlLoop:
                 self.log(f"✓ 策略 {decision.strategy} 完成: {step.detail}")
             # 策略冷却统一让出 + release（P3 SPEC §3.4）：冷却期间该
             # 站点队列不可见，item 释放回 pending（attempts 熔断），
-            # 冷却到期重领（策略链从头开始）
-            if step.cooldown:
+            # 冷却到期重领（策略链从头开始）。
+            # 守护：solved=True 时不 release（防御未来策略同时返回
+            # solved+cooldown 的场景，此时 cooldown 仅作冷却建议不计）。
+            if step.cooldown and not step.solved:
                 if self._cooldown(step.cooldown,
                                   f"strategy:{decision.strategy}",
                                   yield_=True):

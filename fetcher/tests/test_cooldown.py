@@ -264,10 +264,9 @@ class CooldownChokepointTest(CooldownTestBase):
 class StrategyCooldownIntegrationTest(CooldownTestBase):
     TABLE = {Scenario.RISK_SLIDER_PAGE: [("cool", 1), ("give_up", None)]}
 
-    def test_strategy_cooldown_via_chokepoint_then_retry_success(self):
-        """首次 fetch 自报 blocked → 策略输出 cooldown=0.3 → P3 策略冷却
-        统一让出 + release（yield_=True）：登记冷却后立即返回，item 释放
-        回 pending 然后循环退出（单 item 无更多任务）。"""
+    def test_strategy_cooldown_with_solved_true_skips_release(self):
+        """策略同时返回 solved=True 和 cooldown → solved 优先，不触发
+        release（防御性：未来策略可能同时输出 solved+cooldown 作冷却建议）。"""
         strategy = CooldownStrategy(cooldown=0.3, solved=True)
         task = ScriptedTask([("blocked", "滑块拦截"), ("ok", {"v": 1})])
         loop, ctx = self.make_loop(task, self.TABLE, {"cool": strategy})
@@ -277,7 +276,31 @@ class StrategyCooldownIntegrationTest(CooldownTestBase):
         loop.run()
         elapsed = time.monotonic() - t0
 
-        # P3：策略冷却 → release（不再 wait + retry）
+        # solved 优先：策略返回 solved=True，cooldown 被忽略，不触发 release
+        # fetch 重试后成功
+        self.assertEqual(task.fetches, 2)
+        self.assertEqual(task.succeeded, ["item1"])
+        self.assertEqual(task.given_up, [])
+        # 冷却未被应用（solved 优先守护）
+        strat_calls = [c for c in calls if c[1] == "strategy:cool"]
+        self.assertEqual(len(strat_calls), 0,
+                         "solved=True 时 cooldown 应被忽略，不触发 _cooldown")
+        # 快速完成（无等待）
+        self.assertLess(elapsed, 0.2)
+
+    def test_strategy_cooldown_solved_false_triggers_release(self):
+        """策略返回 solved=False + cooldown → 触发让出 + release（P3
+        策略冷却统一语义），item 释放回 pending，单 item 循环退出。"""
+        strategy = CooldownStrategy(cooldown=0.3, solved=False)
+        task = ScriptedTask([("blocked", "滑块拦截"), ("ok", {"v": 1})])
+        loop, ctx = self.make_loop(task, self.TABLE, {"cool": strategy})
+        calls = spy_cooldown_full(loop)
+
+        t0 = time.monotonic()
+        loop.run()
+        elapsed = time.monotonic() - t0
+
+        # 策略冷却 → release（不再 wait + retry）
         self.assertEqual(task.fetches, 1)
         self.assertEqual(task.succeeded, [])
         self.assertEqual(task.given_up, [])

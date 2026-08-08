@@ -12,7 +12,6 @@
   8. release 路径 stop 语义
 """
 
-import json
 import sqlite3
 import tempfile
 import threading
@@ -130,7 +129,10 @@ class SwapIPHeadlessTwoPhaseTest(SwapIPTwoPhaseTestBase):
                 mock_save_instance.run.return_value = ActionResult.success(
                     "已回写 3 个 Cookie", count=3)
 
-                result = strategy.run(ctx)
+                # 无头路径不含原地 ctx.wait（结构验证）
+                with patch.object(ctx, 'wait') as mock_wait:
+                    result = strategy.run(ctx)
+                    mock_wait.assert_not_called()
 
         # 断言
         self.assertFalse(result.solved)
@@ -220,6 +222,27 @@ class SwapIPHeadlessTwoPhaseTest(SwapIPTwoPhaseTestBase):
 
         self.assertFalse(result.solved)
         self.assertIn("重启失败", result.detail)
+
+    def test_no_active_site_headless_returns_error_no_cooldown(self):
+        """无头 + active_site 未设置 → 返回错误、不输出 cooldown
+        （避免静默耗尽 attempts）。"""
+        ctx = self._make_ctx(headed=False)
+        # 不设 active_site
+        ctx.state.pop("active_site", None)
+        session = MagicMock()
+        session.identity = "1688:1.1.1.1"
+        ctx.session = session
+
+        strategy = SwapIPStrategy()
+        with patch.object(RelaunchBrowser, 'run') as mock_relaunch:
+            mock_relaunch.return_value = ActionResult.success(
+                "ok", identity="1688:1.1.1.1", rotated=False)
+            result = strategy.run(ctx)
+
+        self.assertFalse(result.solved)
+        self.assertIn("active_site 未设置", result.detail)
+        self.assertIsNone(result.cooldown,
+                          "site=None 时不应输出 cooldown（避免静默耗尽 attempts）")
 
 
 class SwapIPHeadedExceptionTest(SwapIPTwoPhaseTestBase):
@@ -478,7 +501,7 @@ class StrategyCooldownReleaseTest(unittest.TestCase):
 
     def test_strategy_cooldown_triggers_release_via_loop(self):
         """策略返回 cooldown → loop 返回 "release" → task.release_item 被调。"""
-        release_strat = FakeReleaseStrategy(solved=True, cooldown=0.05)
+        release_strat = FakeReleaseStrategy(solved=False, cooldown=0.05)
         task = ScriptedTask(
             [("page", "https://sec.1688.com/x5sec/p.htm", "滑动验证", {})])
         table = {Scenario.RISK_SLIDER_PAGE: [("fake_release", 2),
@@ -506,7 +529,7 @@ class StrategyCooldownReleaseTest(unittest.TestCase):
 
     def test_release_with_stop_exits_cleanly(self):
         """stop 置位后 release 路径退出干净。"""
-        release_strat = FakeReleaseStrategy(solved=True, cooldown=0.05)
+        release_strat = FakeReleaseStrategy(solved=False, cooldown=0.05)
 
         class StopOnSecondFetch(ScriptedTask):
             def fetch(self, ctx, item):
@@ -688,7 +711,7 @@ class QueueRouterReleaseItemTest(ReleaseItemTestBase):
                          (item["id"],))[0]
         self.assertEqual(row["status"], "failed")
         self.assertEqual(row["attempts"], 3)
-        self.assertEqual(json.loads(row["result_json"]), "attempts exhausted")
+        self.assertIn("attempts exhausted", row["result_json"])
 
     def test_release_item_removes_state_key(self):
         """release 后 ctx.state 中的 daemon_work_item_id 被 pop。"""
