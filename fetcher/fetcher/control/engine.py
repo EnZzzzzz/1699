@@ -255,23 +255,17 @@ class Engine:
             text = (msg or "").strip()
             if not text:
                 return
-            if board is not None:
-                if ("[X]" in text or "[!]" in text or
-                        "[claim]" in text or "[finish]" in text or
-                        "[release]" in text):
-                    board.log(text)
-                else:
-                    board.set(wid + 10000, detail=text[:80])
-            else:
-                print(text, flush=True)
+            # local 消费者不进状态板（board 只对浏览器 worker 有意义），
+            # 直接打印（daemon.log 可见）
+            print(text, flush=True)
 
         ctx = WorkerContext(config=self.config, store=store,
                             stop=self.stop, log=log, wid=wid, tag=tag,
                             resources={"local"}, consumer_kind="local")
         if self.status_store is not None:
             ctx.status_store = self.status_store
-        if board is not None:
-            ctx.set_status = lambda **kw: board.set(wid + 10000, **kw)
+        # local 消费者无状态板行（board.fields 只分配了浏览器 worker）
+        ctx.set_status = lambda **kw: None
         from fetcher.control.local_loop import LocalLoop
         loop = self.local_loop_factory(ctx, self.task)
         stats = loop.run()

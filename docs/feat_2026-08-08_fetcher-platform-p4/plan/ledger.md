@@ -132,7 +132,7 @@
 - **review**：自检通过。测试基建修复：api.tasks 的 DB_PATH 是导入时
   拷贝引用，patch db_module 不影响它——必须单独 patch api_tasks.DB_PATH
   （否则测试写生产库，debug 阶段发现并清理了 1 条污染数据）。
-- **commits**：待提交
+- **commits**：6f40655
 - **状态**：complete
 
 ### P4-2 Step 2.2 — SSE 事件合成 + dispatcher API
@@ -154,6 +154,29 @@
 - **review**：自检通过。修复：sqlite3.Row 无 .get（用索引+KeyError 兜底）、
   _fetch_batch_events SELECT 补 queue 列、路由断言改 TestClient（FastAPI
   新版 _IncludedRouter 无 path）。
+- **commits**：89ad3ce
+- **状态**：complete
+
+### P4-2 Step 2.3 — start.sh/stop.sh 纳管 daemon + 冒烟
+
+- **实现**：
+  - start.sh：start_daemon()（pidfile run/daemon.pid、日志 logs/daemon.log、
+    nohup server/.venv/bin/python -m fetcher daemon，cwd=项目根；DAEMON_ARGS
+    环境变量可覆盖，默认 --workers 1）；防双 daemon 提示；
+  - stop.sh：graceful_stop(daemon.pid)（SIGTERM→5s→SIGKILL）+ pkill 兜底
+    特征 fetcher.*daemon；
+  - README：纳管说明 + 防手动 daemon 警告。
+- **修复（冒烟抓到 2 个真 bug）**：
+  1) start.sh echo `$DAEMON_ARGS）` 中文括号粘连变量名（unbound variable）
+     ——改 `${DAEMON_ARGS}` 花括号包裹；
+  2) local worker 的 board.set(wid+10000) 越界（board 只分配浏览器 worker
+     行）——local 消费者不用 board（log 直打印、set_status noop）。
+- **冒烟**（临时库 /tmp/p4_nsmoke.db 已清理）：start.sh 完整拉起后端+前端+
+  daemon（pid 53145）；重复 start 幂等（跳过）；daemon 心跳写
+  consumer_status（w0/local0/local1 22:54:08 新鲜）；stop.sh 优雅停止 +
+  兜底清理；退出后 consumer_status 清空 0。冒烟前停掉 P3 遗留 daemon
+  （pid 28917，P3 冒烟 /tmp 临时库残留）。
+- **测试**：fetcher 583 + 平台 62 全绿（board 修复复跑相关 37 passed）。
 - **commits**：待提交
 - **状态**：complete
 

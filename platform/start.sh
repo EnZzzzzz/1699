@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 采集平台一键启动：后端 uvicorn(8765) + 前端 vite dev(3000)
+# 采集平台一键启动：后端 uvicorn(8765) + 前端 vite dev(3000) + 调度器 daemon
 # 幂等：已在运行的服务会跳过。日志见 platform/logs/，pid 见 platform/run/。
 set -euo pipefail
 
@@ -10,6 +10,11 @@ mkdir -p "$LOG_DIR" "$PID_DIR"
 
 BACKEND_PORT=8765
 FRONTEND_PORT=3000
+
+# daemon 可选参数（如 --queues 子集 / --workers 调整），默认全量 5+1 队列
+# 注意：daemon 1 进程多 context 只占 1 席 CloakBrowser，默认直连 1 worker；
+# 生产多 worker 由运维在此显式加 --workers N
+DAEMON_ARGS=${DAEMON_ARGS:---workers 1}
 
 is_running() { # pidfile
   [[ -f "$1" ]] && kill -0 "$(cat "$1")" 2>/dev/null
@@ -42,8 +47,25 @@ start_frontend() {
   echo "       pid=$(cat "$pidfile")  日志: $LOG_DIR/web.log"
 }
 
+start_daemon() {
+  local pidfile="$PID_DIR/daemon.pid"
+  if is_running "$pidfile"; then
+    echo "[跳过] 调度器 daemon 已在运行 (pid $(cat "$pidfile"))"
+    return
+  fi
+  if [[ ! -x "$DIR/server/.venv/bin/python" ]]; then
+    echo "[错误] 未找到 server/.venv/bin/python，请先建虚拟环境"
+    exit 1
+  fi
+  echo "[启动] 调度器 daemon（fetcher daemon ${DAEMON_ARGS}）..."
+  ( cd "$DIR/.." && nohup "$DIR/server/.venv/bin/python" -m fetcher daemon $DAEMON_ARGS >>"$LOG_DIR/daemon.log" 2>&1 & echo $! >"$pidfile" )
+  echo "       pid=$(cat "$pidfile")  日志: $LOG_DIR/daemon.log"
+  echo "       注意：平台已纳管 daemon，不要再手动启动（防双 daemon）"
+}
+
 start_backend
 start_frontend
+start_daemon
 
 echo
 echo "已就绪："
