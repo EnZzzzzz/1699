@@ -464,19 +464,31 @@ class CrawlLoop:
 
     def _bind_item_site(self):
         """daemon 多站点路径：按 ctx.state["active_site"] 切换
-        ctx.site / inspector / policy。CLI 路径（sites=None）无操作。"""
+        ctx.site / inspector / policy，并懒建跨站 view（SPEC §3.6）。
+        CLI 路径（sites=None）无操作。"""
         if self.sites is None:
             return
         site_name = self.ctx.state.get("active_site")
         if site_name is None or site_name == self._bound_site:
             return
-        self.ctx.site = self.sites.get(site_name)
-        if self.ctx.site is not None:
-            self.inspector = SceneInspector.for_site(self.ctx.site)
-        new_policy = self.policies.get(site_name) if self.policies else None
-        if new_policy is not None:
-            self.policy = new_policy
-        self._bound_site = site_name
+        plugin = self.sites.get(site_name)
+        if plugin is not None:
+            self.ctx.site = plugin
+            # 跨站 view 懒建（SPEC §3.6）：无 view 则建，路由活动站点
+            if (self.ctx.session is not None
+                    and self.ctx.browser_manager is not None):
+                try:
+                    self.ctx.browser_manager.ensure_site(
+                        self.ctx.session, site_name, plugin.cookie_domain)
+                    self.ctx.session.set_active_site(site_name)
+                except Exception as e:
+                    self.log(f"[!] ensure_site({site_name}) 失败: {e}，"
+                             f"继续处理 item（fetch 兜底）")
+            self.inspector = SceneInspector.for_site(plugin)
+            new_policy = self.policies.get(site_name) if self.policies else None
+            if new_policy is not None:
+                self.policy = new_policy
+            self._bound_site = site_name
 
     # ---- 簿记 ----
 

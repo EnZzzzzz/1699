@@ -1,0 +1,24 @@
+[1] 待抓取 1 个，每个 worker 每批 1 个（不限批数，抓完 pending 为止），批间强制休息 0 分钟
+[daemon] 队列 crawl_1688_contact: 待补货店铺 1 个 + 待认领工作项 0 个
+[1] 待抓取 2 个，每个 worker 每批 1 个（不限批数，抓完 pending 为止），批间强制休息 0 分钟
+[daemon] 队列 crawl_mic_contact: 待补货店铺 2 个 + 待认领工作项 0 个
+[daemon] 启动重置：0 个 claimed 工作项 → pending，0 个 in_progress 店铺 → pending（逐 site: .1688.com, .cn.made-in-china.com）
+[2] 启动 1 个 worker（直连）
+    [launch] 检查 CloakBrowser 会话席位…
+    [launch] 启动 CloakBrowser 二进制（含 GeoIP 探测）…
+    [launch] 浏览器进程已启动，创建初始 view…
+    [cookie] identity=1688:direct，可用 151 个（库内共 177，已过期剔除 26，最近过期: 2026-08-31 02:46:57）
+    [launch] 检查 CloakBrowser 会话席位…
+    [launch] 启动 CloakBrowser 二进制（含 GeoIP 探测）…
+    [launch] 浏览器进程已启动，创建初始 view…
+    [cookie] identity=1688:direct，可用 162 个（库内共 177，已过期剔除 15，最近过期: 2026-08-08 18:53:18）
+    [relaunch] 浏览器已重启，新出口 IP=1688:direct
+[w0] [X] worker 异常退出: 'failed'
+[OK] 本次完成: 有联系方式 0, 无联系方式 0, 失败 0
+    数据库统计: {'runs': 0, 'shops': 3, 'pending': 0, 'in_progress': 2, 'done': 0, 'no_contact': 0, 'failed': 1, 'with_mobile': 0, 'categories_tracked': 0, 'categories_exhausted': 0}
+tmd（反爬验证）触发统计 —— 每个出口 IP 的安全性:
+    出口IP                      请求    成功   触发    tmd率     平均间隔    最少    最多  最近触发
+    1688:direct                4     0    4  100.0%        1     1     1  2026-08-08 17:23:36
+    整体: 4 次页面请求，触发 4 次，tmd率 100.00%
+    经验值: 平均爬 ~1 个页面触发一次反爬；历史最少 1 个、最多 1 个即触发
+    安全线: 单 IP 连续抓取 ≤ 1 个（最少触发间隔 × 0.8）相对安全，超过 1 个后触发风险显著上升
