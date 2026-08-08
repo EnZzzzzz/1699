@@ -113,7 +113,7 @@ class TaskParams(BaseModel):
     use_proxy: bool | None = None           # true → --proxy
     headless: bool | None = None            # false → --headed
     auto_solve: bool | None = None          # false → --no-auto-solve
-    retry_failed: bool | None = None        # true 且 1688_contact → --retry-failed
+    retry_failed: bool | None = None        # 前端 1688_contact 表单开关遗留，不映射 CLI
     # wa_check 专用：
     accounts: list[str] | None = None       # 账号池，空 = 仅默认账号
     # 注：wa_check 复用上方 batch_num（每批调用次数）、
