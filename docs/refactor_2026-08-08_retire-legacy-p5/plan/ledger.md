@@ -82,3 +82,10 @@
     23:00 旧代码进程，parse 端点 500 即旧代码证据）。
 - 主 Agent 复核：全量 62 passed（56+6 新增迁移测试）；celery_id/flow_id 残留仅迁移实现与测试自身。
 - minor (deferred)：① BEGIN 失败 ROLLBACK 异常掩盖；② FK 前提注释；③ flows 行数证据不一致；④ before.txt 逆向构造。
+
+### Step 4.1（文档修订）— complete（1 修复轮）
+
+- BASE 46fcc65 → HEAD 2b10892：`docs(p5): 修订 flow-architecture/AGENTS/fetcher README 与现状同步`（c9b7cf1）+ 修复轮 `2b10892`（§8 引用 → §3/§5）
+- review：需要修复。Important×1：flow-architecture.md:48/:275 引「scheduler-architecture.md §8」实为 §3/§5（分层架构/调度循环）——主 Agent brief 失误（非 SPEC）。Minor×1：状态行「§2 历史设计」与 §2 重写为现状的表面张力（SPEC 文本自带，reviewer 判定不误导、可接受）。
+- 修复轮 1/5：resume 原 implementer，两处 §8→§3/§5；re-review 全部 ADDRESSED、无新破坏。
+- minor (deferred)：状态行张力保持 brief 逐字（终审确认）。
