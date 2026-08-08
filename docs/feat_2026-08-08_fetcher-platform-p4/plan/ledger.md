@@ -106,6 +106,35 @@
 - **commits**：be09e72
 - **状态**：complete
 
+### P4-2 Step 2.1 — 批次任务类型 + sweeper
+
+- **实现**：
+  - runner：TASK_COMMANDS 只剩 yiwugo_search、IN_PROCESS_TYPES 清空、
+    BATCH_TYPES 映射（6 类型 → queue/kind）；模块级 sweeper
+    （sweep_batch_tasks：状态派生 + stopped 兜底 + progress 聚合）、
+    enqueue_batch_for_task / stop_batch_task；TaskRunner._start_sweeper/
+    _sweeper_loop（5s tick）/startup 跳过批次孤儿清理；start/stop/_auto_restart
+    批次分派；is_running 批次 False；
+  - api/tasks.py：TASK_TYPES = TASK_COMMANDS ∪ BATCH_TYPES、TaskParams 保留
+    全字段（向后兼容，批次只读 limit/repeat/accounts）、preview 批次返回
+    「批次提交：{queue}，{limit} 条」、start/stop 批次分支（start 入队
+    batch_id=tasks.id）；
+  - app/db.py：migrate 探测补建 idx_work_items_batch；平台侧批次入队
+    （enqueue_contact_batch/enqueue_feeder_batch/enqueue_wa_batch，与
+    fetcher 同事务语义，SPEC §3.1 双份裁定）。
+- **测试**：test_batch_tasks.py 15 用例（TDD 先失败后转绿：三入队函数
+  batch_id 全链路/幂等/限量/空账号拒绝、sweeper 派生 running/done/stopped/
+  failed 计数/stopped 兜底、start/stop 批次语义、TASK_TYPES/preview、
+  uvicorn 重启批次不丢（孤儿清理跳过））。平台全量 53 passed（基线 38+15）。
+- **冒烟**：uvicorn 重启生效（生产库 4 条任务保留，旧 wa_check running
+  由旧 shutdown 收尾 stopped）；API 验证批次 preview 冻结文案 + yiwugo
+  subprocess 保留（plan/smoke-step2.1/preview.txt）。
+- **review**：自检通过。测试基建修复：api.tasks 的 DB_PATH 是导入时
+  拷贝引用，patch db_module 不影响它——必须单独 patch api_tasks.DB_PATH
+  （否则测试写生产库，debug 阶段发现并清理了 1 条污染数据）。
+- **commits**：待提交
+- **状态**：complete
+
 ### P4-1 Step 1.3 — wa_check 真实冒烟
 
 - **冒烟**：plan/smoke-step1.3/run.log + run2.log（临时库 /tmp 已清理）。
@@ -129,7 +158,7 @@
   `fetcher/<ShopDB object>` 垃圾文件已删除（未跟踪）。
 - **测试**：test_wa_task.py 14 用例（+守卫 spec 断言）、test_local_consumer
   +consumer_id 断言。全量 583 passed。
-- **commits**：待提交
+- **commits**：7530073
 - **状态**：complete
 
 ### P4-0 Step 0.2 — feeder 批次继承与限量收束

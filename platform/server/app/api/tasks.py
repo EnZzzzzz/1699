@@ -9,12 +9,14 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.db import DB_PATH, connect
-from app.runner import (IN_PROCESS_TYPES, PYTHON_BIN, TASK_COMMANDS,
-                        beijing_now, build_command, runner)
+from app.runner import (BATCH_TYPE_NAMES, BATCH_TYPES, IN_PROCESS_TYPES,
+                        PYTHON_BIN, TASK_COMMANDS, beijing_now, build_command,
+                        enqueue_batch_for_task, runner, stop_batch_task,
+                        _insert_event)
 
 router = APIRouter()
 
-TASK_TYPES = sorted(set(TASK_COMMANDS) | IN_PROCESS_TYPES)
+TASK_TYPES = sorted(set(TASK_COMMANDS) | set(BATCH_TYPES))
 
 
 def _parse_json(text):
@@ -191,6 +193,13 @@ def preview_task(body: TaskCreate):
             status_code=422,
             detail=f"未知任务类型 {body.type!r}，可选: {TASK_TYPES}")
     params = body.params.model_dump()
+    if body.type in BATCH_TYPE_NAMES:
+        spec = BATCH_TYPES[body.type]
+        limit = params.get("limit")
+        desc = f"批次提交：{spec['queue']}"
+        if limit:
+            desc += f"，{limit} 条"
+        return {"cmd": None, "cmdline": desc}
     if body.type in IN_PROCESS_TYPES:
         return {"cmd": None, "cmdline": "进程内执行（CheckWhatsApp 原子）"}
     try:
@@ -315,6 +324,16 @@ def start_task(task_id: int):
     )
     params = _parse_json(row["params_json"]) or {}
     try:
+        if row["type"] in BATCH_TYPE_NAMES:
+            # P4 批次：start = 入队（batch_id = tasks.id），由 daemon 消费、
+            # sweeper 派生状态，不启动任何进程
+            n = enqueue_batch_for_task(task_id, row["type"], params)
+            spec = BATCH_TYPES[row["type"]]
+            _insert_event(
+                task_id, "info",
+                f"批次已提交：{spec['queue']}，{n} 个工作项",
+                {"queue": spec["queue"], "items": n})
+            return {"ok": True, "queue": spec["queue"], "items": n}
         pid = runner.start(task_id, row["type"], params)
     except Exception as e:
         _write(

@@ -33,13 +33,13 @@
 
 **准入**：P4-0 完成。**完成标准**：`wa_check` 队列在 daemon 注册（守卫条件满足时），LocalExecutor 消费真实小批量查号并写回 contacts。
 
-- [ ] **Step 1.1** LocalExecutor 消费者 + requires="local" 互斥（估 30min，依赖 0.1，状态 pending）
+- [x] **Step 1.1** LocalExecutor 消费者 + requires="local" 互斥（估 30min，依赖 0.1，状态 done）
   - Engine 加 `--local-workers`（默认 2）无浏览器消费者线程（resources={"local"}，无通道/BrowserManager 装配）；eligible_queues 键泛化（site 或 queue 名）。
   - 验收：TDD——browser consumer 领不到 local 队列、local consumer 领不到 browser 队列（结构性互斥单测）。
-- [ ] **Step 1.2** WaCheckTask + 入队 feeder（估 40min，依赖 1.1，状态 pending）
+- [x] **Step 1.2** WaCheckTask + 入队 feeder（估 40min，依赖 1.1，状态 done）
   - fetcher/wa_task.py：contacts 未查号码 → normalize 去重 → 50/块 → 账号轮换入 payload；fetch=CheckWhatsApp 原子；on_success 写回 wa_registered/wa_checked_at（移植 _apply_results 语义）；节奏/风控冷却经让出型（键=queue）；停止协作改查批次 stopped。
   - 验收：TDD——切块/轮换/写回/歧义跳过/冷却键；node 缺失守卫单测。
-- [ ] **Step 1.3** wa_check 真实冒烟（估 30min，依赖 1.2，状态 pending）
+- [x] **Step 1.3** wa_check 真实冒烟（估 30min，依赖 1.2，状态 done）
   - daemon 注册 wa_check 队列（vendor+node 守卫）；小批量（≤50 号，临时库灌测试 contacts）真实查号 → 写回验证。
   - 验收：contacts.wa_registered 写回正确；证据（DB 前后对照 + 日志）落 plan 目录。**注意账号风控：用专用查号号，量最小化。**
 
