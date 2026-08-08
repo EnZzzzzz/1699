@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import random
 import time
+import traceback
 
 from fetcher.atoms.browser_ops import RelaunchBrowser
 from fetcher.control.board import wait_countdown
@@ -271,9 +272,8 @@ class CrawlLoop:
         except UserInterrupted:
             pass
         except Exception as e:  # noqa: BLE001
-            import traceback
             tb = traceback.format_exc()
-            self.log(f"[X] worker 异常退出: {e}\n{tb[-3000:]}")
+            self.log(f"[X] worker 异常退出: {e}\n{tb[-5000:]}")
         finally:
             self._cleanup()
         return self.stats
@@ -490,7 +490,9 @@ class CrawlLoop:
             new_policy = self.policies.get(site_name) if self.policies else None
             if new_policy is not None:
                 self.policy = new_policy
-            self._bound_site = site_name
+        # C1 修复：无论 plugin 是否在 sites dict 中，
+        # 都记录本次绑定，防止每次 item 都重复查找
+        self._bound_site = site_name
 
     # ---- 簿记 ----
 

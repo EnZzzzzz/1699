@@ -82,10 +82,60 @@ if plugin is not None:
 |---|---|
 | `fetcher/fetcher/control/loop.py` | `_bind_item_site` 补 ensure_site + set_active_site + try/except 容错 |
 | `fetcher/tests/test_control_loop.py` | 新增 MockPlugin、MultiSiteMockBrowserManager、MultiSiteScriptedTask、CrossSiteLazyViewTest（5 测试） |
-| `docs/feat_2026-08-08_fetcher-multiqueue-p3/smoke-step3.3/` | 冒烟日志（daemon-run-1~4.log）+ analysis.md |
+| `docs/feat_2026-08-08_fetcher-multiqueue-p3/smoke-step3.3/` | 冒烟日志（daemon-run-1~5.log）+ analysis.md（含 I3 完整 end-to-end 取证） |
 
 ## 自查发现
 
-1. **预存 bug**：直连 1688 滑块墙触发策略链时 worker 异常退出（'empty'/'failed' 字符串异常）。该问题在 git stash 回退本次改动后仍可复现，确认非本次引入。建议开独立 issue 跟踪。
+1. ~~预存 bug~~（C2 修正）：直连 1688 滑块墙导致 worker 异常退出（'empty'/'failed' KeyError）。根因是 P3 Step 3.1 引入的 QueueRouter.make_stats 返回 `{"done":0}` 不包含 contact task 的 `ok/empty/failed` 键，已被 ca35d5e 修复。Run 5 确认修复后 worker 可优雅 give_up 并过渡到 mic。
 2. **嗅探风险**：ensure_site 的 try/except 兜底策略合理——view 建失败不崩 worker，item 处理由 fetch 层兜底。但如果 session 无任何 view（首个 site 的 view 也建失败），所有后续 fetch 都会失败。当前实现不会恶化此场景（worker 逐步给 up 所有 item 后正常退出）。
 3. **Mock 完整性**：MultiSiteMockBrowserManager 的 launch() 覆盖了 ensure_site 懒建路径，但未覆盖 ensure_site 的 needs_relaunch 消费路径（该路径依赖真实 BrowserManager.relaunch 的两阶段逻辑）。如需覆盖建议后续添加集成测试。
+
+---
+
+## Fix Round 1（task-3.3-fix1.md）
+
+### C1：_bound_site 无条件设置
+
+**问题**：`_bind_item_site` 中 `_bound_site = site_name` 仅在 `plugin is not None` 块内设置；若 sites dict 无该 key，每次 item 都重复查找。
+
+**修复**：将 `_bound_site = site_name` 移到 plugin 判断之外，无条件记录本次绑定。
+
+```python
+# 修复前
+if plugin is not None:
+    ...
+    self._bound_site = site_name  # 仅 plugin 非空时设
+
+# 修复后
+if plugin is not None:
+    ...
+# C1 修复：无论 plugin 是否在 sites dict 中，都记录本次绑定
+self._bound_site = site_name
+```
+
+### C2：修正报告「预存 bug」断言
+
+**问题**：报告将 worker 崩溃标记为「预存 bug」，但根因是 P3 引入的 QueueRouter.make_stats KeyError（ca35d5e 已修复）。
+
+**修复**：更新自查发现，注明根因、commit、修复后 Run 5 验证通过。
+
+### I3：补跑完整跨站填充 end-to-end 冒烟
+
+**命令**：
+```
+python -m fetcher daemon --db /tmp/smoke_p3_33b.db --workers 1 --limit 6 -n 1 \
+  --queues crawl_1688_contact crawl_mic_contact --batch-rest 1 \
+  --max-consecutive-fail 20 --ip-retry 1 --net-retry 1 \
+  --sample-min 0 --sample-max 0 --rest-every 0 --block-rest-min 2 --block-rest-max 3
+```
+
+**取证**（daemon-run-5.log + analysis.md Run 5 节）：
+- 1688#1 failed (17:39:38) → mic#1 claimed **同秒** (17:39:38)
+- mic#1 done (17:39:45) → 1688#2 claimed **同秒** (17:39:45)
+- 1688#2 failed (17:40:04) → mic#2 claimed **同秒** (17:40:04)
+- 两轮 1688→mic 手递手，双向证据完整
+
+### M5/M6：import + traceback 截断
+
+- M5：`import traceback` 从 except 块内移到文件顶部
+- M6：traceback 截断从 `[-3000:]` 改为 `[-5000:]`
