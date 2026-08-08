@@ -266,11 +266,12 @@ class StrategyCooldownIntegrationTest(CooldownTestBase):
 
     def test_strategy_cooldown_via_chokepoint_then_retry_success(self):
         """首次 fetch 自报 blocked → 策略输出 cooldown=0.3 → loop 经
-        chokepoint 真实等待后重试 fetch → 成功收尾。"""
+        chokepoint 真实等待后重试 fetch → 成功收尾。
+        同时验证策略冷却保持 yield_=False（原地型，P3-3 改让出）。"""
         strategy = CooldownStrategy(cooldown=0.3, solved=True)
         task = ScriptedTask([("blocked", "滑块拦截"), ("ok", {"v": 1})])
         loop, ctx = self.make_loop(task, self.TABLE, {"cool": strategy})
-        calls = spy_cooldown(loop)
+        calls = spy_cooldown_full(loop)
 
         t0 = time.monotonic()
         loop.run()
@@ -283,9 +284,10 @@ class StrategyCooldownIntegrationTest(CooldownTestBase):
         # 冷却经 chokepoint：spy 记录 reason=f"strategy:cool"、秒数原样透传
         strat_calls = [c for c in calls if c[1] == "strategy:cool"]
         self.assertEqual(len(strat_calls), 1)
-        seconds, _reason, prefix = strat_calls[0]
+        seconds, _reason, prefix, yield_ = strat_calls[0]
         self.assertAlmostEqual(seconds, 0.3, delta=1e-6)
         self.assertIsNone(prefix)  # 策略冷却走静默路径
+        self.assertFalse(yield_, "策略冷却应保持 yield_=False（原地型）")
         # 真实等待过（spy 调的是真实实现）
         self.assertGreaterEqual(elapsed, 0.25)
         # 无 active_site，cooldown_until 保持空（P3 site 键语义）
@@ -293,7 +295,8 @@ class StrategyCooldownIntegrationTest(CooldownTestBase):
 
     def test_strategy_cooldown_interrupted_by_stop_is_stop_terminal(self):
         """冷却中被 stop 中断 → _process_item return "stop" 终局：
-        当前 item 不放弃、后续 item 不再认领，loop 快速退出。"""
+        当前 item 不放弃、后续 item 不再认领，loop 快速退出。
+        同时验证策略冷却保持 yield_=False。"""
         strategy = CooldownStrategy(cooldown=30.0)
         task = ScriptedTask([("blocked", "滑块拦截"), ("ok", {"v": 1}),
                              ("ok", {"v": 2})], items=("item1", "item2"))
@@ -303,7 +306,7 @@ class StrategyCooldownIntegrationTest(CooldownTestBase):
         policy = Policy(table=self.TABLE, strategies={"cool": strategy},
                         max_consecutive_fail=config.max_consecutive_fail)
         loop = CrawlLoop(ctx, task, policy=policy)
-        calls = spy_cooldown(loop)
+        calls = spy_cooldown_full(loop)
 
         threading.Timer(0.15, stop.set).start()
         t0 = time.monotonic()
@@ -320,6 +323,7 @@ class StrategyCooldownIntegrationTest(CooldownTestBase):
         strat_calls = [c for c in calls if c[1] == "strategy:cool"]
         self.assertEqual(len(strat_calls), 1)
         self.assertAlmostEqual(strat_calls[0][0], 30.0, delta=1e-6)
+        self.assertFalse(strat_calls[0][3], "策略冷却应保持 yield_=False")
 
 
 # ---------- 用例 3：4 处等待点触发 ----------
@@ -395,6 +399,152 @@ class YieldCooldownTest(CooldownTestBase):
             for _, _, y in by_reason[reason]:
                 self.assertTrue(y, f"{reason} 应传 yield_=True")
 
+        # launch_backoff 不应触发（mock 启动成功），若触发了必须为 yield_=False
+        if "launch_backoff" in by_reason:
+            for _, _, y in by_reason["launch_backoff"]:
+                self.assertFalse(y, "launch_backoff 应保持 yield_=False（原地型）")
+        # 策略冷却不应触发（纯成功路径），若触发了必须为 yield_=False
+        strat_reasons = [r for r in by_reason if r.startswith("strategy:")]
+        for r in strat_reasons:
+            for _, _, y in by_reason[r]:
+                self.assertFalse(y, f"{r} 应保持 yield_=False（原地型）")
+
+
+# ---------- 用例 4：让出型 × DaemonTaskProxy 集成验证（F1） ----------
+
+class YieldIntegrationWithProxyTest(unittest.TestCase):
+    """F1 集成测试：DaemonTaskProxy + CrawlLoop 跑 2 个成功 item，
+    验证让出型冷却登记 site 键 + condvar 等待发生在 acquire 而非 loop 内。
+
+    假基建模式（FakePage / MockBrowserManager / fake fetch OK），
+    不依赖真实浏览器或网络。
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = self._tmp.name
+        self.page = FakePage()
+        self.mgr = MockBrowserManager(self.page)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _make_proxy_ctx(self, sample_min, sample_max, items=2):
+        """创建 DaemonTaskProxy + WorkerContext，seed 好 work_items。"""
+        import json as _json
+        from fetcher.control.daemon_task import DaemonTaskProxy
+
+        config = make_config(self.tmp,
+                             sample_min=sample_min, sample_max=sample_max,
+                             batch_rest=0.01, batch_num=2, max_batches=1,
+                             rest_every=0,  # 关闭长休息，简化验证
+                             limit=0)
+        ctx = make_ctx(config, self.mgr)
+
+        # Seed work_items
+        now = time.strftime("%Y-%m-%d %H:%M:%S")
+        db = ctx.store.db
+        for i in range(1, items + 1):
+            domain = f"shop{i}.1688.com"
+            payload = {"domain": domain, "name": f"店{i}",
+                       "url": f"https://{domain}/page/contactinfo.htm"}
+            db.conn.execute(
+                "INSERT INTO work_items (queue, site, payload_json,"
+                " status, created_at) VALUES (?, ?, ?, ?, ?)",
+                ("crawl_1688_contact", "1688",
+                 _json.dumps(payload), "pending", now))
+            db.conn.commit()
+
+        inner = ScriptedTask([("ok", {"v": i}) for i in range(1, items + 1)])
+        proxy = DaemonTaskProxy(inner=inner, queue="crawl_1688_contact",
+                                site="1688", domain_suffix=".1688.com")
+        return proxy, ctx
+
+    def test_yield_cooldown_waits_in_acquire_not_loop(self):
+        """2 个成功 item：item1 完成后让出型 sample_interval 登记 site 键，
+        item2 的认领发生在冷却到期之后（时间戳间隔落在 sample 区间），
+        且循环体内无 ctx.wait 调用（让出型不触发 loop 内等待）。"""
+        proxy, ctx = self._make_proxy_ctx(sample_min=0.3, sample_max=0.5)
+        policy = Policy(table={}, strategies={},
+                        max_consecutive_fail=3)
+        loop = CrawlLoop(ctx, proxy, policy=policy)
+
+        # Spy ctx.wait / ctx.stop.wait（让出型不应触发）
+        wait_calls = []
+        orig_wait = ctx.wait
+
+        def spy_wait(seconds):
+            wait_calls.append(seconds)
+            return orig_wait(seconds)
+
+        ctx.wait = spy_wait
+
+        # Spy _cooldown 记录让出型参数
+        cooldown_spy = []
+        orig_cooldown = loop._cooldown
+
+        def spy_cd(seconds, reason, prefix=None, yield_=False):
+            cooldown_spy.append((seconds, reason, prefix, yield_))
+            return orig_cooldown(seconds, reason, prefix, yield_=yield_)
+
+        loop._cooldown = spy_cd
+
+        t0 = time.monotonic()
+        stats = loop.run()
+        elapsed = time.monotonic() - t0
+
+        # 两个 item 都成功
+        inner = proxy._inner
+        self.assertEqual(len(inner.succeeded), 2,
+                         f"期望两个 item 成功，got {len(inner.succeeded)}")
+        # succeeded 记录的是 work_item dict（含 domain/name/url）
+        self.assertEqual(inner.succeeded[0]["domain"], "shop1.1688.com")
+        self.assertEqual(inner.succeeded[1]["domain"], "shop2.1688.com")
+        # stats.done 反映成功计数
+        self.assertEqual(stats.get("done", 0), 2,
+                         f"stats.done 应为 2，got {stats.get('done', 0)}")
+
+        # 让出型调用：sample_interval（2 次，每个 item 一次）
+        si_calls = [c for c in cooldown_spy if c[1] == "sample_interval"]
+        self.assertGreaterEqual(len(si_calls), 2,
+                                f"sample_interval 应至少 2 次，got {len(si_calls)}")
+        for _seconds, _reason, _prefix, y in si_calls:
+            self.assertTrue(y, "sample_interval 应传 yield_=True")
+            self.assertGreaterEqual(_seconds, 0.3)
+            self.assertLessEqual(_seconds, 0.5)
+
+        # batch_rest 让出型
+        br_calls = [c for c in cooldown_spy if c[1] == "batch_rest"]
+        for _, _, _, y in br_calls:
+            self.assertTrue(y, "batch_rest 应传 yield_=True")
+
+        # site 键登记：active_site="1688" 应写入 cooldown_until
+        self.assertIn("1688", ctx.cooldown_until,
+                      "active_site='1688' 应在 sample_interval 时写入 cooldown_until")
+
+        # 循环体内无 ctx.wait 调用（让出型冷却不触发 wait）
+        si_values = {s for s, _, _, _ in si_calls}
+        for w in wait_calls:
+            self.assertNotIn(w, si_values,
+                             f"ctx.wait({w}) 不应被让出型冷却触发")
+
+        # 时间间隔：第 1 次 sample_interval 后会触发 condvar 等待，
+        # 第 2 次 sample_interval 后直接 batch 收工（不再 acquire），
+        # 故只有 1 次 condvar 等待计入总耗时
+        self.assertGreaterEqual(elapsed, 0.25,
+                                f"总耗时 {elapsed:.2f}s 应反映 condvar 等待"
+                                f"（≥ 0.25s）")
+
+        # 验证 DB 中的 work_items 已被标记为 done（loop 会关 DB，另开连接查）
+        import sqlite3
+        db_path = str(Path(self.tmp) / "t.db")
+        conn = sqlite3.connect(db_path)
+        done_count = conn.execute(
+            "SELECT COUNT(*) FROM work_items WHERE status='done'").fetchone()[0]
+        conn.close()
+        self.assertEqual(done_count, 2,
+                         f"2 个 work_items 应为 done，got {done_count}")
+
 
 class WaitPointsTest(CooldownTestBase):
     def test_batch_sample_periodic_rest_via_chokepoint(self):
@@ -453,7 +603,8 @@ class WaitPointsTest(CooldownTestBase):
     def test_launch_backoff_via_chokepoint(self):
         """启动退避：首次 launch 失败 → _cooldown(backoff, "launch_backoff",
         prefix="启动退避")，backoff=min(30*attempt,120)=30s；stop 中断后
-        按 UserInterrupted 路径快速退出（不等满 30s）。"""
+        按 UserInterrupted 路径快速退出（不等满 30s）。
+        同时验证 launch_backoff 保持 yield_=False（原地型）。"""
         self.mgr = MockBrowserManager(self.page, fail_launch=True)
         stop = threading.Event()
         config = make_config(self.tmp, ip_retry=2)
@@ -461,7 +612,7 @@ class WaitPointsTest(CooldownTestBase):
         policy = Policy(table={}, strategies={},
                         max_consecutive_fail=config.max_consecutive_fail)
         loop = CrawlLoop(ctx, ScriptedTask(), policy=policy)
-        calls = spy_cooldown(loop)
+        calls = spy_cooldown_full(loop)
 
         threading.Timer(0.15, stop.set).start()
         t0 = time.monotonic()
@@ -471,9 +622,10 @@ class WaitPointsTest(CooldownTestBase):
         self.assertEqual(self.mgr.launch_count, 1)  # 第 1 次失败即进退避
         bo_calls = [c for c in calls if c[1] == "launch_backoff"]
         self.assertEqual(len(bo_calls), 1)
-        seconds, _reason, prefix = bo_calls[0]
+        seconds, _reason, prefix, yield_ = bo_calls[0]
         self.assertAlmostEqual(seconds, 30.0, delta=1e-6)  # min(30*1, 120)
         self.assertEqual(prefix, "启动退避")
+        self.assertFalse(yield_, "launch_backoff 应保持 yield_=False（原地型）")
         # 被 stop 中断（UserInterrupted），未等满 30s、未二次 launch
         self.assertLess(elapsed, 5.0)
         # 无 active_site（launch_backoff 在 acquire 前）→ 不登记

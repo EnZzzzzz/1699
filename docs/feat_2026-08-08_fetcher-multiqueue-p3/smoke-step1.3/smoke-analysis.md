@@ -4,6 +4,7 @@
 - 时间：2026-08-08 14:46
 - 直连（无代理），workers=1，临时库 /tmp/smoke_p3_13.db
 - 命令：`python -m fetcher daemon --db /tmp/smoke_p3_13.db --workers 1 --limit 2 -n 1 --batch-rest 10 --sample-min 1 --sample-max 2 --rest-every 1 --rest-min 2 --rest-max 3 --max-consecutive-fail 1`
+- 参数调整说明：`--limit 2 -n 1` 小参数快速收工，避免直连滑块墙下长耗；`--batch-rest 10` 等节奏参数缩小以加速验证（brief 建议的 60s batch-rest 在无代理下每批次等待过长，且直连下批次收工路径不可达）
 - 2 个种子店铺（yichunlong2.1688.com, chengdujiajiale.1688.com）
 
 ## 输出（带时间戳）
@@ -41,7 +42,8 @@
 
 - 总运行时间 ~10s，期间覆盖浏览器启动 + 1 个 item 的 fetch + 策略链执行
 - 无 batch_rest / sample_interval / periodic_rest 期间的长时间等待间隙
-- 若为原地型（yield_=False），在 sample_interval（1-2s 区间）会有至少 5s+ 的额外等待
+- 注：节奏冷却因滑块墙 abort 未在 daemon 真实触发（未走到成功路径），
+  运行时等价性由 `test_cooldown.py::YieldIntegrationWithProxyTest` 集成测试覆盖
 
 ### 3. 环境噪声
 - 直连环境下 1688 滑块墙必现，首次 fetch 即触发 RISK_SLIDER_PAGE
@@ -54,5 +56,5 @@
 
 ## 结论
 - 让出型改造在直连环境下的行为与预期一致：active_site 正常设置，daemon 正常启动/运行/退出
-- 节奏冷却触发路径（成功路径）因滑块墙未走到——由单元测试完整覆盖（见 test_cooldown.py YieldCooldownTest）
+- 节奏冷却触发路径（成功路径）因滑块墙未走到——由单元测试 + F1 集成测试完整覆盖
 - 单队列行为等价验证通过：总运行时间无异常间隙，condvar 等待路径就绪

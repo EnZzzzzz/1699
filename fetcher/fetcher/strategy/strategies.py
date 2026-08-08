@@ -116,7 +116,7 @@ class RelaunchBrowserStrategy(_AtomStrategy):
 class SwapIPStrategy:
     """换 IP：重启浏览器绑定新出口 IP（通道不变，靠出口轮换/重连）。
 
-    冷却例外：内部等待夹在两次 relaunch 之间，不迁移（SPEC §2.2，P3 重议）。
+    冷却例外：内部等待夹在两次 relaunch 之间，保持原地等待（P3-3 router 接 release 后改让出）。
 
     迁移旧引擎 block_stage==1 的完整逻辑：
         1. 重启浏览器（旧 Cookie 先回写）；

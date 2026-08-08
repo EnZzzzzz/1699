@@ -167,6 +167,8 @@ class CrawlLoop:
                              f"强制休息 {rest / 60:.1f} 分钟（防风控）...")
                     if self._cooldown(rest, "batch_rest", prefix="批次休息",
                                       yield_=True):
+                        # yield_=True 恒返回 False，此分支不可达；
+                        # stop 由 acquire_item 的 condvar 处理
                         return self.stats
                     self.batch_no += 1
                     self.done_in_batch = 0
@@ -230,6 +232,8 @@ class CrawlLoop:
                 t = random.uniform(lo, hi)
                 self.ctx.set_status(state=f"{self.task.unit}间隔 {t:.1f}s")
                 if self._cooldown(t, "sample_interval", yield_=True):
+                    # yield_=True 恒返回 False，此分支不可达；
+                    # stop 由 acquire_item 的 condvar 处理
                     return self.stats
 
                 # ---- 周期性随机长休息（模拟真人连续浏览后的停顿）----
@@ -242,6 +246,8 @@ class CrawlLoop:
                              f"随机长休息 {t / 60:.1f} 分钟 ...")
                     if self._cooldown(t, "periodic_rest", prefix="长休息",
                                       yield_=True):
+                        # yield_=True 恒返回 False，此分支不可达；
+                        # stop 由 acquire_item 的 condvar 处理
                         return self.stats
         except UserInterrupted:
             pass
