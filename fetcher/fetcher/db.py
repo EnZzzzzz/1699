@@ -192,6 +192,19 @@ CREATE TABLE IF NOT EXISTS work_items (
 CREATE INDEX IF NOT EXISTS idx_work_items_claim ON work_items(queue, status, id);
 -- 平台批次聚合/停止兜底用（sweeper GROUP BY + UPDATE WHERE batch_id）
 CREATE INDEX IF NOT EXISTS idx_work_items_batch ON work_items(batch_id, status);
+
+-- daemon 消费者状态心跳表（P4 daemon 可观测）：写方 = fetcher daemon
+-- （claim/finish/release/冷却登记即时 + 10s 心跳 + 退出清空）；
+-- 读方 = 平台 dispatcher API（看板）。stale（updated_at 超 30s）由
+-- 读方判定离线，本表不存“存活”列。
+CREATE TABLE IF NOT EXISTS consumer_status (
+    consumer_id TEXT PRIMARY KEY,     -- "w0".."wN" / "local0"..
+    kind TEXT NOT NULL,               -- browser / local
+    tunnel TEXT, exit_ip TEXT,
+    current_queue TEXT, current_item_id INTEGER, current_batch_id INTEGER,
+    cooldowns_json TEXT,              -- {"1688": 到期epoch, ...}
+    updated_at TEXT NOT NULL          -- 北京时间
+);
 """
 
 # 依赖迁移后列（status）的索引，单独在 _migrate 之后创建

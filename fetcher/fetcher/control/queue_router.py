@@ -89,12 +89,25 @@ class QueueRouter:
     cold_start_before_acquire = False
 
     def __init__(self, registry: list[QueueSpec], cond=None,
-                 db_factory=None):
+                 db_factory=None, status_store=None):
         self._registry = {spec.queue: spec for spec in registry}
         self._specs = registry  # 保持顺序
         self._cond = cond or threading.Condition()
         self._db_factory = db_factory
+        self._status_store = status_store
         self._tls = threading.local()
+
+    def _status(self, ctx) -> object | None:
+        """取当前 worker 的状态写入口（ConsumerStatusStore 或 None）。
+
+        优先 ctx.status_store（loop 冷却上报用同一 store）；无则回退
+        本 router 持有的 store 并注入 ctx（供 loop._cooldown 使用）。
+        """
+        store = getattr(ctx, "status_store", None)
+        if store is None and self._status_store is not None:
+            ctx.status_store = self._status_store
+            store = self._status_store
+        return store
 
     @property
     def ip_request_budget(self):
@@ -256,6 +269,18 @@ class QueueRouter:
                         # 补插继承用；daemon 自喂为 None 时不注入）
                         if item.get("batch_id") is not None:
                             payload["batch_id"] = item["batch_id"]
+                        # P4 daemon 可观测：claim 即时上报（队列/工作项/批次）
+                        store = self._status(ctx)
+                        if store is not None:
+                            try:
+                                store.upsert(
+                                    consumer_id, ctx.consumer_kind,
+                                    queue=item["queue"],
+                                    item_id=item["id"],
+                                    batch_id=item.get("batch_id"),
+                                    cooldowns=ctx.cooldown_until)
+                            except Exception as e:  # noqa: BLE001
+                                ctx.log(f"[!] claim 状态上报失败: {e}")
                         from datetime import datetime
                         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         ctx.log(f"[claim] queue={item['queue']} item={item['id']} "
@@ -327,6 +352,16 @@ class QueueRouter:
             return
         try:
             self._db(ctx).finish_work_item(item_id, status, result)
+            # P4 daemon 可观测：finish 清空 current_*（保留心跳字段）
+            store = self._status(ctx)
+            if store is not None:
+                try:
+                    store.upsert(
+                        f"w{ctx.wid}", ctx.consumer_kind,
+                        queue=None, item_id=None, batch_id=None,
+                        cooldowns=ctx.cooldown_until)
+                except Exception as e:  # noqa: BLE001
+                    ctx.log(f"[!] finish 状态上报失败: {e}")
             from datetime import datetime
             ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             ctx.log(f"[finish] item={item_id} status={status} @{ts}")

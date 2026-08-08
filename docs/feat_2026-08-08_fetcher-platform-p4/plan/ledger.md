@@ -36,6 +36,32 @@
 - **commits**：900ff06
 - **状态**：complete
 
+### P4-0 Step 0.3 — consumer_status 心跳 + proxy_channels 租约
+
+- **实现**：
+  - fetcher db.py SCHEMA 加 consumer_status 表（幂等建表）；
+  - 新模块 fetcher/control/status.py：ConsumerStatusStore（upsert 哨兵语义
+    「未传=保留/显式 None=清空」+ clear + heartbeat_all + lease/release
+    channels + close）；
+  - 接线：queue_router claim/finish 即时 upsert；loop._cooldown 让出型
+    登记后上报 cooldowns_json；engine 心跳线程（10s）+ 启动租约 + 退出
+    清理（清行/释放/关连接）；cli daemon 装配 status_store。
+- **修复（冒烟抓到的真 bug）**：sqlite3 连接不可跨线程——ConsumerStatusStore
+  原实现持单 ShopDB 连接，worker 线程 claim 时报
+  "SQLite objects created in a thread can only be used in that same thread"。
+  重构为线程本地连接（threading.local 懒建 ShopDB），并补跨线程单测。
+- **测试**：test_consumer_status.py 12 用例 + test_daemon_status_hooks.py 4
+  用例（TDD 先失败后转绿）。全量 558 passed。
+- **冒烟**：plan/smoke-step0.3/run.log + 临时库对照（/tmp/p4_smoke_a.db
+  已清理）。证据：claim 时 consumer_status 写入
+  `w0|browser|crawl_1688_contact|1`；退出后行清空 0、proxy_channels 租约
+  释放 NULL。直连 1688 滑块墙 100% 命中 = 环境噪声，item 落 failed 属
+  预期结构证据。
+- **备注**：发现 P3 遗留 daemon（pid 28917，/tmp/smoke_p3_61b.db）仍在跑，
+  占 1 席——非本任务范围，未处理，记录备查。
+- **commits**：待提交
+- **状态**：complete
+
 ### P4-0 Step 0.2 — feeder 批次继承与限量收束
 
 - **实现**：
@@ -51,5 +77,5 @@
   不限）/refill 继承+收束/自喂路径 batch_id NULL 零变化）。全量 542 passed。
 - **review**：自检通过（测试修正：item dict 模拟 acquire 注入 batch_id；
   当前 item 不入库——真实链路已 claim）。
-- **commits**：待提交
+- **commits**：5b90fa7
 - **状态**：complete

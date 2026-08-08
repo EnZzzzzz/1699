@@ -320,6 +320,13 @@ def _run_daemon(args) -> int:
 
     provider = make_provider(cfg)
 
+    # P4 daemon 可观测：装配 ConsumerStatusStore（心跳/租约/claim 上报）。
+    # 线程本地连接（sqlite 不可跨线程），用 daemon 同一数据库。
+    from fetcher.control.status import ConsumerStatusStore
+    status_store = None
+    if getattr(args, "status_report", True):
+        status_store = ConsumerStatusStore(cfg.resolved_db_path())
+
     # 策略表：对 registry 涉及的每个 site 建 Policy
     from fetcher.strategy.policy import Policy
     policies = {}
@@ -360,7 +367,7 @@ def _run_daemon(args) -> int:
     engine = Engine(cfg, task=router, site=first_site_obj,
                     provider=provider, policy=default_policy,
                     sites=sites, policies=policies,
-                    site_name=first_site)
+                    site_name=first_site, status_store=status_store)
     return engine.run()
 
 

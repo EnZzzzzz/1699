@@ -142,6 +142,16 @@ class CrawlLoop:
         active_site = self.ctx.state.get("active_site")
         if active_site is not None:
             self.ctx.cooldown_until[active_site] = time.time() + seconds
+        # P4 daemon 可观测：冷却登记即时上报（cooldowns_json）。
+        # 仅让出型登记后上报（原地型等待结束再上报等价，避免重复写）；
+        # status_store 由 QueueRouter 装配注入，CLI 路径为 None 无操作。
+        if yield_ and self.ctx.status_store is not None:
+            try:
+                self.ctx.status_store.upsert(
+                    f"w{self.ctx.wid}", self.ctx.consumer_kind,
+                    cooldowns=self.ctx.cooldown_until)
+            except Exception as e:  # noqa: BLE001
+                self.ctx.log(f"[!] 冷却状态上报失败: {e}")
         if yield_:
             return False
         if prefix is None:

@@ -114,6 +114,13 @@ class WorkerContext:
     # 消费者持有的资源集（供 eligible_queues 过滤用）；daemon 消费者
     # 天然持有 {"channel", "browser"}（与 SPEC §4.2 BrowserConsumer 一致）
     resources: set[str] = field(default_factory=lambda: {"channel", "browser"})
+    # daemon 可观测：消费者状态写入口（ConsumerStatusStore，P4）。
+    # 由 QueueRouter.acquire_item 装配注入（router 持有同一 store）；
+    # loop._cooldown 冷却登记时经它 upsert cooldowns_json。None=关闭上报。
+    status_store: object | None = None
+    # 消费者类型标识（browser / local），写 consumer_status.kind 用。
+    # daemon 装配时按消费者类型设定；默认 browser（现状消费者）。
+    consumer_kind: str = "browser"
 
     # ---- 便捷访问 ----
     @property
