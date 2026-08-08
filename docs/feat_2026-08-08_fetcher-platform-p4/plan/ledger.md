@@ -135,6 +135,28 @@
 - **commits**：待提交
 - **状态**：complete
 
+### P4-2 Step 2.2 — SSE 事件合成 + dispatcher API
+
+- **实现**：
+  - api/tasks.py：批次 SSE 合成（_compose_batch_event：done→✓ success/
+    failed→✗ + reason error/stopped→⏹ warning；_fetch_batch_events 按 id
+    游标增量；_replay_batch_events 回放 200）；task_events 端点批次分支；
+  - 新模块 api/dispatcher.py：GET /dispatcher/status（daemon_alive 心跳
+    30s 新鲜度 + queue_depth GROUP BY + today_done）+ GET /dispatcher/
+    consumers（offline 标记 + cooldowns_json 解析）；注册进 api/__init__。
+- **测试**：test_dispatcher_api.py 9 用例（TDD 先失败后转绿：合成 message/
+  level、回放+增量游标、daemon 存活判定、queue_depth 聚合、today_done、
+  consumers offline、路由可达 TestClient）。平台全量 62 passed。
+- **冒烟**：uvicorn 重启后 curl 验证（plan/smoke-step2.2/status.json +
+  consumers.json）：daemon_alive=false（无 daemon）、queue_depth 聚合真实
+  生产数据（crawl_1688_contact claimed 19/done 14/pending 3——P3 遗留
+  daemon 正在跑）、today_done 14。
+- **review**：自检通过。修复：sqlite3.Row 无 .get（用索引+KeyError 兜底）、
+  _fetch_batch_events SELECT 补 queue 列、路由断言改 TestClient（FastAPI
+  新版 _IncludedRouter 无 path）。
+- **commits**：待提交
+- **状态**：complete
+
 ### P4-1 Step 1.3 — wa_check 真实冒烟
 
 - **冒烟**：plan/smoke-step1.3/run.log + run2.log（临时库 /tmp 已清理）。

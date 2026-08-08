@@ -368,6 +368,89 @@ _REPLAY_LIMIT = 200
 _POLL_SEC = 1.0
 _PING_SEC = 15.0
 
+# 批次类型 SSE：事件从 work_items 合成（无 subprocess 输出）
+_BATCH_EVENT_LEVEL = {"done": "success", "failed": "error",
+                      "stopped": "warning"}
+
+
+def _item_label(payload: dict, item_id: int, queue: str) -> str:
+    """工作项显示标识：payload.domain 优先，否则 queue+id。"""
+    domain = (payload or {}).get("domain")
+    if domain:
+        return str(domain)
+    return f"{queue}#{item_id}"
+
+
+def _compose_batch_event(row) -> tuple[str, str]:
+    """把一条 finished 工作项合成为 (message, level)。
+
+    row: 含 status/payload_json/result_json 的行（sqlite3.Row）。
+    done → '✓ {标识}' success；failed → '✗ {标识} ... {reason}' error；
+    stopped → '⏹ {标识}' warning。
+    """
+    status = row["status"]
+    try:
+        payload = json.loads(row["payload_json"] or "{}")
+    except (ValueError, TypeError, KeyError):
+        payload = {}
+    label = _item_label(payload, row.get("id") if hasattr(row, "get")
+                        else row["id"], row["queue"])
+    if status == "done":
+        return f"✓ {label}", "success"
+    if status == "stopped":
+        return f"⏹ {label}", "warning"
+    # failed：附带 result 的 reason
+    reason = ""
+    try:
+        result = json.loads(row["result_json"] or "null")
+        if isinstance(result, dict):
+            reason = str(result.get("reason") or "")
+    except (ValueError, TypeError, KeyError):
+        pass
+    suffix = f" ... {reason}" if reason else ""
+    return f"✗ {label}{suffix}", "error"
+
+
+def _fetch_batch_events(task_id: int, last_id: int, limit: int = None):
+    """批次事件：finished 项按 id 升序，id > last_id 增量。
+
+    返回 [{"id", "task_id", "ts", "level", "message", "data"}, ...]
+    （与 task_events 事件的 payload 结构对齐，供 _sse_event 直接序列化）。
+    """
+    sql = ("SELECT id, batch_id, queue, status, payload_json, result_json,"
+           " finished_at FROM work_items"
+           " WHERE batch_id=? AND finished_at IS NOT NULL AND id>?"
+           " ORDER BY id ASC")
+    params: list = [task_id, last_id]
+    if limit:
+        sql += " LIMIT ?"
+        params.append(limit)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout = 30000")
+        rows = conn.execute(sql, params).fetchall()
+    finally:
+        conn.close()
+    out = []
+    for r in rows:
+        msg, level = _compose_batch_event(r)
+        out.append({
+            "id": r["id"],
+            "task_id": r["batch_id"],
+            "ts": r["finished_at"],
+            "level": level,
+            "message": msg,
+            "data": None,
+        })
+    return out
+
+
+def _replay_batch_events(task_id: int):
+    """回放最近 200 条 finished 项（按 id 升序返回，与新事件同序）。"""
+    events = _fetch_batch_events(task_id, 0)
+    return events[-200:] if len(events) > 200 else events
+
 
 def _fetch_events(task_id: int, last_id: int, limit: int = None):
     sql = ("SELECT id, task_id, ts, level, message, data_json "
@@ -412,12 +495,16 @@ def _sse_event(ev: dict) -> str:
 
 @router.get("/tasks/{task_id}/events")
 async def task_events(task_id: int, request: Request):
-    _get_task_row(task_id)
+    row = _get_task_row(task_id)
+    is_batch = row["type"] in BATCH_TYPE_NAMES
 
     async def stream():
         last_id = 0
-        # 1) 回放最近 200 条（按 id 升序）
-        replay = await asyncio.to_thread(_replay_recent, task_id)
+        # 1) 回放最近 200 条（按 id 升序）；批次类型从 work_items 合成
+        if is_batch:
+            replay = await asyncio.to_thread(_replay_batch_events, task_id)
+        else:
+            replay = await asyncio.to_thread(_replay_recent, task_id)
         for ev in replay:
             yield _sse_event(ev)
             last_id = max(last_id, ev["id"])
@@ -429,8 +516,12 @@ async def task_events(task_id: int, request: Request):
         while True:
             if await request.is_disconnected():
                 break
-            new_events = await asyncio.to_thread(
-                _fetch_events, task_id, last_id)
+            if is_batch:
+                new_events = await asyncio.to_thread(
+                    _fetch_batch_events, task_id, last_id)
+            else:
+                new_events = await asyncio.to_thread(
+                    _fetch_events, task_id, last_id)
             for ev in new_events:
                 yield _sse_event(ev)
                 last_id = ev["id"]
@@ -461,8 +552,12 @@ async def task_events(task_id: int, request: Request):
 
             if terminal_sent:
                 # 终态已推送且事件已补发完毕，再多轮一次后收尾
-                new_events = await asyncio.to_thread(
-                    _fetch_events, task_id, last_id)
+                if is_batch:
+                    new_events = await asyncio.to_thread(
+                        _fetch_batch_events, task_id, last_id)
+                else:
+                    new_events = await asyncio.to_thread(
+                        _fetch_events, task_id, last_id)
                 for ev in new_events:
                     yield _sse_event(ev)
                     last_id = ev["id"]

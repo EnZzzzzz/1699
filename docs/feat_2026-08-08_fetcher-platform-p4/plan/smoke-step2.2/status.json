@@ -1,0 +1,11 @@
+{
+    "daemon_alive": false,
+    "queue_depth": {
+        "crawl_1688_contact": {
+            "claimed": 19,
+            "done": 14,
+            "pending": 3
+        }
+    },
+    "today_done": 14
+}
