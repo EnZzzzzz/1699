@@ -45,7 +45,7 @@
 
 - **策略不下放成边**：`on_blocked: {do: swap_ip, retry: 2}` 这类声明式配置由策略层统一执行，原子本身只负责"做一件事并报告结果分类（ok / blocked / net_error）"。控制流复杂度收敛在策略层一处，流水线保持干净。（现状一致，保留）
 - **原子只报告，不决策**：原子不感知重试次数、不决定是否换 IP；这些决策在策略层。这使原子可独立测试。（现状一致，保留）
-- **任务执行**：任务由 daemon 的消费者执行（Engine/CrawlLoop 或 LocalLoop），跨任务编排是队列 + 消费者池（见 scheduler-architecture.md §8），无 Celery。
+- **任务执行**：任务由 daemon 的消费者执行（Engine/CrawlLoop 或 LocalLoop），跨任务编排是队列 + 消费者池（见 scheduler-architecture.md §3/§5），无 Celery。
 - **事件与进度**：事件/进度写 SQLite（task_events / progress_json），无 Redis 心跳；协作式停止走 stop_requested 与循环 Timer（平台 runner）。
 
 ## 3. 原子（Atom）契约与清单
@@ -272,7 +272,7 @@ POST   /api/tasks                 # 通用任务创建；type=flow 时传 {flow_
 
 ## 10. 明确的非目标（v1 不做）
 
-- 跨任务 DAG 编排不做（引擎只消费队列，不关心流水线内部拓扑）；跨任务队列调度已由 daemon 实现（scheduler-architecture.md §8）
+- 跨任务 DAG 编排不做（引擎只消费队列，不关心流水线内部拓扑）；跨任务队列调度已由 daemon 实现（scheduler-architecture.md §3/§5）
 - 任意条件分支图（if/else 边）；条件能力由策略配置覆盖
 - 模板版本 diff / 回滚（仅支持复制出新模板）
 - 多用户/权限（沿用单机无鉴权前提）
