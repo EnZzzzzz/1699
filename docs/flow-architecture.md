@@ -1,6 +1,10 @@
 # 原子能力 + DAG 流水线架构设计
 
 > 版本：v1 · 2026-08-01 · 设计基准文档（与 owner 逐条确认后的结论）
+> 状态：v1 原子层已按 §3 落地；flows 表 DAG 编排（§4~§8）**未落地**，且已被
+> docs/scheduler-architecture.md 的「work_items 队列 + 消费者池 + daemon 调度」路线取代；
+> §2/§6/§7 相关段落为历史设计，仅存档参考。2026-08-08（P5）已删除 flows 表与
+> tasks.flow_id 列（表重建迁移）。
 > 关联文档：docs/service-architecture.md（服务化总体架构，本文档是其演进）
 
 ## 1. 需求确认结论
@@ -18,30 +22,31 @@
 | 前端分期 | v1 只读流程图 + 实时节点状态看板（非静态图，轮询/SSE 刷新）；v2 可视化拖拽编辑器 |
 | 迁移策略 | 不动现有 `shop_crawl` / `contact_fetch`；新增独立 `flow` 任务类型；内置模板 1:1 复刻现有两任务行为，灰度验证等价后逐步替代、最终下线旧实现 |
 
-## 2. 分层架构
+## 2. 分层架构（现状）
 
 ```
 ┌────────────────────────────────────────────────────┐
-│ 编排层  flows 表（DAG JSON 模板，可保存/复制/版本）   │  ← 新增
+│ 调度层  fetcher daemon：QueueRouter 多队列调度       │  ← 现状
+│         消费者池（work_items 队列 + 跨站冷却填充，   │
+│         见 scheduler-architecture.md）               │
 ├────────────────────────────────────────────────────┤
-│ 引擎层  FlowExecutor                                 │  ← 新增
-│         拓扑执行 · 容器节点 · 并行上下文 · 资源管理     │
-│         节点级状态上报 · 协作式停止                    │
+│ 引擎层  Engine + CrawlLoop / LocalLoop               │  ← 现状
+│         逐工作项执行（认领→IP 保鲜→fetch→簿记）      │
 ├────────────────────────────────────────────────────┤
-│ 原子层  Atom Registry（能力目录，标准契约）            │  ← 从现有代码抽取
-│         sleep / swap_ip / fetch_contact / ...        │
+│ 原子层  Atom Registry（能力目录，标准契约）          │  ← 现状（§3 已落地）
+│         sleep / swap_ip / fetch_contact / ...       │
 ├────────────────────────────────────────────────────┤
-│ 资源层  通道池 PoolManager · CloakBrowser · ShopDB    │  ← 基本不变
-│         TaskRuntime（事件/进度/心跳/停止）             │
+│ 资源层  通道池 · BrowserManager · ShopDB             │  ← 现状
+│         事件/进度落 SQLite（task_events/progress_json）│
 └────────────────────────────────────────────────────┘
 ```
 
 关键决策说明：
 
-- **策略不下放成边**：`on_blocked: {do: swap_ip, retry: 2}` 这类声明式配置由引擎的策略拦截器统一执行，原子本身只负责"做一件事并报告结果分类（ok / blocked / net_error）"。控制流复杂度收敛在引擎一处，DAG 图保持干净。
-- **原子只报告，不决策**：原子不感知重试次数、不决定是否换 IP；这些决策在引擎策略层。这使原子可独立测试。
-- **引擎寄生在现有 Celery 模型上**：`flow` 任务类型 = 一个通用 Celery 入口 `run_flow(task_id)`，引擎在该进程内驱动整个 DAG；多 worker 并行仍是任务内多线程（与现状一致），不引入跨进程编排复杂度。
-- **TaskRuntime 复用**：事件流、progress_json、Redis 心跳、stop_requested 协作式停止全部沿用，只是事件/进度的粒度从"任务"细化到"节点"（data 里带 `node_id` / `worker_id`）。
+- **策略不下放成边**：`on_blocked: {do: swap_ip, retry: 2}` 这类声明式配置由策略层统一执行，原子本身只负责"做一件事并报告结果分类（ok / blocked / net_error）"。控制流复杂度收敛在策略层一处，流水线保持干净。（现状一致，保留）
+- **原子只报告，不决策**：原子不感知重试次数、不决定是否换 IP；这些决策在策略层。这使原子可独立测试。（现状一致，保留）
+- **任务执行**：任务由 daemon 的消费者执行（Engine/CrawlLoop 或 LocalLoop），跨任务编排是队列 + 消费者池（见 scheduler-architecture.md §8），无 Celery。
+- **事件与进度**：事件/进度写 SQLite（task_events / progress_json），无 Redis 心跳；协作式停止走 stop_requested 与循环 Timer（平台 runner）。
 
 ## 3. 原子（Atom）契约与清单
 
@@ -193,6 +198,9 @@ ctx.stop_requested()          # 协作式停止检查
 
 ## 6. 存储设计（新增 1 张表 + tasks 表加列）
 
+> ⚠️ 本节为历史设计：flows 表与 tasks.flow_id 从未承载生产语义，P5（2026-08-08）
+> 已通过幂等表重建删除 flows 表与 flow_id 列。SQL 仅为存档。
+
 ```sql
 -- 流水线模板（DAG + 节点参数整体保存，可复制出新版本）
 CREATE TABLE flows (
@@ -215,16 +223,18 @@ ALTER TABLE tasks ADD COLUMN flow_id INTEGER REFERENCES flows(id);
 
 ## 7. API 设计（新增）
 
+> 本节 flows/atoms 端点为历史设计，未实现；任务 API 现仅 tasks 通用端点。
+
 ```
-GET    /api/flows                 # 模板列表
-POST   /api/flows                 # 新建模板（含 DAG 校验）
-GET    /api/flows/{id}            # 模板详情
-PUT    /api/flows/{id}            # 更新（builtin=1 拒绝）
-POST   /api/flows/{id}/duplicate  # 复制出新版本
-DELETE /api/flows/{id}            # 删除（被任务引用时仅标记 archived）
-GET    /api/atoms                 # 原子目录（name/title/param_spec），前端表单/编辑器用
-POST   /api/flows/validate        # 独立 DAG 校验（保存前调用）
-POST   /api/tasks                 # type=flow 时传 {flow_id, run_inputs}
+GET    /api/flows                 # 模板列表（未落地）
+POST   /api/flows                 # 新建模板（含 DAG 校验）（未落地）
+GET    /api/flows/{id}            # 模板详情（未落地）
+PUT    /api/flows/{id}            # 更新（builtin=1 拒绝）（未落地）
+POST   /api/flows/{id}/duplicate  # 复制出新版本（未落地）
+DELETE /api/flows/{id}            # 删除（被任务引用时仅标记 archived）（未落地）
+GET    /api/atoms                 # 原子目录（name/title/param_spec），前端表单/编辑器用（未落地）
+POST   /api/flows/validate        # 独立 DAG 校验（保存前调用）（未落地）
+POST   /api/tasks                 # 通用任务创建；type=flow 时传 {flow_id, run_inputs}（flow 分支未落地）
 ```
 
 任务进度接口 `GET /api/tasks/{id}` 的响应中 `progress.nodes` 即节点看板数据，结构：
@@ -262,7 +272,7 @@ POST   /api/tasks                 # type=flow 时传 {flow_id, run_inputs}
 
 ## 10. 明确的非目标（v1 不做）
 
-- 跨任务/跨进程的 DAG 编排（引擎只在单任务进程内）
+- 跨任务 DAG 编排不做（引擎只消费队列，不关心流水线内部拓扑）；跨任务队列调度已由 daemon 实现（scheduler-architecture.md §8）
 - 任意条件分支图（if/else 边）；条件能力由策略配置覆盖
 - 模板版本 diff / 回滚（仅支持复制出新模板）
 - 多用户/权限（沿用单机无鉴权前提）

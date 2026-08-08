@@ -89,6 +89,9 @@ fetch 门控、策略覆盖）。
 
 ## 本阶段边界
 
+平台任务走 daemon 批次模型（work_items 队列）；站点子命令 CLI（1688/madeinchina
+shop|contact|company）仅供手动/调试，与 daemon 同站互斥约定不变。
+
 P2+P3 已交付控制层与 CLI。P3 已落地：多队列多站点调度（daemon 常驻）、
 BrowserContext 多站点隔离（一消费者一浏览器进程、每站点独立 context）、
 SwapIP 无头两阶段、shop/company feeder 队列（work_items 驱动）。

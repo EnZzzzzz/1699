@@ -15,7 +15,7 @@ fetcher/          采集框架（Python 包，可独立安装）：
                   vendor/wa-check/：内置 Node/Baileys CLI（WhatsApp 查号协议实现）
 platform/         管理系统（前后端分离）
   server/         FastAPI 后端（端口 8765）：app/api/ REST + SSE · app/runner.py 任务监督器
-                  app/wa_tasks.py（wa_check 进程内执行器）· app/wa_login.py（WhatsApp 扫码登录）
+                  （subprocess 输出泵 + 批次 sweeper + 循环重启 Timer）· app/wa_login.py（WhatsApp 扫码登录）
   web/            React 18 + Vite + TS + Tailwind + shadcn/ui 前端（端口 3000，vite dev 有 HMR）
   start.sh        一键启动后端+前端；stop.sh 停止
 .cache/1688.db    SQLite 主库（WAL 模式）：shops / contacts / tasks / task_events /
@@ -31,7 +31,7 @@ docs/             flow-architecture.md（fetcher 框架设计）、scheduler-arc
 |---|---|
 | `platform/web` 任何文件 | **[DESIGN.md](DESIGN.md)**（设计规范唯一来源，新增页面/组件前先读） |
 | `fetcher/` 框架或原子 | `docs/flow-architecture.md`（Atom 契约、分层职责） |
-| 任务系统 / runner | `platform/server/app/runner.py` 头部注释（subprocess 与进程内两类模型） |
+| 任务系统 / runner | `platform/server/app/runner.py` 头部注释（任务执行模型与 TASK_COMMANDS/BATCH_TYPES） |
 | 数据库访问 | 见下方 §4 数据库约定 |
 
 ## 3. 设计规范摘要（完整约束以 DESIGN.md 为准）
@@ -56,10 +56,11 @@ docs/             flow-architecture.md（fetcher 框架设计）、scheduler-arc
 - `wa_registered` 语义：`1`=已注册、`0`=未注册、`NULL`=未查（等价 `wa_checked_at IS NULL`）。
 - 改后端代码后 uvicorn **不会自动 reload**，需重启才生效（重启见 `platform/start.sh`/`stop.sh`；注意 pidfile 记录的是父进程，杀端口占用进程时按实际监听 pid）。
 
-## 5. 任务系统（两类执行模型，新增任务类型时二选一）
+## 5. 任务系统（三类执行模型）
 
-- **subprocess 类**：`TASK_COMMANDS` 注册类型 → `build_command()` 拼 fetcher CLI → Popen，输出泵逐行写 task_events。适合已有 fetcher CLI 子命令的任务。
-- **进程内类**：`IN_PROCESS_TYPES` 注册（如 `wa_check`）→ `_start_in_process` 在线程跑执行器（`wa_tasks.run`），`threading.Event` 协作式停止。适合数据在平台 DB、需分批写回的任务。
+- **subprocess 类**：`TASK_COMMANDS` 注册类型 → `build_command()` 拼 fetcher CLI → Popen，输出泵逐行写 task_events。现唯一 subprocess 类型为 yiwugo_search。
+- **批次类**：`BATCH_TYPES` 注册类型 → 入队 work_items 批次 → daemon dispatcher 消费；平台 sweeper 派生状态/聚合进度（1688/madeinchina 采集与 wa_check 均走此模型）。
+- **daemon 纳管**：fetcher daemon 常驻（start.sh 拉起，stop.sh 优雅退出），队列+消费者池调度、跨站冷却填充，见 docs/scheduler-architecture.md。
 - 任务终态：`pending / running / done / failed / stopped`；停止先置 `stop_requested=1`；`repeat_interval>0` 走循环重启（Timer）。
 - 新增任务类型需同步：`runner.py` 注册 + `api/tasks.py` 的 `TaskParams` 字段 + 前端 `TaskFormDialog.tsx` 表单分支 + `task-ui.tsx` 的 `TASK_TYPE_OPTIONS`。
 
