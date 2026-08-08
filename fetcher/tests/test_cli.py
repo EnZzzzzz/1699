@@ -52,12 +52,12 @@ class CliParserTest(unittest.TestCase):
         self.assertIn("crawl_1688_company", all_names)
 
     def test_feeder_queues_topup_is_none(self):
-        """P3-5: 1688 shop/company feeder 队列 topup=None, domain_suffix=""。"""
+        """P3-5: 全部 3 条 feeder 队列 topup=None, domain_suffix=""。"""
         from fetcher.cli.main import _build_registry
         full = _build_registry()
-        feeder_names = {"crawl_1688_shop", "crawl_1688_company"}
+        feeder_names = {"crawl_1688_shop", "crawl_1688_company", "crawl_mic_shop"}
         feeders = [s for s in full if s.queue in feeder_names]
-        self.assertEqual(len(feeders), 2, "应有 2 条 feeder 队列")
+        self.assertEqual(len(feeders), 3, "应有 3 条 feeder 队列")
         for s in feeders:
             self.assertIsNone(s.topup, f"{s.queue} topup 应为 None")
             self.assertEqual(s.domain_suffix, "",
