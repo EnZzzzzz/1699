@@ -188,11 +188,11 @@ def eligible_queues(consumer, now) -> list[str]:
 
 ## 7. 验收标准
 
-- [ ] 端到端证据：单通道 daemon（`--workers 1`）日志显示 madeinchina 冷却登记后、到期前，同 worker 认领并执行 1688 工作项；反向同样成立。
-- [ ] 预算合规：日志中 ip_req 簿记显示同 (site,IP) 请求数不超各 task 的 `ip_request_budget`（mic shop=60、mic contact=80、1688 shop/company=12）。
-- [ ] 等价性：各队列产出（shops/contacts 写入、category_progress 推进）与旧 CLI 同路径代码一致；claim 无重复认领（并发单测 + 冒烟日志无重域名）。
-- [ ] C1 实测报告落 plan 目录并回填 §4。
-- [ ] 全量测试绿（现基线 309 passed + 新增）。
+- [x] 端到端证据：单通道 daemon（`--workers 1`）日志显示 madeinchina 冷却登记后、到期前，同 worker 认领并执行 1688 工作项；反向同样成立。**证据**：smoke-step6.1/ run.log（[claim]/[finish] 同秒手递手双向：mic_shop item=1 @19:12:42 → finish done → claim 1688_shop item=2 @19:12:57 → failed → claim mic_shop @19:13:02 回切；次冒烟 1688→mic→1688 三向同秒）+ run-double.log；Step 3.3 smoke-step3.3/ daemon-run-5.log（1688↔mic 两轮双向）。
+- [x] 预算合规：日志中 ip_req 簿记显示同 (site,IP) 请求数不超各 task 的 `ip_request_budget`（mic shop=60、mic contact=80、1688 shop/company=12）。**证据**：smoke-step6.1/——1688:direct 4~7 req ≤ 12；madeinchina:direct 2 req ≤ 60/80。
+- [x] 等价性：各队列产出（shops/contacts 写入、category_progress 推进）与旧 CLI 同路径代码一致（Step 4.2/5.2 冒烟真实落库、Step 5.2 旧 CLI 等价确认）；claim 无重复认领（并发单测 test_work_items.py + 冒烟 DB total=distinct=1057，无重域名）。
+- [x] C1 实测报告落 plan 目录并回填 §4。**证据**：spike-cloakbrowser-multicontext.md（n0=0→1→1→1→0）。
+- [x] 全量测试绿（现基线 309 passed + 新增 → 517 passed）。
 
 ## 8. 风险与回滚
 

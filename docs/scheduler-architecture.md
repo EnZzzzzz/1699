@@ -211,7 +211,7 @@ CREATE INDEX idx_work_items_claim ON work_items(queue, status, id);
 | P0 daemon 骨架 | work_items 表 + Dispatcher + 条件变量调度循环 + BrowserConsumer（单站点 1688）；CLI 新增 `daemon` 子命令 | 单站点行为与现有 CLI 等价（节奏、产出、事件口径一致）；✅ 已完成（2026-08-07，实施记录 docs/archive/feat_2026-08-07_fetcher-daemon-p0/） |
 | P1 冷却策略迁移 | `strategies.py` 的 sleep 全部改为输出冷却时长；`loop.py` 流水线原子化改造 | 同一批次总耗时、请求节奏分布与旧实现相当；✅ 已完成（2026-08-08，实施记录 docs/archive/feat_2026-08-07_fetcher-cooldown-p1/） |
 | P2 identity 分桶 | identity 键升级 `f"{site}:{ip}"`（拼前缀仅诞生点一处）；6 处隐藏使用点修正（保鲜检查/直连判定/报表/指纹）；Cookie 域过滤收紧 + cookies 表幂等迁移（历史 ip_stats/ip_events 保持裸键） | 同 IP 两站点 Cookie/簿记互不污染（隔离性单测）；✅ 已完成（2026-08-08，实施记录 docs/archive/feat_2026-08-08_fetcher-identity-p2/） |
-| P3 第二站点接入 | madeinchina 队列接入，跨站填充生效；BrowserContext 多站点隔离（自 P2 移入） | 同通道 madeinchina 冷却期间执行 1688 工作项，两边各自预算不超标 |
+| P3 第二站点接入 | madeinchina 队列接入，跨站填充生效；BrowserContext 多站点隔离（自 P2 移入） | 同通道 madeinchina 冷却期间执行 1688 工作项，两边各自预算不超标；✅ 已完成（2026-08-08，实施记录 docs/archive/feat_2026-08-08_fetcher-multiqueue-p3/） |
 | P4 平台切换 | runner 改批次提交、wa_check 迁入、API + 前端看板 | 平台创建/停止/监控全流程走 dispatcher |
 | P5 退役旧路径 | 旧 subprocess 采集路径冻结→删除；修订 flow-architecture.md §2/§10 | 旧代码路径删除，文档同步 |
 

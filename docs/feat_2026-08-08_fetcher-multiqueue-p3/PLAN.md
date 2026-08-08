@@ -13,7 +13,7 @@
 | P3-3 | QueueRouter + daemon CLI + SwapIP 两阶段 | 3 | P3-1、P3-2 | done |
 | P3-4 | madeinchina 队列接入（contact + shop feeder） | 2 | P3-3 | done |
 | P3-5 | 1688 shop/company feeder 接入 | 2 | P3-4 | done |
-| P3-6 | 端到端验收冒烟 + 终审 | 2 | P3-5 | pending |
+| P3-6 | 端到端验收冒烟 + 终审 | 2 | P3-5 | done |
 
 ---
 
@@ -100,6 +100,6 @@
 - [x] **Step 6.1** 跨站填充端到端冒烟（估 40min，依赖 5.2，状态 pending）
   - `--workers 1` 全量 5 队列（或按环境可用子集）临时库：取证 ① 同 worker 跨站填充日志（双向）② ip_req 簿记不超各站预算 ③ 无重复认领。
   - 证据（命令+日志摘录+计数）落 plan 目录 report。
-- [ ] **Step 6.2** 全量回归 + 终审（估 30min，依赖 6.1，状态 pending）
+- [x] **Step 6.2** 全量回归 + 终审（估 30min，依赖 6.1，状态 pending）
   - 全量测试；SPEC §7 逐条勾选；README/AGENTS.md 涉及段落同步（daemon 队列清单、互斥约定）；scheduler-architecture.md §10 P3 行标完成 + 归档本目录到 docs/archive/。
   - 验收：终审报告 MERGE READY 后呈用户合并。
