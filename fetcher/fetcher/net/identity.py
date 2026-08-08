@@ -58,13 +58,18 @@ class IdentityStore:
 
     # ---- 从浏览器上下文回写 ----
 
-    def save_from_context(self, identity: str, ctx, log=print) -> int:
+    def save_from_context(self, identity: str, ctx, log=print,
+                          domain: str | None = None) -> int:
         """把浏览器上下文中的本站 Cookie 写回（含新签发的 x5sec 等）。
 
         迁移自 common.save_cookies：每次过证/成功/退出时调用，
         保证下次启动时 Cookie 与同一出口 IP 链路一致。
+        domain 参数：按指定域过滤（None 时回落 self.domain）；
+        多站点场景 per-view 域过滤用。
         """
-        cookies = [c for c in ctx.cookies() if self.domain in c.get("domain", "")]
+        filter_domain = domain if domain is not None else self.domain
+        cookies = [c for c in ctx.cookies()
+                   if filter_domain in c.get("domain", "")]
         if not cookies:
             return 0
         n = self.save(identity, cookies)

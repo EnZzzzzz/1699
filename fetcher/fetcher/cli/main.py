@@ -55,9 +55,9 @@ def build_parser() -> argparse.ArgumentParser:
                           help="每个 worker 每批采集数量；采满一批后强制休息")
     p_daemon.add_argument("--limit", type=int, default=0,
                           help="每个 worker 本次最多采集量（默认 0=不限）")
-    p_daemon.add_argument("--queue", type=str, default="crawl_1688_contact",
-                          help="消费的 work_items 队列名（P0 只支持默认值 "
-                               "crawl_1688_contact，不开放其他选择）")
+    p_daemon.add_argument("--queues", nargs="+", default=None,
+                          help="消费的 work_items 队列列表（默认全量；可选: "
+                               "crawl_1688_contact, crawl_mic_contact）")
     add_common_args(p_daemon, default_rest_every=20)
     return ap
 
@@ -209,47 +209,158 @@ def _build_engine(cfg, task, site, provider, policy, site_name):
                   site_name=site_name)
 
 
-def _run_daemon(args) -> int:
-    """daemon 常驻模式装配：1688 contact 包 DaemonTaskProxy 后跑 Engine。
+def _build_registry(selected_queues: list[str] | None = None) -> list:
+    """构建 daemon 全量队列注册表（本 Step 2 条队列，P3-4/P3-5 加 shop/company）。
 
-    config_from_args 不读 args.task（读 task 的是站点分支的
-    site.make_task(args.task)），daemon parser 已带 num/limit 默认值，
-    故 config_from_args 原样复用、无需任何适配。provider/policy/Engine
-    装配与站点分支逐项一致；退出语义不加新逻辑（信号走 Engine 既有
-    优雅退出，--limit 走 CrawlLoop 既有收工逻辑）。
+    selected_queues 非空时只保留指定队列；None=全量。
+    返回值即 spec.queue 的全量列表，可作为 argparse choices 的来源。
     """
-    from fetcher.control.daemon_task import DaemonTaskProxy
+    from fetcher.control.queue_router import QueueSpec
+
+    specs = []
+
+    # crawl_1688_contact
+    site_1688 = get_site("1688")
+    specs.append(QueueSpec(
+        queue="crawl_1688_contact",
+        site="1688",
+        task=site_1688.make_task("contact"),
+        topup=lambda db, limit: db.topup_contact_work_items(
+            "crawl_1688_contact", "1688", ".1688.com", limit),
+        domain_suffix=".1688.com",
+    ))
+
+    # crawl_mic_contact
+    site_mic = get_site("madeinchina")
+    specs.append(QueueSpec(
+        queue="crawl_mic_contact",
+        site="madeinchina",
+        task=site_mic.make_task("contact"),
+        topup=lambda db, limit: db.topup_contact_work_items(
+            "crawl_mic_contact", "madeinchina", ".cn.made-in-china.com", limit),
+        domain_suffix=".cn.made-in-china.com",
+    ))
+
+    # crawl_mic_shop（feeder 队列：topup=None，不参与 in_progress reset）
+    specs.append(QueueSpec(
+        queue="crawl_mic_shop",
+        site="madeinchina",
+        task=site_mic.make_task("shop"),
+        topup=None,
+        domain_suffix="",
+        requires={"channel", "browser"},
+    ))
+
+    # crawl_1688_shop（feeder 队列：topup=None，不参与 in_progress reset）
+    specs.append(QueueSpec(
+        queue="crawl_1688_shop",
+        site="1688",
+        task=site_1688.make_task("shop"),
+        topup=None,
+        domain_suffix="",
+        requires={"channel", "browser"},
+    ))
+
+    # crawl_1688_company（feeder 队列：topup=None，不参与 in_progress reset）
+    specs.append(QueueSpec(
+        queue="crawl_1688_company",
+        site="1688",
+        task=site_1688.make_task("company"),
+        topup=None,
+        domain_suffix="",
+        requires={"channel", "browser"},
+    ))
+
+    if selected_queues:
+        specs = [s for s in specs if s.queue in selected_queues]
+    return specs
+
+
+def reset_daemon_state(db, registry: list) -> tuple[int, int]:
+    """daemon 启动崩溃恢复：全量回收 claimed + 逐有 topup 的队列重置
+    in_progress（feeder 队列跳过——不产生 in_progress shops）。
+
+    返回 (n_claimed_reset, n_in_progress_reset)。
+    提取为独立函数便于测试（I2）。
+    """
+    n_items = db.reset_claimed_work_items()
+    total_shops = 0
+    for spec in registry:
+        if spec.topup is not None:
+            n = db.reset_in_progress(spec.domain_suffix)
+            total_shops += n
+    return n_items, total_shops
+
+
+def _run_daemon(args) -> int:
+    """daemon 常驻模式装配：QueueRouter 跨队列认领 + Engine 跑。"""
+    from fetcher.control.engine import Engine
+    from fetcher.control.queue_router import QueueRouter
     from fetcher.db import ShopDB
 
     cfg = config_from_args(args)
-    site = get_site("1688")
-    inner = site.make_task("contact")
-    task = DaemonTaskProxy(inner, queue=args.queue, site="1688",
-                           domain_suffix=".1688.com")
-    if not task.prepare(cfg):
+
+    # 先建全量 registry（供校验用）
+    full_registry = _build_registry()
+    all_queue_names = [s.queue for s in full_registry]
+    if args.queues:
+        for q in args.queues:
+            if q not in all_queue_names:
+                print(f"[!] 未知队列: {q!r}（可选: {', '.join(all_queue_names)}）")
+                return 2
+
+    registry = _build_registry(args.queues)
+    if not registry:
+        print("[!] 没有可用的队列（--queues 过滤后为空）")
+        return 2
+
+    router = QueueRouter(registry)
+    if not router.prepare(cfg):
         return 0
 
     provider = make_provider(cfg)
-    # 策略表：默认表 + 站点级覆盖（policy_overrides）+ CLI 熔断上限
-    from fetcher.strategy.policy import Policy
-    policy = Policy(max_consecutive_fail=cfg.max_consecutive_fail)
-    overrides = getattr(site, "policy_overrides", None)
-    if overrides:
-        policy = policy.with_overrides(overrides)
 
-    # 崩溃恢复（SPEC §3.3 状态流）：先回收 work_items 残留认领，
-    # 再重置 shops 的 in_progress（不带 domain 过滤，与既有 CLI 启动语义一致）
+    # 策略表：对 registry 涉及的每个 site 建 Policy
+    from fetcher.strategy.policy import Policy
+    policies = {}
+    site_set = set()
+    for spec in registry:
+        if spec.site not in site_set:
+            site_set.add(spec.site)
+            site = get_site(spec.site)
+            policy = Policy(max_consecutive_fail=cfg.max_consecutive_fail)
+            overrides = getattr(site, "policy_overrides", None)
+            if overrides:
+                policy = policy.with_overrides(overrides)
+            policies[spec.site] = policy
+
+    # daemon 用注册表首个 site 的默认 policy 作为 Engine 级 policy
+    first_site = registry[0].site
+    default_policy = policies[first_site]
+
+    # 站点 dict（供 loop _bind_item_site 按 active_site 切换）
+    sites = {}
+    for site_name in site_set:
+        sites[site_name] = get_site(site_name)
+
+    # 崩溃恢复：先回收 work_items 残留认领（全量），
+    # 再逐 site 重置 shops 的 in_progress（按 domain_suffix 过滤）
     db = ShopDB(cfg.resolved_db_path())
     try:
-        n_items = db.reset_claimed_work_items()
-        n_shops = db.reset_in_progress()
+        n_items, total_shops = reset_daemon_state(db, registry)
     finally:
         db.close()
     print(f"[daemon] 启动重置：{n_items} 个 claimed 工作项 → pending，"
-          f"{n_shops} 个 in_progress 店铺 → pending")
+          f"{total_shops} 个 in_progress 店铺 → pending"
+          f"（逐 site: {', '.join(spec.domain_suffix for spec in registry)}）")
 
-    engine = _build_engine(cfg, task=task, site=site, provider=provider,
-                           policy=policy, site_name="1688")
+    # Engine 装配：site 用首个注册 site（BrowserManager 初始 view identity 前缀），
+    # policy 用 default_policy（多 site 的 _bind_item_site 会动态切换）
+    first_site_obj = get_site(first_site)
+    engine = Engine(cfg, task=router, site=first_site_obj,
+                    provider=provider, policy=default_policy,
+                    sites=sites, policies=policies,
+                    site_name=first_site)
     return engine.run()
 
 

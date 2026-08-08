@@ -1,16 +1,19 @@
 # -*- coding: utf-8 -*-
-"""1688 公司黄页采集任务（迁移 company_crawler.py 的 CompanyTask 全部行为）。
+"""1688 公司黄页采集任务（work_items 驱动 feeder 模式）。
 
 端点：s.1688.com/company/company_search.htm（「找供应商」公司黄页），
 直出「公司名 + 店铺域名」，无需从商品卡片内嵌 JSON 抠 shopAddition。
 进度：category_progress 表以 "company:" 前缀存储，与 shop 任务的
 商品搜索进度完全隔离。
+
+P3 Step 5.1：从 KeywordPool 进程内填池重构为 work_items 驱动
+feeder——与 Step 4.1 MadeInChinaShopTask 同模式。
 """
 
 from __future__ import annotations
 
+import json
 import random
-import threading
 import time
 
 from fetcher.control.task import Task
@@ -121,66 +124,29 @@ SEED_KEYWORDS = [
 ]
 
 
-class KeywordPool:
-    """关键词池：进程内共享，线程安全（与 CategoryPool 同思路）。"""
+class Alibaba1688CompanyTask(Task):
+    """1688 公司黄页采集：work_items 驱动 + 单关键词黄页处理。
 
-    def __init__(self, exhausted: set):
-        self.lock = threading.Lock()
-        self.pool: dict = {}
-        self.in_progress: set = set()
-        self.exhausted: set = set(exhausted)
+    work_items payload：
+      - 类目页：{"kind":"category","keyword":"company:xxx","name":<name>}
+        keyword 天然带 "company:" 前缀；page_no 处理时读
+        category_progress.next_page
+      - 发现：{"kind":"discover"}
+        执行 = 首页类目提取 + mtop 握手 → 新类目逐条 INSERT category item
+        （keyword 带 "company:" 前缀）
 
-    def pick(self) -> tuple[str, str] | None:
-        with self.lock:
-            candidates = [kw for kw in self.pool
-                          if kw not in self.exhausted
-                          and kw not in self.in_progress]
-            if not candidates:
-                return None
-            kw = random.choice(candidates)
-            self.in_progress.add(kw)
-            return kw, self.pool.get(kw) or kw
-
-    def release(self, keyword: str, exhausted: bool = False):
-        with self.lock:
-            self.in_progress.discard(keyword)
-            if exhausted:
-                self.exhausted.add(keyword)
-
-    def refresh(self, cats: list[dict]) -> int:
-        with self.lock:
-            n = 0
-            for c in cats:
-                kw = c.get("keyword")
-                if kw and kw not in self.pool:
-                    self.pool[kw] = c.get("name") or kw
-                    n += 1
-            return n
-
-    def available(self) -> int:
-        with self.lock:
-            return len([kw for kw in self.pool
-                        if kw not in self.exhausted
-                        and kw not in self.in_progress])
-
-
-class CompanyTask(Task):
-    """公司黄页采集任务：随机关键词 → 黄页 → 公司店铺域名入库。
-
-    任务项为 (keyword, name, page_no) 三元组；进度以 "company:" 前缀
-    存 category_progress，与商品搜索进度隔离。
+    链式续喂：category item on_success 后若未采完则 INSERT 下一页 item。
+    失败补插：refill_item 在 attempts 耗尽时补插同 payload 新 item。
     """
 
     name = "company"
     unit = "页"
     batch_unit = "店铺"
     cold_start_before_acquire = True
-    # 黄页与商品搜索同属 s.1688.com 搜索域，按同一预算保守处理：
-    # 每出口 IP 采满 12 页主动换 IP
     ip_request_budget = 12
 
-    def __init__(self):
-        self.kw_pool: KeywordPool | None = None
+    QUEUE = "crawl_1688_company"
+    SITE = "1688"
 
     # ---- main 阶段 ----
 
@@ -192,7 +158,11 @@ class CompanyTask(Task):
                      if k.startswith(PROGRESS_PREFIX)}
         if exhausted:
             print(f"[0] 黄页已采到末页的关键词 {len(exhausted)} 个，自动跳过")
-        self.kw_pool = KeywordPool(exhausted)
+        # 播种：活跃 company: 前缀类目逐条插 category item + 一条 discover
+        n_cat = self._seed_category_items(db)
+        n_disc = self._seed_discover_item(db)
+        if n_cat or n_disc:
+            print(f"[0] 播种 {n_cat} 个 category item + {n_disc} 条 discover")
         st = db.stats()
         print(f"[1] 数据库现有店铺 {st['shops']} 个（pending {st['pending']} / "
               f"done {st['done']} / no_contact {st['no_contact']} / "
@@ -203,6 +173,29 @@ class CompanyTask(Task):
               f"批间强制休息 {config.batch_rest / 60:.0f} 分钟")
         db.close()
         return True
+
+    def _seed_category_items(self, db) -> int:
+        """活跃 company: 前缀类目逐条插 category item
+        （已有同 keyword pending 跳过）。"""
+        active = list(db.iter_active_categories(prefix=PROGRESS_PREFIX))
+        n = 0
+        for cat in active:
+            kw = cat["keyword"]  # 已带 "company:" 前缀
+            name = cat.get("name", kw)
+            if self._count_pending_by_kind(db, "category", kw) > 0:
+                continue
+            self._insert_work_item(db, {"kind": "category", "keyword": kw,
+                                         "name": name})
+            n += 1
+        return n
+
+    def _seed_discover_item(self, db) -> int:
+        """插一条 discover item（已有 pending discover 跳过）。"""
+        existing = self._count_pending_by_kind(db, "discover")
+        if existing > 0:
+            return 0
+        self._insert_work_item(db, {"kind": "discover"})
+        return 1
 
     def summary(self, all_stats: dict, db_path=None) -> str:
         from fetcher.db import ShopDB  # 延迟导入
@@ -232,50 +225,73 @@ class CompanyTask(Task):
     # ---- worker 循环 ----
 
     def cold_start(self, ctx, item) -> None:
-        """新会话先逛 1688 首页留真实浏览轨迹，顺带提取首页类目填池。"""
-        cats = fetch_homepage_categories(ctx.page)
-        if not cats:
-            cats = [{"name": n, "keyword": k} for n, k in SEED_KEYWORDS]
-            ctx.log(f"[!] 首页类目提取失败，"
-                    f"使用内置种子关键词（{len(cats)} 个）")
-        n = self.kw_pool.refresh(cats)
-        if n:
-            ctx.log(f"黄页关键词池新增 {n} 个"
-                    f"（可采 {self.kw_pool.available()}，"
-                    f"跳过已采完 {len(self.kw_pool.exhausted)}）")
-        if not ensure_mtop_token(ctx.page, log=ctx.log):
-            ctx.log("[!] mtop 握手未拿到 _m_h5_tk，本会话黄页采集将被搁置"
-                    "（fetch 逐页重试握手，仍无令牌则按风控换 IP）")
+        """新会话先逛 1688 首页留真实浏览轨迹（纯软着陆，不提取类目）。
+
+        类目提取归 discover item 的 on_success 处理。
+        """
+        try:
+            ctx.page.goto(HOMEPAGE, wait_until="domcontentloaded",
+                          timeout=60000)
+            time.sleep(random.uniform(2.0, 4.0))
+        except Exception:  # noqa: BLE001
+            ctx.log("[!] 冷启动浏览失败，继续认领工作项")
 
     def acquire_item(self, ctx):
-        picked = self.kw_pool.pick()
-        if not picked:
+        """从 work_items 队列认领（CLI 与 daemon 同一路径）。"""
+        consumer_id = f"w{ctx.wid}"
+        db = ctx.store.db
+        item = db.claim_next_eligible([self.QUEUE], consumer_id)
+        if item is None:
             return None
-        keyword, name = picked
-        prog = ctx.store.db.get_category_progress(PROGRESS_PREFIX + keyword)
-        page_no = prog["next_page"] if prog else 1
-        return (keyword, name, page_no)
+        payload = dict(item["payload"])
+        payload["id"] = item["id"]
+        return payload
 
     def label(self, item) -> str:
-        return f"{item[1]} p{item[2]}"
+        kind = item.get("kind", "")
+        if kind == "discover":
+            return "discover"
+        kw = item.get("keyword", "?")
+        # 显示时去掉 company: 前缀
+        name = item.get("name", kw)
+        return f"{name}"
 
     def fetch(self, ctx, item) -> ActionResult:
-        """抓取一页公司黄页，提取「公司名 + 店铺域名」列表。"""
+        """按 kind 分派：category → 抓黄页，discover → 返回标记。"""
+        kind = item.get("kind", "")
+        if kind == "discover":
+            return ActionResult(Outcome.OK, "discover", {"discover": True})
+        if kind == "category":
+            return self._fetch_category(ctx, item)
+        return ActionResult.fatal(f"未知 kind: {kind}")
+
+    def _fetch_category(self, ctx, item) -> ActionResult:
+        """抓取一页公司黄页，提取「公司名 + 店铺域名」列表。
+
+        page_no 从 category_progress 运行时读（单一事实来源）。
+        keyword 已带 PROGRESS_PREFIX；fetch URL 需要去掉前缀裸关键词。
+        """
         page = ctx.page
-        keyword, _name, page_no = item
-        url = build_company_url(keyword, page_no)
+        db = ctx.store.db
+        full_keyword = item["keyword"]  # "company:女装"
+        # 进度键带前缀
+        prog = db.get_category_progress(full_keyword)
+        page_no = prog["next_page"] if prog else 1
+        # URL 使用裸关键词（去掉 company: 前缀）
+        raw_kw = full_keyword
+        if raw_kw.startswith(PROGRESS_PREFIX):
+            raw_kw = raw_kw[len(PROGRESS_PREFIX):]
+        url = build_company_url(raw_kw, page_no)
         try:
-            # 无 mtop 令牌不碰黄页（无令牌裸奔 = 首请求即踢登录墙）
             if not has_mtop_token(page) and not ensure_mtop_token(page):
                 return ActionResult.blocked(
                     "会话缺少 mtop 令牌（_m_h5_tk），搜索域入场券未获取，"
                     "未触碰黄页")
             referer = (HOMEPAGE if page_no <= 1
-                       else build_company_url(keyword, page_no - 1))
+                       else build_company_url(raw_kw, page_no - 1))
             page.goto(url, wait_until="domcontentloaded", timeout=60000,
                       referer=referer)
             time.sleep(random.uniform(1.0, 2.0))
-            # 等企业卡片渲染就绪（轮询，不加重风控）
             deadline = time.monotonic() + 15.0
             while time.monotonic() < deadline:
                 try:
@@ -304,32 +320,83 @@ class CompanyTask(Task):
                 return ActionResult.fatal(reason)
             if kind == "net_error":
                 return ActionResult.net_error(reason)
-            return ActionResult.blocked(f"页面加载失败（疑似风控拦截）: {reason}")
+            return ActionResult.blocked(
+                f"页面加载失败（疑似风控拦截）: {reason}")
 
     def validate(self, ctx, item, result: ActionResult) -> bool:
-        """结构化校验：结果必须含 shops 列表（空列表 = 采到末页，合法）。"""
+        """结构化校验：discover → 检查 discover 标记；category → shops 列表。"""
+        if item.get("kind") == "discover":
+            return isinstance((result.data or {}).get("discover"), bool)
         return isinstance((result.data or {}).get("shops"), list)
 
     def on_success(self, ctx, item, result: ActionResult) -> int:
+        """按 kind 分派入库与链式续喂。"""
+        kind = item.get("kind", "")
+        if kind == "discover":
+            return self._on_discover_success(ctx, item, result)
+        if kind == "category":
+            return self._on_category_success(ctx, item, result)
+        return 0
+
+    def _on_discover_success(self, ctx, item, result: ActionResult) -> int:
+        """discover 成功：首页类目提取 + mtop 握手 → 新类目逐条 INSERT
+        category item（keyword 带 company: 前缀）。"""
+        db = ctx.store.db
+        page = ctx.page
+        # mtop 握手
+        if not ensure_mtop_token(page, log=ctx.log):
+            ctx.log("[!] discover mtop 握手未拿到 _m_h5_tk，"
+                    "后续黄页采集将被搁置")
+        # 提取首页类目
+        cats = fetch_homepage_categories(page)
+        if not cats:
+            cats = [{"name": n, "keyword": k} for k, n in SEED_KEYWORDS]
+            ctx.log(f"[!] 首页类目提取失败，"
+                    f"使用内置种子关键词（{len(cats)} 个）")
+        n = 0
+        for c in cats:
+            prefixed_kw = PROGRESS_PREFIX + c["keyword"]
+            # 跳过已 exhausted
+            prog = db.get_category_progress(prefixed_kw)
+            if prog and prog.get("exhausted"):
+                continue
+            # 跳过已有同 keyword pending category item
+            if self._count_pending_by_kind(db, "category", prefixed_kw) > 0:
+                continue
+            self._insert_work_item(
+                db,
+                {"kind": "category", "keyword": prefixed_kw,
+                 "name": c.get("name", c["keyword"])})
+            n += 1
+        if n:
+            ctx.log(f"discover 产出 {n} 个新类目 category item"
+                    f"（company: 前缀）")
+        return 0  # discover 不计入页数
+
+    def _on_category_success(self, ctx, item, result: ActionResult) -> int:
+        """category 成功：入库 shops → 链式续喂。
+        company 落库逻辑与 shop 一致（upsert_shops 到 shops 表）。"""
         db = ctx.store.db
         stats = ctx.state["task"]["stats"]
-        keyword, name, page_no = item
+        full_keyword = item["keyword"]  # "company:女装"
+        cat_name = item.get("name", full_keyword)
+        prog = db.get_category_progress(full_keyword)
+        page_no = prog["next_page"] if prog else 1
         page_shops = result.data["shops"]
         has_more = result.data["has_more"]
-        run_id = db.start_run(name, PROGRESS_PREFIX + keyword)
+        run_id = db.start_run(cat_name, full_keyword)
         n_new = db.upsert_shops(page_shops, run_id=run_id,
-                                category_keyword=keyword)
+                                category_keyword=full_keyword)
         db.finish_run(run_id, shops_found=len(page_shops),
                       shops_picked=n_new, note=f"company page={page_no}")
         if not page_shops or not has_more:
-            db.mark_category_exhausted(PROGRESS_PREFIX + keyword, name)
-            ctx.state["task"]["exhausted"] = True
-            ctx.set_status(state=f"■ {name} 采到末页，标记 exhausted")
-            ctx.log(f"■ 关键词 {name} 第 {page_no} 页 "
+            db.mark_category_exhausted(full_keyword, cat_name)
+            ctx.set_status(state=f"■ {cat_name} 采到末页，标记 exhausted")
+            ctx.log(f"■ 关键词 {cat_name} 第 {page_no} 页 "
                     f"{len(page_shops)} 店，hasMore={has_more}，"
                     f"采到末页标记 exhausted")
         else:
-            db.advance_category_page(PROGRESS_PREFIX + keyword, name,
+            db.advance_category_page(full_keyword, cat_name,
                                      shops_found=len(page_shops))
             ctx.set_status(state=f"✓ {len(page_shops)} 店（新 {n_new}）")
         stats["shops"] += len(page_shops)
@@ -337,19 +404,71 @@ class CompanyTask(Task):
         stats["pages"] += 1
         ctx.set_status(n=stats["shops"], new=stats["new"],
                        pages=stats["pages"])
+        # 链式续喂
+        if not page_shops or not has_more:
+            pass  # exhausted，不续喂
+        else:
+            payload = {"kind": "category", "keyword": full_keyword,
+                       "name": cat_name}
+            self._insert_work_item(db, payload)
         return len(page_shops)
 
     def on_giveup(self, ctx, item, reason: str, kind: str) -> str:
         return "跳过该页，页码不前进下次重采"
 
     def on_abort(self, ctx, item) -> str:
-        return (f"关键词 {item[0]} 第 {item[2]} 页页码不前进，"
-                f"下次运行自动续采")
+        kw = item.get("keyword", "?")
+        return f"关键词 {kw} 页码不前进，下次运行自动续采"
+
+    def refill_item(self, ctx, item) -> None:
+        """attempts 耗尽补插：category 同 payload 新 item（attempts=0），
+        discover 也补插一次。"""
+        db = ctx.store.db if ctx.store else None
+        if db is None:
+            return
+        kind = item.get("kind", "")
+        if kind == "category":
+            payload = {"kind": "category",
+                       "keyword": item["keyword"],
+                       "name": item.get("name", item["keyword"])}
+            self._insert_work_item(db, payload)
+            ctx.log(f"[refill] 关键词 {item.get('keyword')} 补插 category item")
+        elif kind == "discover":
+            self._insert_work_item(db, {"kind": "discover"})
+            ctx.log("[refill] 补插 discover item")
 
     def after_item(self, ctx, item) -> None:
-        self.kw_pool.release(item[0],
-                             exhausted=ctx.state["task"].pop("exhausted",
-                                                             False))
+        pass
 
     def empty_message(self) -> str:
-        return "没有可采的关键词了（全部采完或被占用）"
+        return "没有待认领的 work_item 了"
+
+    # ---- work_items 辅助 ----
+
+    def _insert_work_item(self, db, payload: dict) -> int:
+        """向 work_items 插 pending 行，返回 id。"""
+        cur = db.conn.execute(
+            "INSERT INTO work_items (queue, site, payload_json, created_at)"
+            " VALUES (?, ?, ?, datetime('now','localtime'))",
+            (self.QUEUE, self.SITE, json.dumps(payload, ensure_ascii=False)))
+        db.conn.commit()
+        return cur.lastrowid
+
+    def _count_pending_by_kind(self, db, kind: str, keyword: str = None) -> int:
+        """统计同 kind（+可选 keyword）的 pending item 数量。"""
+        if keyword is not None:
+            return db.conn.execute(
+                "SELECT COUNT(*) FROM work_items WHERE queue=?"
+                " AND status='pending'"
+                " AND json_extract(payload_json, '$.kind')=?"
+                " AND json_extract(payload_json, '$.keyword')=?",
+                (self.QUEUE, kind, keyword)).fetchone()[0]
+        return db.conn.execute(
+            "SELECT COUNT(*) FROM work_items WHERE queue=?"
+            " AND status='pending'"
+            " AND json_extract(payload_json, '$.kind')=?",
+            (self.QUEUE, kind)).fetchone()[0]
+
+
+# 向后兼容别名（P3 Step 5.1 重构前后兼容）
+CompanyTask = Alibaba1688CompanyTask

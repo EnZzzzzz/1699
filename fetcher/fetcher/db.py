@@ -248,6 +248,12 @@ class ShopDB:
         if "req_since_block" not in evt_cols:
             self.conn.execute(
                 "ALTER TABLE ip_events ADD COLUMN req_since_block INTEGER")
+        # work_items 补 attempts 列（P3 多队列：release 重试计数，达上限熔断置 failed）
+        wi_cols = {r[1] for r in self.conn.execute("PRAGMA table_info(work_items)")}
+        if "attempts" not in wi_cols:
+            self.conn.execute(
+                "ALTER TABLE work_items ADD COLUMN attempts"
+                " INTEGER NOT NULL DEFAULT 0")
         # cookies 表裸键按 domain→site 映射加前缀（P2 identity 升级：
         # identity 键从裸 IP 升级为 site:ip）。部署窗口：旧进程裸键读不到
         # 新前缀 Cookie → 白板重启一次（SPEC §3.4 运维注意）。
@@ -513,6 +519,83 @@ class ShopDB:
         self.conn.commit()
         return cur.rowcount
 
+    def release_work_item(self, item_id: int, max_attempts: int = 3) -> str:
+        """工作项释放回 pending（attempts+1）；attempts 达上限置 failed。
+
+        单事务（BEGIN IMMEDIATE）：attempts = attempts + 1，清空
+        claimed_by/claimed_at；attempts >= max_attempts 时置 failed
+        （写 finished_at、result_json="attempts exhausted"），否则置
+        pending。返回终态字符串："pending" / "failed"。
+
+        只对 claimed 状态的行生效；rowcount=0（非 claimed/不存在）时
+        返回 "failed"（调用方视为不可恢复，防御性兜底）。
+        """
+        try:
+            self.conn.execute("BEGIN IMMEDIATE")
+            cur = self.conn.execute(
+                "UPDATE work_items SET attempts = attempts + 1,"
+                " claimed_by = NULL, claimed_at = NULL"
+                " WHERE id=? AND status='claimed'", (item_id,))
+            if cur.rowcount == 0:
+                # 非 claimed/不存在：无任何写发生，rollback 结束事务（防御性兜底）
+                self.conn.rollback()
+                return "failed"
+            attempts = self.conn.execute(
+                "SELECT attempts FROM work_items WHERE id=?",
+                (item_id,)).fetchone()[0]
+            if attempts >= max_attempts:
+                self.conn.execute(
+                    "UPDATE work_items SET status='failed', finished_at=?,"
+                    " result_json=? WHERE id=?",
+                    (_now(), json.dumps("attempts exhausted"), item_id))
+                self.conn.commit()
+                return "failed"
+            self.conn.execute(
+                "UPDATE work_items SET status='pending' WHERE id=?",
+                (item_id,))
+            self.conn.commit()
+            return "pending"
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def claim_next_eligible(self, queues: list[str],
+                            consumer_id: str) -> dict | None:
+        """跨队列原子认领最老 pending 工作项（FIFO 按 id，无优先级）。
+
+        单事务（BEGIN IMMEDIATE）：WHERE status='pending' AND queue IN (...)
+        ORDER BY id LIMIT 1 → 置 claimed（claimed_by/claimed_at）。返回
+        {"id", "queue", "site", "payload"}（payload 为 json.loads 解码后
+        的字典）；无货（含空 queues）返回 None。
+
+        payload 解析在 commit 前完成：payload_json 非法（手工修库/上游
+        bug）时 JSONDecodeError 走 except → rollback，行保持 pending，
+        不会产生已 claimed 却拿不到 id 的泄漏行。
+        """
+        if not queues:
+            return None
+        placeholders = ",".join("?" * len(queues))
+        try:
+            self.conn.execute("BEGIN IMMEDIATE")
+            row = self.conn.execute(
+                f"SELECT id, queue, site, payload_json FROM work_items"
+                f" WHERE status='pending' AND queue IN ({placeholders})"
+                " ORDER BY id LIMIT 1", queues).fetchone()
+            if not row:
+                self.conn.commit()
+                return None
+            payload = json.loads(row["payload_json"])
+            self.conn.execute(
+                "UPDATE work_items SET status='claimed', claimed_by=?,"
+                " claimed_at=? WHERE id=?",
+                (consumer_id, _now(), row["id"]))
+            self.conn.commit()
+            return {"id": row["id"], "queue": row["queue"],
+                    "site": row["site"], "payload": payload}
+        except Exception:
+            self.conn.rollback()
+            raise
+
     # ---------- category_progress ----------
     def get_category_progress(self, keyword: str) -> dict | None:
         """取类目分页进度（无记录返回 None）。"""
@@ -548,9 +631,28 @@ class ShopDB:
             "SELECT keyword FROM category_progress WHERE exhausted=1").fetchall()
         return {r[0] for r in rows}
 
+    def iter_active_categories(self, prefix: str = "") -> list[dict]:
+        """返回未采完的类目（启动播种用，幂等）。
+
+        prefix 非空 → 只返回 keyword 以 prefix 开头的行（如 "company:"）。
+        prefix 为空 → 返回全部未采完类目。
+        返回 [{"keyword","name"}]，按 id 排序。
+        """
+        if prefix:
+            rows = self.conn.execute(
+                "SELECT keyword, name FROM category_progress"
+                " WHERE exhausted=0 AND keyword LIKE ? ORDER BY id",
+                (prefix + "%",)).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT keyword, name FROM category_progress"
+                " WHERE exhausted=0 ORDER BY id").fetchall()
+        return [{"keyword": r[0], "name": r[1] or r[0]} for r in rows]
+
     def get_active_categories(self) -> list[dict]:
         """返回未采完的拼音类目（madeinchina market slug 是拼音缩写）。
 
+        委托 iter_active_categories() 获取全量未采完类目，再经拼音过滤。
         当前首页只暴露少量 market 链接，类目池只靠首页提取会把大量
         已发现但未采完的类目搁浅在 category_progress 里；这里把
         非 exhausted 的拼音类目捞回来，prepare 时播种进类目池续采。
@@ -558,11 +660,10 @@ class ShopDB:
         过滤规则：keyword 是纯拼音（ASCII [a-zA-Z0-9_]+）——1688 等其他
         任务的中文/company: 关键词行与 madeinchina 无关，排除。
         """
-        rows = self.conn.execute(
-            "SELECT keyword, name FROM category_progress WHERE exhausted=0"
-        ).fetchall()
-        return [{"slug": r[0], "name": r[1] or r[0]} for r in rows
-                if r[0] and _is_pinyin_slug(r[0])]
+        all_cats = self.iter_active_categories()
+        return [{"slug": cat["keyword"], "name": cat["name"]}
+                for cat in all_cats
+                if cat["keyword"] and _is_pinyin_slug(cat["keyword"])]
 
     def mark_category_exhausted(self, keyword: str, name: str = None):
         """标记类目已采到末页（页码不前进，之后采集跳过该类目）。"""

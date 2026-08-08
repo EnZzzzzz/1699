@@ -1,0 +1,47 @@
+[1] 待抓取 2 个，每个 worker 每批 1 个（不限批数，抓完 pending 为止），批间强制休息 0 分钟
+[daemon] 队列 crawl_1688_contact: 待补货店铺 2 个 + 待认领工作项 0 个
+[1] 待抓取 2 个，每个 worker 每批 1 个（不限批数，抓完 pending 为止），批间强制休息 0 分钟
+[daemon] 队列 crawl_mic_contact: 待补货店铺 2 个 + 待认领工作项 0 个
+[0] 播种 0 个 category item + 1 条 discover
+[1] 数据库现有店铺 4 个（pending 4 / done 0 / no_contact 0 / failed 0），每个 worker 每批 1 个店铺（不限批数），批间强制休息 0 分钟
+[daemon] 队列 crawl_mic_shop: 待补货店铺 4 个 + 待认领工作项 1 个
+[0] 播种 0 个 category item + 1 条 discover
+[1] 数据库现有店铺 4 个（pending 4 / done 0 / no_contact 0 / failed 0），每个 worker 每批 1 个店铺（不限批数），批间强制休息 0 分钟
+[daemon] 队列 crawl_1688_shop: 待补货店铺 4 个 + 待认领工作项 1 个
+[0] 播种 0 个 category item + 1 条 discover
+[1] 数据库现有店铺 4 个（pending 4 / done 0 / no_contact 0 / failed 0），每个 worker 每批 1 个店铺（不限批数），批间强制休息 0 分钟
+[daemon] 队列 crawl_1688_company: 待补货店铺 4 个 + 待认领工作项 1 个
+[daemon] 启动重置：0 个 claimed 工作项 → pending，0 个 in_progress 店铺 → pending（逐 site: .1688.com, .cn.made-in-china.com, , , ）
+[2] 启动 1 个 worker（直连）
+    [launch] 检查 CloakBrowser 会话席位…
+    [launch] 启动 CloakBrowser 二进制（含 GeoIP 探测）…
+    [launch] 浏览器进程已启动，创建初始 view…
+    [cookie] 已从 cookies_1688.json 导入 165 个 Cookie 到 identity=1688:direct
+    [cookie] identity=1688:direct，可用 139 个（库内共 165，已过期剔除 26，最近过期: 2026-08-29 21:33:38）
+[claim] queue=crawl_mic_shop item=1 site=madeinchina @2026-08-08 19:12:42
+    [cookie] identity=madeinchina:direct，可用 1 个（库内共 1，已过期剔除 0，最近过期: 未知）
+[finish] item=1 status=done @2026-08-08 19:12:57
+    [cookie] 已把 139 个 Cookie 写回数据库 (identity=1688:direct)
+    [cookie] 已把 14 个 Cookie 写回数据库 (identity=madeinchina:direct)
+[claim] queue=crawl_1688_shop item=2 site=1688 @2026-08-08 19:12:57
+    [launch] 检查 CloakBrowser 会话席位…
+    [launch] 启动 CloakBrowser 二进制（含 GeoIP 探测）…
+    [launch] 浏览器进程已启动，创建初始 view…
+    [cookie] identity=1688:direct，可用 139 个（库内共 165，已过期剔除 26，最近过期: 2026-08-29 21:33:38）
+    [relaunch] 浏览器已重启，新出口 IP=1688:direct
+[finish] item=2 status=failed @2026-08-08 19:13:02
+[w0]   [X] 策略链声明放弃，跳过该页，页码不前进下次重采（discover）
+[claim] queue=crawl_mic_shop item=4 site=madeinchina @2026-08-08 19:13:02
+    [cookie] identity=madeinchina:direct，可用 14 个（库内共 14，已过期剔除 0，最近过期: 2026-08-08 23:59:59）
+[finish] item=4 status=done @2026-08-08 19:13:16
+    [cookie] 已把 139 个 Cookie 写回数据库 (identity=1688:direct)
+    [cookie] 已把 14 个 Cookie 写回数据库 (identity=madeinchina:direct)
+[OK] 本次完成: 有联系方式 0, 无联系方式 0, 失败 0
+    数据库统计: {'runs': 1, 'shops': 19, 'pending': 19, 'in_progress': 0, 'done': 0, 'no_contact': 0, 'failed': 0, 'with_mobile': 0, 'categories_tracked': 1, 'categories_exhausted': 0}
+tmd（反爬验证）触发统计 —— 每个出口 IP 的安全性:
+    出口IP                      请求    成功   触发    tmd率     平均间隔    最少    最多  最近触发
+    1688:direct                4     0    4  100.0%        1     1     1  2026-08-08 19:13:02
+    madeinchina:direct         2     2    0    0.0%        —     —     —  —
+    整体: 6 次页面请求，触发 4 次，tmd率 66.67%
+    经验值: 平均爬 ~1 个页面触发一次反爬；历史最少 1 个、最多 1 个即触发
+    安全线: 单 IP 连续抓取 ≤ 1 个（最少触发间隔 × 0.8）相对安全，超过 1 个后触发风险显著上升

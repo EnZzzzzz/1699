@@ -18,8 +18,8 @@ class CliParserTest(unittest.TestCase):
     def test_daemon_defaults(self):
         args = self.ap.parse_args(["daemon"])
         self.assertEqual(args.site, "daemon")
-        # --queue 默认值（P0 不开放其他选择）
-        self.assertEqual(args.queue, "crawl_1688_contact")
+        # --queues 默认 None（全量）
+        self.assertIsNone(args.queues)
         # daemon 不套 task 二级 subparser
         self.assertIsNone(getattr(args, "task", None))
         # add_common_args 全套已挂载（抽查代表项）
@@ -31,12 +31,51 @@ class CliParserTest(unittest.TestCase):
         self.assertEqual(args.num, 10)
         self.assertEqual(args.limit, 0)
 
-    def test_daemon_queue_and_common_override(self):
+    def test_daemon_queues_and_common_override(self):
         args = self.ap.parse_args(
-            ["daemon", "--queue", "q2", "--workers", "3", "--limit", "5"])
-        self.assertEqual(args.queue, "q2")
+            ["daemon", "--queues", "crawl_1688_contact", "crawl_mic_contact",
+             "--workers", "3", "--limit", "5"])
+        self.assertEqual(args.queues, ["crawl_1688_contact", "crawl_mic_contact"])
         self.assertEqual(args.workers, 3)
         self.assertEqual(args.limit, 5)
+
+    def test_daemon_queues_dynamic_from_registry(self):
+        """I3：--queues 校验来自注册表动态派生，非硬编码（P3-5: 5 条队列）。"""
+        from fetcher.cli.main import _build_registry
+        full = _build_registry()
+        all_names = [s.queue for s in full]
+        self.assertEqual(len(full), 5, "注册表应含 5 条队列")
+        self.assertIn("crawl_1688_contact", all_names)
+        self.assertIn("crawl_mic_contact", all_names)
+        self.assertIn("crawl_mic_shop", all_names)
+        self.assertIn("crawl_1688_shop", all_names)
+        self.assertIn("crawl_1688_company", all_names)
+
+    def test_feeder_queues_topup_is_none(self):
+        """P3-5: 全部 3 条 feeder 队列 topup=None, domain_suffix=""。"""
+        from fetcher.cli.main import _build_registry
+        full = _build_registry()
+        feeder_names = {"crawl_1688_shop", "crawl_1688_company", "crawl_mic_shop"}
+        feeders = [s for s in full if s.queue in feeder_names]
+        self.assertEqual(len(feeders), 3, "应有 3 条 feeder 队列")
+        for s in feeders:
+            self.assertIsNone(s.topup, f"{s.queue} topup 应为 None")
+            self.assertEqual(s.domain_suffix, "",
+                             f"{s.queue} domain_suffix 应为空字符串")
+            self.assertEqual(s.requires, {"channel", "browser"},
+                             f"{s.queue} requires 应为 {{channel, browser}}")
+
+    def test_registry_task_types_correct(self):
+        """P3-5: registry 中 1688 shop/company 的 task 对象类型正确。"""
+        from fetcher.cli.main import _build_registry
+        from fetcher.sites.alibaba1688.shop import Alibaba1688ShopTask
+        from fetcher.sites.alibaba1688.company import Alibaba1688CompanyTask
+        full = _build_registry()
+        by_queue = {s.queue: s for s in full}
+        self.assertIsInstance(by_queue["crawl_1688_shop"].task,
+                              Alibaba1688ShopTask)
+        self.assertIsInstance(by_queue["crawl_1688_company"].task,
+                              Alibaba1688CompanyTask)
 
     def test_daemon_config_from_args(self):
         # config_from_args 不读 args.task，daemon 命名空间可直接复用
@@ -105,6 +144,166 @@ class BuildEngineTest(unittest.TestCase):
                                site_name=None)
         self.assertIsNone(engine.site_name)
         self.assertIsNone(engine.site)
+
+
+class ResetDaemonStateTest(unittest.TestCase):
+    """I2：reset_daemon_state 逐 site 重置。"""
+
+    def setUp(self):
+        self._tmp = __import__("tempfile").TemporaryDirectory()
+        from pathlib import Path
+        from fetcher.db import ShopDB
+        self.db_path = Path(self._tmp.name) / "t.db"
+        self.db = ShopDB(self.db_path)
+
+    def tearDown(self):
+        self.db.close()
+        self._tmp.cleanup()
+
+    def _seed_in_progress(self, domains):
+        """Seed shops 为 in_progress 状态。"""
+        shops = [{"domain": d, "name": d, "url": f"https://{d}"}
+                 for d in domains]
+        self.db.upsert_shops(shops)
+        # upsert 默认 pending，需手动设为 in_progress
+        for d in domains:
+            self.db.conn.execute(
+                "UPDATE shops SET status='in_progress' WHERE domain=?", (d,))
+        self.db.conn.commit()
+
+    def test_reset_only_targeted_domain_suffixes(self):
+        """只有指定 domain_suffix 的 in_progress 被重置，其他站点不动。"""
+        from fetcher.cli.main import _build_registry, reset_daemon_state
+        from fetcher.control.queue_router import QueueSpec
+
+        # Seed 混合 in_progress：两个不同 domain_suffix
+        self._seed_in_progress(["s1.1688.com", "s2.1688.com", "s3.1688.com"])
+        self._seed_in_progress(["s1.cn.made-in-china.com",
+                                "s2.cn.made-in-china.com"])
+        # 额外：一个不匹配任何 registered domain 的也应是 in_progress
+        self._seed_in_progress(["other.example.com"])
+
+        # 用全量 registry
+        registry = _build_registry()
+
+        n_items, total_shops = reset_daemon_state(self.db, registry)
+
+        # claimed 无 → 0
+        self.assertEqual(n_items, 0)
+        # 1688 (3) + mic (2) = 5 个被重置
+        self.assertEqual(total_shops, 5)
+
+        # 核查：1688 的变 pending
+        for d in ["s1.1688.com", "s2.1688.com", "s3.1688.com"]:
+            self.assertEqual(
+                self.db.conn.execute(
+                    "SELECT status FROM shops WHERE domain=?", (d,)
+                ).fetchone()[0],
+                "pending")
+        # mic 的变 pending
+        for d in ["s1.cn.made-in-china.com", "s2.cn.made-in-china.com"]:
+            self.assertEqual(
+                self.db.conn.execute(
+                    "SELECT status FROM shops WHERE domain=?", (d,)
+                ).fetchone()[0],
+                "pending")
+        # 其他站点不动（仍为 in_progress）
+        self.assertEqual(
+            self.db.conn.execute(
+                "SELECT status FROM shops WHERE domain=?",
+                ("other.example.com",)
+            ).fetchone()[0],
+            "in_progress")
+
+    def test_reset_with_empty_registry(self):
+        """空 registry → 只做 claimed 回收，不重置任何 in_progress。"""
+        from fetcher.cli.main import reset_daemon_state
+
+        self._seed_in_progress(["s1.1688.com"])
+        n_items, total_shops = reset_daemon_state(self.db, [])
+        self.assertEqual(n_items, 0)
+        self.assertEqual(total_shops, 0)
+        # s1.1688.com 未被重置（仍 in_progress）
+        self.assertEqual(
+            self.db.conn.execute(
+                "SELECT status FROM shops WHERE domain=?",
+                ("s1.1688.com",)
+            ).fetchone()[0],
+            "in_progress")
+
+    def test_reset_skips_feeder_full_registry(self):
+        """P3-5: 含 feeder 的 5 队列 registry → reset 仍跳过 feeder。
+
+        关键回归：feeder 的 domain_suffix="" 若被误调用，会重置所有
+        in_progress（含 other.example.com）；跳过 feeder → 只 contact 的
+        domain_suffix 被重置。
+        """
+        from fetcher.cli.main import _build_registry, reset_daemon_state
+
+        self._seed_in_progress(["s1.1688.com", "s2.1688.com",
+                                "other.example.com"])
+        registry = _build_registry()
+
+        n_items, total_shops = reset_daemon_state(self.db, registry)
+        # crawl_1688_contact 的 domain_suffix=".1688.com" → 2 个被重置
+        # crawl_1688_shop/company 是 feeder（topup=None）→ 跳过
+        # other.example.com 不匹配任何 contact domain_suffix → 不动
+        self.assertEqual(n_items, 0)
+        self.assertEqual(total_shops, 2)
+        self.assertEqual(
+            self.db.conn.execute(
+                "SELECT status FROM shops WHERE domain=?",
+                ("other.example.com",)
+            ).fetchone()[0],
+            "in_progress")
+
+    def test_reset_skips_feeder_queues(self):
+        """feeder 队列（topup=None）不触发 reset_in_progress。
+
+        feeder 的 domain_suffix="" 若被调用 → 重置所有 in_progress
+        （含 other.example.com）；修复后跳过 feeder → other.example.com
+        保持 in_progress。
+        """
+        from fetcher.cli.main import reset_daemon_state
+        from fetcher.control.queue_router import QueueSpec
+
+        # feeder 队列：topup=None, domain_suffix 为空
+        feeder = QueueSpec(
+            queue="crawl_mic_shop", site="madeinchina",
+            task=lambda: None, topup=None, domain_suffix="",
+            requires={"channel", "browser"})
+        # contact 队列：topup 非 None
+        contact = QueueSpec(
+            queue="crawl_mic_contact", site="madeinchina",
+            task=lambda: None,
+            topup=lambda db, limit: 0,
+            domain_suffix=".cn.made-in-china.com",
+            requires={"channel", "browser"})
+
+        # Seed: mic contact shop + 不匹配任何 contact domain_suffix 的 shop
+        self._seed_in_progress([
+            "s1.cn.made-in-china.com",
+            "other.example.com"])
+
+        registry = [feeder, contact]
+        n_items, total_shops = reset_daemon_state(self.db, registry)
+        self.assertEqual(n_items, 0)
+        # 只 contact 队列的 domain_suffix 被重置（1 个），feeder 跳过
+        self.assertEqual(total_shops, 1)
+        # s1.cn.made-in-china.com 被重置为 pending
+        self.assertEqual(
+            self.db.conn.execute(
+                "SELECT status FROM shops WHERE domain=?",
+                ("s1.cn.made-in-china.com",)
+            ).fetchone()[0],
+            "pending")
+        # other.example.com 保持 in_progress（feeder 未触发全量重置）
+        self.assertEqual(
+            self.db.conn.execute(
+                "SELECT status FROM shops WHERE domain=?",
+                ("other.example.com",)
+            ).fetchone()[0],
+            "in_progress")
 
 
 if __name__ == "__main__":

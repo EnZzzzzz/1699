@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import random
 import time
+import traceback
 
 from fetcher.atoms.browser_ops import RelaunchBrowser
 from fetcher.control.board import wait_countdown
@@ -73,12 +74,25 @@ class CrawlLoop:
 
     def __init__(self, ctx, task: Task, policy: Policy | None = None,
                  inspector: SceneInspector | None = None, board=None,
-                 seed_kit: dict | None = None):
+                 seed_kit: dict | None = None,
+                 sites: dict[str, object] | None = None,
+                 per_site_kits: dict[str, dict | None] | None = None,
+                 policies: dict[str, Policy] | None = None):
         self.ctx = ctx
         self.task = task
         self.policy = policy or Policy(
             max_consecutive_fail=ctx.config.max_consecutive_fail)
-        self.inspector = inspector or SceneInspector.for_site(ctx.site)
+        self.sites = sites
+        self.per_site_kits = per_site_kits
+        self.policies = policies
+        if sites is not None:
+            # daemon 多站点路径：inspector 延迟建，首个 item 绑定后建立
+            self._bound_site = None
+            self.inspector = inspector  # daemon 传 None
+        else:
+            # CLI 单站点路径：inspector 按 ctx.site 立即装配
+            self._bound_site = getattr(ctx.site, 'name', None) if ctx.site else None
+            self.inspector = inspector or SceneInspector.for_site(ctx.site)
         self.board = board
         self.seed_tracker = SeedBurnTracker(seed_kit)
         self.circuit = CircuitBreaker(ctx.config.max_consecutive_fail)
@@ -106,14 +120,30 @@ class CrawlLoop:
     # ---- 冷却 chokepoint（SPEC §3.3：唯一等待执行点）----
 
     def _cooldown(self, seconds: float, reason: str,
-                  prefix: str | None = None) -> bool:
+                  prefix: str | None = None, yield_: bool = False) -> bool:
         """登记冷却截止时间 + 执行可中断等待。返回 True=被 stop 中断。
 
-        cooldown_until 的唯一写入者（P1 只写不读，P3 调度器查询接口）。
-        展示两路径逐字保留现状：prefix 非空走 wait_countdown（秒级倒计
+        P3 让出型 / 原地型分流：
+        - yield_=True（让出型）：登记 site 键后立即返回 False 不等待——
+          等待由下一轮 acquire_item 的 condvar timeout 执行（冷却期间
+          该站点队列对本消费者不可见 → 多队列时自然转取其他队列）。
+        - yield_=False（原地型，默认）：登记后原地等待（秒级/装配中途
+          等待用，如 launch_backoff；策略冷却待 P3-3 router 接 release
+          后改让出）。
+
+        cooldown_until 按 site 注册名登记（有 active_site 时才写入）；
+        reason 参数保留，仅用于日志/展示。无 active_site 时不登记（如
+        launch_backoff 在 acquire 前，active_site 未设置时天然跳过）。
+
+        展示两路径仅原地型使用：prefix 非空走 wait_countdown（秒级倒计
         时状态行，长等待用）；prefix=None 走 ctx.wait（静默，短等待用）。
+        让出型不展示倒计时状态行（P3-3 后由 board 的「等货/等冷却」取代）。
         """
-        self.ctx.cooldown_until[reason] = time.time() + seconds
+        active_site = self.ctx.state.get("active_site")
+        if active_site is not None:
+            self.ctx.cooldown_until[active_site] = time.time() + seconds
+        if yield_:
+            return False
         if prefix is None:
             return self.ctx.wait(seconds)
         return wait_countdown(self.board, self.ctx.wid, self.ctx.stop,
@@ -149,7 +179,10 @@ class CrawlLoop:
                     self.log(f"⏸ 第 {self.batch_no} 批已采满 "
                              f"{cfg.batch_num} 个{self.task.batch_unit}，"
                              f"强制休息 {rest / 60:.1f} 分钟（防风控）...")
-                    if self._cooldown(rest, "batch_rest", prefix="批次休息"):
+                    if self._cooldown(rest, "batch_rest", prefix="批次休息",
+                                      yield_=True):
+                        # yield_=True 恒返回 False，此分支不可达；
+                        # stop 由 acquire_item 的 condvar 处理
                         return self.stats
                     self.batch_no += 1
                     self.done_in_batch = 0
@@ -167,6 +200,7 @@ class CrawlLoop:
                     self.log(self.task.empty_message())
                     self.ctx.set_status(state="无待做任务，退出")
                     break
+                self._bind_item_site()
                 self.ctx.state["item"] = item
                 self.ctx.set_status(shop=self.task.label(item),
                                     state="检查出口 IP…")
@@ -185,6 +219,13 @@ class CrawlLoop:
                 kind, count = self._process_item(item)
                 if kind in ("abort", "stop"):
                     return self.stats
+                if kind == "release":
+                    # 策略冷却让出：释放 item 回 pending（attempts 熔断），
+                    # 冷却到期重领时策略链从头开始（SPEC §3.4）
+                    self.task.release_item(self.ctx)
+                    self.task.after_item(self.ctx, item)
+                    # stop 由下一轮 acquire 的 condvar 检查处理
+                    continue
                 self.done_in_batch += count
                 self.total_done += count
                 if kind == "success":
@@ -212,7 +253,9 @@ class CrawlLoop:
                 hi = cfg.sample_max + self.ctx.wid * 2.5
                 t = random.uniform(lo, hi)
                 self.ctx.set_status(state=f"{self.task.unit}间隔 {t:.1f}s")
-                if self._cooldown(t, "sample_interval"):
+                if self._cooldown(t, "sample_interval", yield_=True):
+                    # yield_=True 恒返回 False，此分支不可达；
+                    # stop 由 acquire_item 的 condvar 处理
                     return self.stats
 
                 # ---- 周期性随机长休息（模拟真人连续浏览后的停顿）----
@@ -223,12 +266,16 @@ class CrawlLoop:
                     t = random.uniform(cfg.rest_min, cfg.rest_max)
                     self.log(f"☕ 已连续抓取 {n_rest} 个{self.task.unit}，"
                              f"随机长休息 {t / 60:.1f} 分钟 ...")
-                    if self._cooldown(t, "periodic_rest", prefix="长休息"):
+                    if self._cooldown(t, "periodic_rest", prefix="长休息",
+                                      yield_=True):
+                        # yield_=True 恒返回 False，此分支不可达；
+                        # stop 由 acquire_item 的 condvar 处理
                         return self.stats
         except UserInterrupted:
             pass
         except Exception as e:  # noqa: BLE001
-            self.log(f"[X] worker 异常退出: {e}")
+            tb = traceback.format_exc()
+            self.log(f"[X] worker 异常退出: {e}\n{tb[-5000:]}")
         finally:
             self._cleanup()
         return self.stats
@@ -257,6 +304,7 @@ class CrawlLoop:
                 backoff = min(30 * attempt, 120)
                 self.log(f"  [!] 启动浏览器第 {attempt}/{cfg.ip_retry} "
                          f"次失败: {e}，{backoff}s 后重试...")
+                # 装配中途、秒级退避，换队列无意义——原地等待（默认）
                 if self._cooldown(backoff, "launch_backoff", prefix="启动退避"):
                     raise UserInterrupted("用户中断") from e
         raise RuntimeError(f"启动浏览器重试 {cfg.ip_retry} 次仍失败: {last_err}")
@@ -307,7 +355,7 @@ class CrawlLoop:
     def _check_budget(self) -> bool:
         """每 IP 请求预算：采满主动换 IP；IP 未轮换则放行（budget_stuck）。"""
         cfg = self.ctx.config
-        budget = self.task.ip_request_budget
+        budget = self.task.budget_for(self.ctx)
         identity = self.ctx.identity
         if not (budget and cfg.use_proxy
                 and self.ip_req.get(identity, {}).get("n", 0) >= budget
@@ -333,6 +381,7 @@ class CrawlLoop:
         ctx = self.ctx
         # 熔断按店计非按次：同一店铺的重试链无论多长只计一次，单个慢/卡
         # 店铺不会烧穿熔断中止整个任务（旧引擎同店铺最多 3 段升级后放弃）
+        self._bind_item_site()
         counted = False
         while not ctx.stopped():
             ctx.set_status(state="采集中")
@@ -404,13 +453,54 @@ class CrawlLoop:
             step = strategy.run(ctx)
             if step.solved:
                 self.log(f"✓ 策略 {decision.strategy} 完成: {step.detail}")
-            # 策略冷却经 chokepoint 执行（Step 2.1 起策略只算时长不自
-            # 等）；被 stop 中断按现状 stop 路径退出（与旧策略内
-            # ctx.wait 中断 → 循环条件退出 → return "stop" 的终局一致）
-            if step.cooldown and self._cooldown(
-                    step.cooldown, f"strategy:{decision.strategy}"):
-                return "stop", 0
+            # 策略冷却统一让出 + release（P3 SPEC §3.4）：冷却期间该
+            # 站点队列不可见，item 释放回 pending（attempts 熔断），
+            # 冷却到期重领（策略链从头开始）。
+            # 守护：solved=True 时不 release（防御未来策略同时返回
+            # solved+cooldown 的场景，此时 cooldown 仅作冷却建议不计）。
+            if step.cooldown and not step.solved:
+                if self._cooldown(step.cooldown,
+                                  f"strategy:{decision.strategy}",
+                                  yield_=True):
+                    return "stop", 0
+                return "release", 0
         return "stop", 0
+
+    def _bind_item_site(self):
+        """daemon 多站点路径：按 ctx.state["active_site"] 切换
+        ctx.site / inspector / policy，并懒建跨站 view（SPEC §3.6）。
+        CLI 路径（sites=None）无操作。"""
+        if self.sites is None:
+            return
+        site_name = self.ctx.state.get("active_site")
+        if site_name is None or site_name == self._bound_site:
+            return
+        plugin = self.sites.get(site_name)
+        if plugin is not None:
+            self.ctx.site = plugin
+            # 跨站 view 懒建（SPEC §3.6）：无 view 则建，路由活动站点
+            if (self.ctx.session is not None
+                    and self.ctx.browser_manager is not None):
+                try:
+                    # P3 SPEC §3.6：跨站 ensure_site 播种用该
+                    # (worker, site) 的 seed_kit；无 kit 时保持现状白板语义
+                    site_seed_kit = (
+                        self.per_site_kits.get(site_name)
+                        if self.per_site_kits else None)
+                    self.ctx.browser_manager.ensure_site(
+                        self.ctx.session, site_name, plugin.cookie_domain,
+                        seed_kit=site_seed_kit)
+                    self.ctx.session.set_active_site(site_name)
+                except Exception as e:
+                    self.log(f"[!] ensure_site({site_name}) 失败: {e}，"
+                             f"继续处理 item（fetch 兜底）")
+            self.inspector = SceneInspector.for_site(plugin)
+            new_policy = self.policies.get(site_name) if self.policies else None
+            if new_policy is not None:
+                self.policy = new_policy
+        # C1 修复：无论 plugin 是否在 sites dict 中，
+        # 都记录本次绑定，防止每次 item 都重复查找
+        self._bound_site = site_name
 
     # ---- 簿记 ----
 

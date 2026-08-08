@@ -32,6 +32,14 @@ class Task:
     cold_start_before_acquire = False
     ip_request_budget: int | None = None
 
+    def budget_for(self, ctx) -> int | None:
+        """当前上下文的 IP 请求预算（per-site 路由点）。
+
+        基类默认返回 ip_request_budget（CLI 单站点不变）；
+        QueueRouter 覆盖为按 item 所属 site 的 task 返回。
+        """
+        return self.ip_request_budget
+
     # ---- main 阶段 ----
 
     def prepare(self, config) -> bool:
@@ -113,6 +121,20 @@ class Task:
     def giveup_cost(self, item) -> int:
         """放弃的任务项计入批次配额的数量。"""
         return 0
+
+    def release_item(self, ctx) -> str:
+        """当前 worker 的 item 释放回 pending（CLI 路径默认空实现）。
+
+        daemon 多队列路径由 QueueRouter 覆盖为 DB release_work_item。
+        """
+        return ""
+
+    def refill_item(self, ctx, item) -> None:
+        """工作项 attempts 耗尽后补插同 payload 新 item（默认空实现）。
+
+        CLI 单站点路径兼容；子类按需覆盖（如 MadeInChinaShopTask 对
+        category/discover 补插）。
+        """
 
     def after_item(self, ctx, item) -> None:
         """当前任务项处理完毕（含放弃）后的收尾（如释放类目占用）。"""

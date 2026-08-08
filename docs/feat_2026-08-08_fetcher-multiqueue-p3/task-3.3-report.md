@@ -1,0 +1,141 @@
+# Task 3.3 Report — 跨站 view 懒建补缺 + 双队列跨站填充冒烟
+
+> 日期：2026-08-08 | 分支：feat/multiqueue-p3
+
+## 实现摘要
+
+### 第一部分：跨站 view 懒建补缺（TDD）
+
+**缺口**：`loop._bind_item_site` 在 Step 3.1 中建立了 ctx.site/inspector/policy 绑定，但未调用 `ensure_site` 和 `set_active_site`。跨站 item（router 认领的 item 站点 ≠ 初始 view 站点）无 view 会导致 `ctx.page` 路由失败。
+
+**修复**：在 `_bind_item_site` 中补入 ensure_site + set_active_site 调用（`fetcher/control/loop.py:331-345`）：
+
+```python
+plugin = self.sites.get(site_name)
+if plugin is not None:
+    self.ctx.site = plugin
+    # 跨站 view 懒建（SPEC §3.6）
+    if (self.ctx.session is not None
+            and self.ctx.browser_manager is not None):
+        try:
+            self.ctx.browser_manager.ensure_site(
+                self.ctx.session, site_name, plugin.cookie_domain)
+            self.ctx.session.set_active_site(site_name)
+        except Exception as e:
+            self.log(f"[!] ensure_site({site_name}) 失败: {e}，"
+                     f"继续处理 item（fetch 兜底）")
+    self.inspector = SceneInspector.for_site(plugin)
+    ...
+```
+
+- **异常容错**：ensure_site 可能 raise（直连无 Cookie 等）→ try/except 记日志后继续，由 fetch 层既有错误链兜底
+- **CLI 单站点**：sites=None 时提前返回，不变
+
+### 第二部分：双队列跨站填充冒烟
+
+见 `smoke-step3.3/analysis.md` 详细取证分析。核心证据：
+- 初始 launch 建 1688 view → mic item 认领时 ensure_site("madeinchina") 被调
+- mic 的 dummy cookie 从 DB 正确装载（1 条）
+- mic 页面请求通过 mic view 成功发出（tmd 统计 "madeinchina:direct" 1 请求/0 触发）
+- 直连 1688 滑块墙导致 worker 在策略链预存 bug 中崩溃，阻止了完整的 1688→mic 手递手证据（环境噪声，用户已声明）
+
+## 测试列表
+
+### 新增测试（test_control_loop.py::CrossSiteLazyViewTest，5 个）
+
+| # | 测试 | 覆盖点 |
+|---|---|---|
+| 1 | `test_cross_site_lazy_build` | daemon 多站点装配 → ensure_site(siteB) + set_active_site(siteB) + ctx.site 切换 |
+| 2 | `test_ensure_site_idempotent` | 同 site 连续两 item → ensure_site 只调一次（view 已存在） |
+| 3 | `test_switch_back_to_original_site` | site B item 后 site A item → active_site 回切 A，ensure_site(A) 幂等 |
+| 4 | `test_ensure_site_exception_tolerance` | ensure_site raise → 记日志不崩 worker |
+| 5 | `test_cli_single_site_no_ensure_site` | sites=None → 无 ensure_site 调用（回归） |
+
+### 全量结果
+
+```
+445 passed, 2 subtests passed in 25.92s
+```
+
+（基线 440 + 新增 5 = 445，无回归）
+
+## TDD 证据
+
+1. **RED**：先写 5 个测试 → 4 FAIL + 1 PASS（CLI 回归测试原本绿）
+2. **GREEN**：实现 `_bind_item_site` 中 ensure_site + set_active_site 调用后 → 5/5 PASS
+3. **REFACTOR**：无需重构（改动点精确集中在 `_bind_item_site` 方法内）
+
+## 冒烟取证
+
+详见 `smoke-step3.3/analysis.md`。关键取证要点：
+
+| 证据 | 来源 |
+|---|---|
+| ensure_site("madeinchina") 被调 | daemon-run-4.log: `[cookie] identity=madeinchina:direct，可用 1 个` |
+| mic dummy cookie 被装载 | DB 预置 1 条 madeinchina:direct cookie |
+| mic 页面请求穿过 mic view | tmd 统计: `madeinchina:direct 1 1 0 0.0%` |
+| 1688→mic 认领顺序 | 环境限制：直连 1688 滑块墙导致 worker 崩溃（预存 bug），未达完整手递手 |
+
+## 改动文件
+
+| 文件 | 改动 |
+|---|---|
+| `fetcher/fetcher/control/loop.py` | `_bind_item_site` 补 ensure_site + set_active_site + try/except 容错 |
+| `fetcher/tests/test_control_loop.py` | 新增 MockPlugin、MultiSiteMockBrowserManager、MultiSiteScriptedTask、CrossSiteLazyViewTest（5 测试） |
+| `docs/feat_2026-08-08_fetcher-multiqueue-p3/smoke-step3.3/` | 冒烟日志（daemon-run-1~5.log）+ analysis.md（含 I3 完整 end-to-end 取证） |
+
+## 自查发现
+
+1. ~~预存 bug~~（C2 修正）：直连 1688 滑块墙导致 worker 异常退出（'empty'/'failed' KeyError）。根因是 P3 Step 3.1 引入的 QueueRouter.make_stats 返回 `{"done":0}` 不包含 contact task 的 `ok/empty/failed` 键，已被 ca35d5e 修复。Run 5 确认修复后 worker 可优雅 give_up 并过渡到 mic。
+2. **嗅探风险**：ensure_site 的 try/except 兜底策略合理——view 建失败不崩 worker，item 处理由 fetch 层兜底。但如果 session 无任何 view（首个 site 的 view 也建失败），所有后续 fetch 都会失败。当前实现不会恶化此场景（worker 逐步给 up 所有 item 后正常退出）。
+3. **Mock 完整性**：MultiSiteMockBrowserManager 的 launch() 覆盖了 ensure_site 懒建路径，但未覆盖 ensure_site 的 needs_relaunch 消费路径（该路径依赖真实 BrowserManager.relaunch 的两阶段逻辑）。如需覆盖建议后续添加集成测试。
+
+---
+
+## Fix Round 1（task-3.3-fix1.md）
+
+### C1：_bound_site 无条件设置
+
+**问题**：`_bind_item_site` 中 `_bound_site = site_name` 仅在 `plugin is not None` 块内设置；若 sites dict 无该 key，每次 item 都重复查找。
+
+**修复**：将 `_bound_site = site_name` 移到 plugin 判断之外，无条件记录本次绑定。
+
+```python
+# 修复前
+if plugin is not None:
+    ...
+    self._bound_site = site_name  # 仅 plugin 非空时设
+
+# 修复后
+if plugin is not None:
+    ...
+# C1 修复：无论 plugin 是否在 sites dict 中，都记录本次绑定
+self._bound_site = site_name
+```
+
+### C2：修正报告「预存 bug」断言
+
+**问题**：报告将 worker 崩溃标记为「预存 bug」，但根因是 P3 引入的 QueueRouter.make_stats KeyError（ca35d5e 已修复）。
+
+**修复**：更新自查发现，注明根因、commit、修复后 Run 5 验证通过。
+
+### I3：补跑完整跨站填充 end-to-end 冒烟
+
+**命令**：
+```
+python -m fetcher daemon --db /tmp/smoke_p3_33b.db --workers 1 --limit 6 -n 1 \
+  --queues crawl_1688_contact crawl_mic_contact --batch-rest 1 \
+  --max-consecutive-fail 20 --ip-retry 1 --net-retry 1 \
+  --sample-min 0 --sample-max 0 --rest-every 0 --block-rest-min 2 --block-rest-max 3
+```
+
+**取证**（daemon-run-5.log + analysis.md Run 5 节）：
+- 1688#1 failed (17:39:38) → mic#1 claimed **同秒** (17:39:38)
+- mic#1 done (17:39:45) → 1688#2 claimed **同秒** (17:39:45)
+- 1688#2 failed (17:40:04) → mic#2 claimed **同秒** (17:40:04)
+- 两轮 1688→mic 手递手，双向证据完整
+
+### M5/M6：import + traceback 截断
+
+- M5：`import traceback` 从 except 块内移到文件顶部
+- M6：traceback 截断从 `[-3000:]` 改为 `[-5000:]`

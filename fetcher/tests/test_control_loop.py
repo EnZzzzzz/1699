@@ -14,6 +14,7 @@ from fetcher import (
     Scenario,
     Session,
     ShopDB,
+    SiteView,
     WorkerContext,
 )
 from fetcher.atoms.browser_ops import RelaunchBrowser
@@ -21,6 +22,19 @@ from fetcher.control import CrawlLoop, Task
 from fetcher.core.types import ActionResult, Outcome
 from fetcher.strategy.base import StepResult
 from fetcher.strategy.policy import Policy
+
+
+# ---------- mock 插件（多站点测试用） ----------
+
+class MockPlugin:
+    """符合 SitePlugin 协议的假插件（返回空探测器列表）。"""
+
+    def __init__(self, name, cookie_domain):
+        self.name = name
+        self.cookie_domain = cookie_domain
+
+    def detectors(self):
+        return []
 
 
 # ---------- mock 基础设施 ----------
@@ -440,6 +454,238 @@ class CrawlLoopTest(LoopTestBase):
         self.assertEqual(task.given_up, [("item1", "block")])
         self.assertEqual(task.succeeded, ["item2"])
         self.assertFalse(ctx.stop.is_set())
+
+
+# ---------- 跨站 view 懒建 mock ----------
+
+class MultiSiteMockBrowserManager(MockBrowserManager):
+    """支持 ensure_site + 多 view 的多站点 MockBrowserManager。
+
+    launch 返回仅含 default_site view 的 Session；ensure_site
+    懒建其他 site 的 view 并记录调用。
+    """
+
+    def __init__(self, page, default_site="1688",
+                 identities=("1688:1.1.1.1", "1688:2.2.2.2", "1688:3.3.3.3")):
+        super().__init__(page, identities)
+        self.ensure_site_calls = []
+        self.default_site = default_site
+        self._ensure_site_raises = None
+
+    def ensure_site(self, session, site_name, site_domain,
+                    seed_kit=None, stop=None):
+        if self._ensure_site_raises is not None:
+            raise self._ensure_site_raises
+        if site_name in session.views:
+            return session.views[site_name]
+        self.ensure_site_calls.append((site_name, site_domain))
+        view = SiteView(context=FakeContext(), page=self.page,
+                        identity=f"{site_name}:mock", domain=site_domain)
+        session.views[site_name] = view
+        return view
+
+    def launch(self, seed_kit=None, stop=None):
+        """创建仅含 default_site 初始 view 的 Session。"""
+        identity = self.identities[0]
+        view = SiteView(context=FakeContext(), page=self.page,
+                        identity=identity, domain=f".{self.default_site}.com")
+        session = Session(browser=FakeBrowser(),
+                          views={self.default_site: view},
+                          _active_site=self.default_site,
+                          seed_kit=seed_kit)
+        self.launch_count += 1
+        return session
+
+
+class MultiSiteScriptedTask(ScriptedTask):
+    """支持按 item 切换 active_site 的 ScriptedTask。
+
+    site_map 把 item 名映射到站点名；acquire_item 时自动设置
+    ctx.state["active_site"]。
+    """
+
+    def __init__(self, script, items=("item1",), site_map=None, **kw):
+        super().__init__(script, items, **kw)
+        self.site_map = site_map or {}
+
+    def acquire_item(self, ctx):
+        item = super().acquire_item(ctx)
+        if item is not None and item in self.site_map:
+            ctx.state["active_site"] = self.site_map[item]
+        return item
+
+
+# ---------- 跨站 view 懒建测试 ----------
+
+class SeedKitCaptureBrowserManager(MultiSiteMockBrowserManager):
+    """MultiSiteMockBrowserManager 增强版：捕获 ensure_site 的 seed_kit。"""
+
+    def __init__(self, page, default_site="1688",
+                 identities=("1688:1.1.1.1", "1688:2.2.2.2", "1688:3.3.3.3")):
+        super().__init__(page, default_site, identities)
+        self.seed_kit_calls = []
+
+    def ensure_site(self, session, site_name, site_domain,
+                    seed_kit=None, stop=None):
+        self.seed_kit_calls.append(seed_kit)
+        return super().ensure_site(session, site_name, site_domain,
+                                   seed_kit=seed_kit, stop=stop)
+
+
+class CrossSiteLazyViewTest(LoopTestBase):
+    """跨站 view 懒建补缺（SPEC §3.6 / Task 3.3 第一部分，TDD）。"""
+
+    def setUp(self):
+        super().setUp()
+        self.plugin_1688 = MockPlugin("1688", "1688.com")
+        self.plugin_mic = MockPlugin("madeinchina", "made-in-china.com")
+        self.mgr = MultiSiteMockBrowserManager(self.page, default_site="1688")
+        self.sites = {"1688": self.plugin_1688,
+                      "madeinchina": self.plugin_mic}
+
+    def make_multi_ctx(self, **cfg_kw):
+        config = make_config(self.tmp, **cfg_kw)
+        store = IdentityStore(ShopDB(config.resolved_db_path()))
+        return WorkerContext(config=config, store=store,
+                             browser_manager=self.mgr,
+                             site=self.plugin_1688,
+                             stop=threading.Event(),
+                             log=lambda m: None)
+
+    # ---- RED 1: 跨站懒建 ----
+
+    def test_cross_site_lazy_build(self):
+        """daemon 装配 + 假浏览器 → 处理 site B item 时
+        ensure_site(siteB) 被调 + set_active_site(siteB) 被调 + ctx.site 切换。
+
+        RED 预期：_bind_item_site 未调 ensure_site → ensure_site_calls=[] → 断言失败。
+        """
+        ctx = self.make_multi_ctx()
+        ctx.state["active_site"] = "madeinchina"
+        task = ScriptedTask([("ok", {"v": 1})])
+        loop = CrawlLoop(ctx, task, sites=self.sites)
+        loop.run()
+        self.assertEqual(len(self.mgr.ensure_site_calls), 1,
+                         '应调用 ensure_site("madeinchina")')
+        self.assertEqual(self.mgr.ensure_site_calls[0],
+                         ("madeinchina", "made-in-china.com"))
+        self.assertEqual(ctx.session._active_site, "madeinchina")
+        self.assertIs(ctx.site, self.plugin_mic)
+        self.assertEqual(task.succeeded, ["item1"])
+
+    # ---- RED 2: 幂等 ----
+
+    def test_ensure_site_idempotent(self):
+        """同 site 连续两 item → ensure_site 只调一次（view 已存在）。
+
+        RED 预期：_bind_item_site 未调 ensure_site → ensure_site_calls=[] → 断言失败。
+        """
+        ctx = self.make_multi_ctx(batch_num=2)
+        ctx.state["active_site"] = "madeinchina"
+        task = ScriptedTask([("ok", {"v": 1}), ("ok", {"v": 2})],
+                            items=("item1", "item2"))
+        loop = CrawlLoop(ctx, task, sites=self.sites)
+        loop.run()
+        self.assertEqual(len(self.mgr.ensure_site_calls), 1,
+                         "同 site 第二个 item 不应再调 ensure_site")
+        self.assertEqual(ctx.session._active_site, "madeinchina")
+
+    # ---- RED 3: 回切 ----
+
+    def test_switch_back_to_original_site(self):
+        """site B item 后 site A item → ensure_site(A) 幂等返回
+        + active_site 回切 A。
+
+        RED 预期：_bind_item_site 未调 ensure_site → ensure_site_calls=[] → 断言失败。
+        """
+        ctx = self.make_multi_ctx(batch_num=2)
+        task = MultiSiteScriptedTask(
+            [("ok", {"v": 1}), ("ok", {"v": 2})],
+            items=("mic_item", "a88_item"),
+            site_map={"mic_item": "madeinchina", "a88_item": "1688"})
+        loop = CrawlLoop(ctx, task, sites=self.sites)
+        loop.run()
+        # madeinchina 是首次遇到，应建 view
+        self.assertEqual(len(self.mgr.ensure_site_calls), 1,
+                         "1688 已有 view 不应再调 ensure_site，仅 mic 一次")
+        self.assertEqual(self.mgr.ensure_site_calls[0],
+                         ("madeinchina", "made-in-china.com"))
+        # 第二个 item 回切到 1688
+        self.assertEqual(ctx.session._active_site, "1688")
+        self.assertIs(ctx.site, self.plugin_1688)
+
+    # ---- RED 4: 异常容错 ----
+
+    def test_ensure_site_exception_tolerance(self):
+        """ensure_site raise → 记日志不崩 worker。
+
+        RED 预期：ensure_site 未调 → 但即使调了，异常未捕获 → loop.run()
+        抛出 RuntimeError → 断言失败。
+        """
+        log_msgs = []
+        ctx = self.make_multi_ctx()
+        ctx.log = lambda m: log_msgs.append(m)
+        ctx.state["active_site"] = "madeinchina"
+        self.mgr._ensure_site_raises = RuntimeError("直连无 Cookie")
+        task = ScriptedTask([("ok", {"v": 1})])
+        loop = CrawlLoop(ctx, task, sites=self.sites)
+        stats = loop.run()  # 不应抛异常
+        self.assertIn("stats", {"stats": stats})  # stats 非 None
+        self.assertTrue(any("ensure_site" in m for m in log_msgs),
+                        "应记录 ensure_site 失败日志")
+
+    # ---- RED 5: CLI 单站点回归 ----
+
+    def test_cli_single_site_no_ensure_site(self):
+        """CLI 单站点路径：sites=None → 无 ensure_site 调用（现状不变）。
+
+        GREEN 预期：MockBrowserManager 无 ensure_site 方法，
+        _bind_item_site 在 sites=None 时提前返回 → 本测试通过。
+        """
+        mgr = MockBrowserManager(self.page)
+        config = make_config(self.tmp)
+        store = IdentityStore(ShopDB(config.resolved_db_path()))
+        ctx = WorkerContext(config=config, store=store,
+                            browser_manager=mgr,
+                            site=Alibaba1688Plugin(),
+                            stop=threading.Event(),
+                            log=lambda m: None)
+        task = ScriptedTask([("ok", {"v": 1})])
+        loop = CrawlLoop(ctx, task, sites=None)
+        stats = loop.run()
+        self.assertEqual(task.succeeded, ["item1"])
+
+    # ---- 6.2: per_site_kits 透传到 ensure_site ----
+
+    def test_bind_item_site_passes_seed_kit_to_ensure_site(self):
+        """跨站 ensure_site 播种拿对应 (worker, site) 的 kit。
+
+        RED 预期：_bind_item_site 当前未传 seed_kit → ensure_site
+        总是 seed_kit=None → seed_kit_calls 中的 kit 全为 None → 断言失败。
+        """
+        # 构造 per_site_kits（模拟 Engine 传递）
+        kit_1688 = {"name": "kitA", "cookies": [{"name": "cna", "value": "v"}]}
+        kit_mic = {"name": "kitB", "cookies": [{"name": "cna", "value": "v"}]}
+        per_site_kits = {"1688": kit_1688, "madeinchina": kit_mic}
+
+        # 用带 seed_kit 捕获的 mgr
+        mgr = SeedKitCaptureBrowserManager(self.page, default_site="1688")
+        self.mgr = mgr
+        ctx = self.make_multi_ctx()
+        ctx.state["active_site"] = "madeinchina"
+        task = ScriptedTask([("ok", {"v": 1})])
+        loop = CrawlLoop(ctx, task, sites=self.sites,
+                         per_site_kits=per_site_kits)
+        loop.run()
+        self.assertEqual(len(mgr.ensure_site_calls), 1,
+                         '应调用 ensure_site("madeinchina")')
+        # 验证传入正确的 seed_kit
+        self.assertEqual(len(mgr.seed_kit_calls), 1)
+        actual_kit = mgr.seed_kit_calls[0]
+        self.assertIsNotNone(actual_kit,
+                             "ensure_site 应收到 madeinchina 的 seed_kit")
+        self.assertEqual(actual_kit["name"], "kitB",
+                         "ensure_site 应收到 kitB（madeinchina 对应种子）")
 
 
 if __name__ == "__main__":

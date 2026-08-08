@@ -43,14 +43,18 @@ python -m fetcher daemon --proxy                # 常驻模式：1688 contact �
 # 站点/任务子命令由 sites 注册表自动发现生成，加目录即接入
 ```
 
-`daemon` 子命令 = 1688 contact 常驻模式：消费者从 `work_items` 表认领工作项，
-shops 表 pending 行自动补货入队，队列取空后挂起等货而非退出。支持全部共享
-网络层参数（`--proxy` / `--workers` / `--headed` 等，同各任务子命令），另有
-`--queue`（P0 仅默认值 `crawl_1688_contact`，不开放其他选择）；`--limit N`
-每个 worker 跑完 N 个后退出，作冒烟/联调的收工手段。
-**daemon 与旧 CLI `1688 contact` 同站互斥**：两边启动都会把 shops 的
-in_progress 重置为 pending（daemon 另回收 work_items 的 claimed 残留），
-同站同跑会互相重置，同一时刻只跑一个。
+`daemon` 子命令 = 多队列常驻模式（P3）：消费者按「资源满足 ∧ 站点冷却到期」
+跨队列认领 work_items 工作项，某站点冷却期间自动转取其他站点的工作项。
+注册表 5 条队列：`crawl_1688_contact` / `crawl_mic_contact` / `crawl_mic_shop` /
+`crawl_1688_shop` / `crawl_1688_company`。shops 表 pending 行自动补货入队
+（contact 类），shop/company 类为 feeder 队列（启动播种 + discover 发现 +
+链式续喂）；队列取空后挂起等货而非退出。支持全部共享网络层参数
+（`--proxy` / `--workers` / `--headed` 等），另有 `--queues`（多值，choices=注册表键，
+默认全部 5 条）与 `--limit N`（跑完 N 个后退出，冒烟/联调收工手段）。
+**daemon 与旧 CLI 同站互斥**：两边启动都会把对应站的 in_progress 重置为
+pending（daemon 另回收 work_items 的 claimed 残留），同站同跑会互相重置，
+同一时刻只跑一个（daemon 启动 reset 已按站点 domain 过滤，只重置注册表
+contact 队列涉及的站点）。
 
 ```python
 # 库用法（CLI 即以下装配的薄壳）
@@ -85,5 +89,7 @@ fetch 门控、策略覆盖）。
 
 ## 本阶段边界
 
-P2+P3 已交付控制层与 CLI。遗留：多进程类目池互斥、换 IP 等待期的
-item 级调度（见 docs/design.md §14）。
+P2+P3 已交付控制层与 CLI。P3 已落地：多队列多站点调度（daemon 常驻）、
+BrowserContext 多站点隔离（一消费者一浏览器进程、每站点独立 context）、
+SwapIP 无头两阶段、shop/company feeder 队列（work_items 驱动）。
+遗留：多进程类目池互斥、换 IP 等待期的 item 级调度（见 docs/design.md §14）。

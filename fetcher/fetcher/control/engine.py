@@ -37,7 +37,9 @@ class Engine:
                  policy: Policy | None = None, board=None,
                  store_factory=None, browser_manager_factory=None,
                  loop_factory=None,
-                 site_name: str | None = None):
+                 site_name: str | None = None,
+                 sites: dict | None = None,
+                 policies: dict | None = None):
         if site is not None and site_name is None:
             raise RuntimeError(
                 "site_name 必传（CLI/daemon 传入注册名），"
@@ -49,6 +51,8 @@ class Engine:
         self.policy = policy
         self.board = board
         self.site_name = site_name
+        self.sites = sites
+        self.policies = policies
         # 可注入工厂（测试用；默认每 worker 独立 ShopDB / BrowserManager /
         # CrawlLoop）
         self.store_factory = store_factory or (
@@ -83,17 +87,43 @@ class Engine:
                       f"可能触发风控；建议 --proxy 走多通道")
         return workers, channels
 
-    def _alloc_seed_kits(self, workers: int) -> list:
-        """种子身份池：每 worker 独占认领一份（一对一，防 Cookie 重放）。
+    def _alloc_seed_kits(self, workers: int, sites: list = None):
+        """种子身份池分配。
+
+        sites=None（CLI 单站点路径）：返回现状 list[kit]（每 worker 一份，
+        行为逐字不变）。
+        sites 非空（daemon 多站点路径）：返回 dict[site_name, list[kit]]
+        ——每 (worker, site) 一份；load_seed_kits(domain=该站点 cookie_domain)
+        逐站点加载后按下标分配（越界 None=白板，日志同现状）。
 
         --seed-x5sec：A/B 实验，偶数 worker 用含 x5sec 的种子（A 组），
-        奇数 worker 用不含的（B 组对照）。
+        奇数 worker 用不含的（B 组对照）。多站点路径按 (worker,site) 同样适用。
         """
         cfg = self.config
         if not cfg.use_proxy:
-            return [None] * workers
+            if sites is None:
+                return [None] * workers
+            return {site.name: [None] * workers for site in sites}
+
         seeds_dir = cfg.resolved_seeds_dir()
-        domain = getattr(self.site, "cookie_domain", "1688.com")
+
+        if sites is None:
+            # CLI 单站点路径：现状行为逐字不变
+            return self._alloc_seed_kits_single(
+                workers, seeds_dir, cfg,
+                getattr(self.site, "cookie_domain", "1688.com"))
+        else:
+            # Daemon 多站点路径：每 (worker, site) 一份
+            result = {}
+            for site in sites:
+                domain = getattr(site, "cookie_domain", "1688.com")
+                result[site.name] = self._alloc_seed_kits_single(
+                    workers, seeds_dir, cfg, domain)
+            return result
+
+    def _alloc_seed_kits_single(self, workers: int, seeds_dir: str,
+                                cfg: "RunConfig", domain: str) -> list:
+        """单站点的种子分配逻辑（CLI 与 daemon 共用核心）。"""
         kits = load_seed_kits(seeds_dir, domain=domain)
         kits_x5 = (load_seed_kits(seeds_dir, keep_x5sec=True, domain=domain)
                    if cfg.seed_x5sec else [])
@@ -131,7 +161,8 @@ class Engine:
                               homepage=getattr(self.site, "homepage", None),
                               channel=channel)
 
-    def _worker(self, wid: int, channel, seed_kit, board):
+    def _worker(self, wid: int, channel, seed_kit, board,
+                *, per_site_kits=None):
         """worker 线程入口：独立 DB 连接 / BrowserManager / ctx / loop。
 
         channel 是本 worker 独占的隧道（一 worker 一通道）：透传给
@@ -147,8 +178,10 @@ class Engine:
             if not text:
                 return
             if board is not None:
-                # 错误/警告进滚动日志，常规细节进状态行
-                if "[X]" in text or "[!]" in text or "[license]" in text:
+                # 错误/警告/claim/finish/release 进滚动日志，常规细节进状态行
+                if ("[X]" in text or "[!]" in text or "[license]" in text or
+                        "[claim]" in text or "[finish]" in text or
+                        "[release]" in text):
                     board.log(text)
                 else:
                     board.set(wid, detail=text[:80])
@@ -160,8 +193,15 @@ class Engine:
                             stop=self.stop, log=log, wid=wid, tag=tag)
         if board is not None:
             ctx.set_status = lambda **kw: board.set(wid, **kw)
+        loop_kw = {}
+        if self.sites is not None:
+            loop_kw["sites"] = self.sites
+        if per_site_kits is not None:
+            loop_kw["per_site_kits"] = per_site_kits
+        if self.policies is not None:
+            loop_kw["policies"] = self.policies
         loop = self.loop_factory(ctx, self.task, policy=self.policy,
-                                 board=board, seed_kit=seed_kit)
+                                 board=board, seed_kit=seed_kit, **loop_kw)
         stats = loop.run()
         with self.lock:
             self.state["stats"][wid] = stats
@@ -171,14 +211,33 @@ class Engine:
     def run(self) -> int:
         cfg = self.config
         workers, channels = self._alloc_workers()
-        worker_kits = self._alloc_seed_kits(workers)
-        print(f"[2] 启动 {workers} 个 worker"
-              f"（{'代理通道: ' + ', '.join(c.server for c in channels)
-                  if cfg.use_proxy else '直连'}）")
 
         board = self.board
         if board is None and workers > 0:
             board = StatusBoard(workers, compose=self.task.compose)
+
+        # P3 SPEC §3.6：种子身份池 (worker, site) 粒度
+        if self.sites:
+            kits_by_site = self._alloc_seed_kits(
+                workers, sites=list(self.sites.values()))
+            # kits_by_site: dict[site_name, list[kit]]
+            # 为每个 worker 提取初始 kit（default site）和 per-site kits
+            _thread_args = []
+            for i in range(workers):
+                init_kit = (kits_by_site[self.site_name][i]
+                            if self.site_name and self.site_name in kits_by_site
+                            else None)
+                per_site = {site: kits[i]
+                            for site, kits in kits_by_site.items()}
+                _thread_args.append((i, channels[i], init_kit, board, per_site))
+        else:
+            worker_kits = self._alloc_seed_kits(workers)
+            _thread_args = [(i, channels[i], worker_kits[i], board, None)
+                            for i in range(workers)]
+        print(f"[2] 启动 {workers} 个 worker"
+              f"（{'代理通道: ' + ', '.join(c.server for c in channels)
+                  if cfg.use_proxy else '直连'}）")
+
         if board is not None:
             board.start()
 
@@ -195,12 +254,13 @@ class Engine:
             except (OSError, ValueError):
                 pass  # 平台不支持该信号时跳过
 
-        threads = [
-            threading.Thread(target=self._worker,
-                             args=(i, channels[i], worker_kits[i], board),
-                             name=f"worker-{i}", daemon=True)
-            for i in range(workers)
-        ]
+        threads = []
+        for i in range(workers):
+            args_i, per_site = _thread_args[i][:4], _thread_args[i][4]
+            kwargs_i = {"per_site_kits": per_site} if per_site is not None else {}
+            threads.append(threading.Thread(
+                target=self._worker, args=args_i, kwargs=kwargs_i,
+                name=f"worker-{i}", daemon=True))
         for i, t in enumerate(threads):
             t.start()
             if i < len(threads) - 1:
