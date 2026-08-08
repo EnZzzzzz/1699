@@ -186,9 +186,9 @@ P2 与 P3 互不依赖，P1 完成后可并行推进。
 
 ## 收尾（全部 Phase 完成后）
 
-- [ ] 全分支终审（subagent-driven-development 终审环节）。
-- [ ] 文档同步：`docs/channel-research/facebook-groups.md` §10/§12「未做」
+- [x] 全分支终审（subagent-driven-development 终审环节）。
+- [x] 文档同步：`docs/channel-research/facebook-groups.md` §10/§12「未做」
   清单与 `facebook-summary.md` §3 待办勾销二期项；AGENTS.md §1/§5 若涉及
   任务类型清单更新则同步。
-- [ ] 归档：本目录（含 ledger.md 与 brief/report/review 文件）移
+- [x] 归档：本目录（含 ledger.md 与 brief/report/review 文件）移
   `docs/archive/`。
