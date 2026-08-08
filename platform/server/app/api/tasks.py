@@ -116,8 +116,8 @@ class TaskParams(BaseModel):
     retry_failed: bool | None = None        # 前端 1688_contact 表单开关遗留，不映射 CLI
     # wa_check 专用：
     accounts: list[str] | None = None       # 账号池，空 = 仅默认账号
-    # 注：wa_check 复用上方 batch_num（每批调用次数）、
-    # sample_min / sample_max（调用间隔范围）三个字段
+    # 注：batch_num/sample_min/sample_max 为 subprocess 类型（yiwugo）节奏参数；
+    # wa_check 走 daemon 批次，只消费 limit/accounts
     # 循环模式：本轮正常结束（done/failed）后 N 秒自动重启；None/<=0 = 不循环
     repeat_interval: int | None = None
 

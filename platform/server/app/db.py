@@ -102,6 +102,8 @@ def migrate() -> None:
         # 交换顺序（建 tasks_new → INSERT SELECT → DROP tasks → RENAME）保证
         # task_events/proxy_channels 的 REFERENCES tasks(id) 不被 SQLite RENAME
         # 重写成指向被删表名（RENAME-first 会让外键悬空）。
+        # 前提：本库从未启用 PRAGMA foreign_keys；若启用，DROP TABLE tasks 会
+        # 因 task_events/proxy_channels 引用直接失败。
         cols = {r[1] for r in conn.execute("PRAGMA table_info(tasks)")}
         if "celery_id" in cols:
             conn.execute("BEGIN IMMEDIATE")
@@ -133,7 +135,7 @@ def migrate() -> None:
                 conn.execute("CREATE INDEX idx_tasks_status ON tasks(status)")
                 conn.execute("COMMIT")
             except Exception:
-                conn.execute("ROLLBACK")  # 失败留原表（tasks 未动）
+                conn.rollback()  # 幂等：无事务时不抛；失败留原表（tasks 未动）
                 raise
         conn.commit()
     finally:

@@ -226,11 +226,11 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
       if (key === 'repeat_interval' && n === 0) continue // 0 = 不循环，不传
       ;(params as Record<string, unknown>)[key] = n
     }
-    // 后端 channels 为 int（代理通道 id）：非空才转 Number 提交，NaN 丢弃
+    // 后端 channels 为 int（代理通道 id）：整数才提交（Number.isFinite 会放行 '1.5'，后端 int 会 422）
     const channelsRaw = channels.trim()
     if (channelsRaw !== '') {
       const channelsN = Number(channelsRaw)
-      if (Number.isFinite(channelsN)) params.channels = channelsN
+      if (Number.isInteger(channelsN)) params.channels = channelsN
     }
     if (retryFailed && type === '1688_contact') params.retry_failed = true
     return params
