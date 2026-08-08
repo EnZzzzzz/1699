@@ -90,3 +90,12 @@
 - review：spec 合规 ✅（§5.1 全量 hook、validate 阈值 100、prepare 崩溃
   恢复、cold_start 空实现、giveup_cost=1）代码质量 ✅
 - minor (deferred)：无
+
+### Step 1.4 — daemon 队列注册（代码部分）
+- commit 范围：`fetcher/fetcher/cli/main.py`（_build_registry 注册
+  crawl_fb_post QueueSpec）、`fetcher/tests/test_cli_fb.py`（4 例）、
+  brief/ledger/PLAN
+- TDD：3 failed → 4 passed；全量 618 passed 零回归
+- review：spec 合规 ✅（SPEC §5.2：site=facebook、topup 走
+  topup_fb_post_work_items、domain_suffix=""、reset 走 Task.prepare）
+- **运行时冒烟（证据见下节）**

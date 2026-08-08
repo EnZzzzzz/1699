@@ -236,6 +236,20 @@ def _build_registry(selected_queues: list[str] | None = None) -> list:
         domain_suffix=".1688.com",
     ))
 
+    # crawl_fb_post（二期：Facebook 群帖采集；BrowserConsumer 消费）
+    # domain_suffix=""：无 shops 语义，in_progress 重置走 FbPostTask.prepare
+    # （reset_daemon_state 只认 domain_suffix 非空的 contact 队列，不覆盖
+    # fb_posts——SPEC §5.1 缺口由 Task.prepare 补位）
+    site_fb = get_site("facebook")
+    specs.append(QueueSpec(
+        queue="crawl_fb_post",
+        site="facebook",
+        task=site_fb.make_task("post"),
+        topup=lambda db, limit: db.topup_fb_post_work_items(
+            "crawl_fb_post", "facebook", limit),
+        domain_suffix="",
+    ))
+
     # crawl_mic_contact
     site_mic = get_site("madeinchina")
     specs.append(QueueSpec(
