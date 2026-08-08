@@ -367,6 +367,11 @@ class QueueRouter:
         item_id = ctx.state.pop(_STATE_KEY, None)
         if item_id is None:
             return
+        # 任务侧侧车（FbPostTask 微信/TG/邀请链接等观测副产物）：on_success
+        # 经 ctx.state["result_json"] 带上，_finish 落库（仅当调用方未显式
+        # 给 result 时生效；既有任务不设该键零影响）。
+        if result is None:
+            result = ctx.state.pop("result_json", None)
         try:
             self._db(ctx).finish_work_item(item_id, status, result)
             # P4 daemon 可观测：finish 清空 current_*（保留心跳字段）

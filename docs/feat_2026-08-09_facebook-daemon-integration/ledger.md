@@ -77,3 +77,16 @@
 - review：spec 合规 ✅（policy_overrides 逐条对照 madeinchina 同款退化、
   SPEC §3.2「BLOCKED→block_rest→swap_ip→give_up」）代码质量 ✅（无 park）
 - 说明：make_task("post") 实例化断言留给 1.3（FbPostTask 未存在前不可测）
+
+### Step 1.3 — FbPostTask 实现
+- commit 范围：`fetcher/fetcher/sites/facebook/post_task.py`（新文件，Task
+  协议全量 hook）、`fetcher/fetcher/db.py`（reset_fb_posts_in_progress）、
+  `fetcher/fetcher/control/queue_router.py`（_finish 侧车钩子 2 行）、
+  `fetcher/tests/test_fb_post_task.py`（15 例）、brief/ledger/PLAN
+- TDD：先红（模块缺失）→ 15 passed；全量 614 passed 零回归
+- **框架微改**：QueueRouter._finish 加 `if result is None:
+  result = ctx.state.pop("result_json", None)`（SPEC §8 侧车落库机制；
+  既有任务不设该键零影响，queue_router 既有测试全过）
+- review：spec 合规 ✅（§5.1 全量 hook、validate 阈值 100、prepare 崩溃
+  恢复、cold_start 空实现、giveup_cost=1）代码质量 ✅
+- minor (deferred)：无

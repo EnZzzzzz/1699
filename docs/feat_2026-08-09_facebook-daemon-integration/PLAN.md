@@ -50,7 +50,7 @@ P2 与 P3 互不依赖，P1 完成后可并行推进。
     `sites/madeinchina/__init__.py:53-59`）。
   - 验收：单测断言插件注册、task_names、overrides 键集合；既有 FB 测试
     不回归。
-- [ ] **1.3 FbPostTask 实现**（预估 40min，依赖：1.1、1.2）
+- [x] **1.3 FbPostTask 实现**（预估 40min，依赖：1.1、1.2）
   - 新文件 `sites/facebook/post_task.py`：SPEC §5.1 全量 hook
     （fetch 调原子 / validate 阈值按 PoC 样本复核 / on_success 落库 /
     on_giveup / prepare 崩溃恢复重置 / make_stats / rest_counter /

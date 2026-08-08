@@ -830,6 +830,15 @@ class ShopDB:
             "UPDATE fb_posts SET status='failed' WHERE url=?", (url,))
         self.conn.commit()
 
+    def reset_fb_posts_in_progress(self) -> int:
+        """fb_posts 的 in_progress 重置回 pending（进程中断残留的认领，
+        FbPostTask.prepare 启动时调用——reset_daemon_state 只认
+        domain_suffix 非空的 contact 队列，不覆盖 fb_posts）。"""
+        cur = self.conn.execute(
+            "UPDATE fb_posts SET status='pending' WHERE status='in_progress'")
+        self.conn.commit()
+        return cur.rowcount
+
     # ---------- category_progress ----------
     def get_category_progress(self, keyword: str) -> dict | None:
         """取类目分页进度（无记录返回 None）。"""
