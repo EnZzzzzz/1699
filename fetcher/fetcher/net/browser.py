@@ -373,6 +373,14 @@ class BrowserManager:
             session.extra["needs_relaunch"] = {}
         session.extra["needs_relaunch"][site] = True
 
+    def clear_needs_relaunch(self, session: Session, site: str):
+        """清除单个 site 的 needs_relaunch 标记。
+
+        与 mark_needs_relaunch 成对，供 P3-3 SwapIP 两阶段在进程内
+        单独清除某 site 标记时使用。
+        """
+        session.extra.get("needs_relaunch", {}).pop(site, None)
+
     # ---- view 管理 ----
 
     def ensure_site(self, session: Session, site_name: str,
@@ -405,14 +413,7 @@ class BrowserManager:
                                         stop=stop)
             # 将新 session 状态迁回旧 session 对象（调用方持有旧引用，
             # 以此保证 session 对象身份不变但内部已刷新）
-            session.browser = new_session.browser
-            session.channel = new_session.channel
-            session.req_proxies = new_session.req_proxies
-            session.views = new_session.views
-            session.seed_kit = new_session.seed_kit
-            for k, v in new_session.extra.items():
-                if k != "needs_relaunch":
-                    session.extra[k] = v
+            session.copy_state_from(new_session)
             if site_name in session.views:
                 return session.views[site_name]
             # launch 未建该 site 的初始 view 时，走下面正常懒建路径

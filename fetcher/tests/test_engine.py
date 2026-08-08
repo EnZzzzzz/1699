@@ -358,19 +358,27 @@ class SeedPoolMultiSiteTest(unittest.TestCase):
     # ---- seed_x5sec 分支 ----
 
     def test_sites_nonempty_seed_x5sec(self):
-        """seed_x5sec 实验在多站点路径下同样适用。"""
+        """seed_x5sec 实验：sites 非空 + seed_x5sec=True →
+        dict[site][worker] 结构，偶数 worker A 组（含 x5sec），
+        奇数 worker B 组对照。两站点各有独立域的种子。"""
         import json
+        from types import SimpleNamespace
         seeds = Path(self._tmp.name) / "seeds"
         seeds.mkdir()
-        for name, has_x5sec in (("kitA", True), ("kitB", False)):
+        # 1688 域种子：kitA 含 x5sec，kitB 不含
+        for name, has_x5sec, domain in (
+            ("kitA", True, ".1688.com"),
+            ("kitB", False, ".1688.com"),
+            ("kitY", True, ".yiwugo.com"),
+            ("kitZ", False, ".yiwugo.com"),
+        ):
             cookies = [
-                {"name": "cna", "value": "v", "domain": ".1688.com"},
-                {"name": "cookie2", "value": "v", "domain": ".1688.com"},
+                {"name": "cna", "value": "v", "domain": domain},
+                {"name": "cookie2", "value": "v", "domain": domain},
             ]
             if has_x5sec:
                 cookies.append({"name": "x5sec", "value": "xv",
-                                "domain": ".1688.com",
-                                "expires": 9999999999})
+                                "domain": domain, "expires": 9999999999})
             (seeds / f"{name}.json").write_text(json.dumps(cookies),
                                                 encoding="utf-8")
 
@@ -381,13 +389,25 @@ class SeedPoolMultiSiteTest(unittest.TestCase):
             site_name="1688",
             browser_manager_factory=lambda store: object(),
             loop_factory=FakeLoop)
-        result = engine._alloc_seed_kits(2)
-        # worker 0 (偶数): x5sec 组（A 组）
-        self.assertTrue(result[0].get("x5sec"),
-                        f"偶数 worker 应为 A 组（含 x5sec），实际={result[0]}")
-        # worker 1 (奇数): 对照组（B 组）
-        self.assertFalse(result[1].get("x5sec"),
-                         f"奇数 worker 应为 B 组（不含 x5sec），实际={result[1]}")
+        # sites 非空 → 多站点路径
+        sites = [
+            SimpleNamespace(name="1688", cookie_domain="1688.com"),
+            SimpleNamespace(name="yiwugo", cookie_domain="yiwugo.com"),
+        ]
+        result = engine._alloc_seed_kits(2, sites=sites)
+        # 验证 dict 结构
+        self.assertIsInstance(result, dict)
+        self.assertEqual(set(result.keys()), {"1688", "yiwugo"})
+        for site_name in ("1688", "yiwugo"):
+            self.assertIsInstance(result[site_name], list)
+            self.assertEqual(len(result[site_name]), 2)
+            # 每个 site 内：worker 0 (偶数) A 组，worker 1 (奇数) B 组
+            self.assertTrue(result[site_name][0].get("x5sec"),
+                            f"{site_name} worker 0 应为 A 组（含 x5sec），"
+                            f"实际={result[site_name][0]}")
+            self.assertFalse(result[site_name][1].get("x5sec"),
+                             f"{site_name} worker 1 应为 B 组（不含 x5sec），"
+                             f"实际={result[site_name][1]}")
 
     def test_sites_none_seed_x5sec_unchanged(self):
         """sites=None 时 seed_x5sec 行为与现状一致。"""

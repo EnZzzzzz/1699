@@ -117,8 +117,8 @@ class Engine:
                     workers, seeds_dir, cfg, domain)
             return result
 
-    def _alloc_seed_kits_single(self, workers: int, seeds_dir, cfg,
-                                domain: str) -> list:
+    def _alloc_seed_kits_single(self, workers: int, seeds_dir: str,
+                                cfg: "RunConfig", domain: str) -> list:
         """单站点的种子分配逻辑（CLI 与 daemon 共用核心）。"""
         kits = load_seed_kits(seeds_dir, domain=domain)
         kits_x5 = (load_seed_kits(seeds_dir, keep_x5sec=True, domain=domain)

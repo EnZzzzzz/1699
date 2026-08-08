@@ -148,6 +148,24 @@ class Session:
         if cookies:
             store.save(view.identity, cookies)
 
+    # ---- 状态迁移（relaunch 后迁回旧对象，保持引用不变）----
+
+    def copy_state_from(self, other: "Session") -> None:
+        """将 other Session 的运行时状态迁入本 Session（原地更新，引用不变）。
+
+        用于 relaunch 场景：relaunch 返回新 Session 对象，调用方持有的
+        旧 Session 引用通过本方法迁入新状态，避免散弹式字段逐一拷贝。
+        迁移字段：browser / channel / req_proxies / views / seed_kit /
+        extra / _active_site。
+        """
+        self.browser = other.browser
+        self.channel = other.channel
+        self.req_proxies = other.req_proxies
+        self.views = other.views
+        self.seed_kit = other.seed_kit
+        self.extra = other.extra
+        self._active_site = other._active_site
+
     # ---- 两层关闭 ----
 
     def close_site(self, site: str, store=None, log=None):

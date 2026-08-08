@@ -87,3 +87,52 @@ cd fetcher && python -m pytest tests -q
 - **engine.run 未改动**：`_alloc_seed_kits(workers)` 调用点保持 sites=None 默认，返回 list，消费逻辑不变
 - **ensure_site 防递归**：清除 needs_relaunch 在 relaunch/launch 之前，避免 ensure_site → relaunch → launch → ensure_site 的递归触发
 - **session 引用保持**：ensure_site 触发的 relaunch 将新 session 状态迁回旧对象，调用方持有的 session 引用不变
+
+---
+
+## Fix Round 1（2026-08-08）
+
+来源：`task-2.2-fix1.md`（C1/I2/I3/M4/M5）
+
+### C1 — seed_x5sec 多站点路径 0 测试覆盖
+
+**问题**：`test_sites_nonempty_seed_x5sec` 实际调 `_alloc_seed_kits(2)` 不带 sites，走 CLI 路径，从未覆盖 sites 非空 + seed_x5sec=True 的多站点分支。
+
+**修复**：重写测试，传入两站点（1688 + yiwugo，各有独立域的种子），断言返回 `dict[site][worker]` 结构、每 site 内偶数 worker A 组（含 x5sec）、奇数 worker B 组。
+
+**测试**：`tests/test_engine.py::SeedPoolMultiSiteTest::test_sites_nonempty_seed_x5sec` — PASSED
+
+### I2 — Session 状态迁移脆弱（字段逐一拷贝）
+
+**问题**：`ensure_site` 里 relaunch 后将 new_session 的 browser/channel/req_proxies/views/seed_kit/extra 逐一拷回旧 session，未来 Session 新增字段极易遗漏。
+
+**修复**：给 `Session` 加 `copy_state_from(other: Session)` 集中迁移方法（迁移 browser / channel / req_proxies / views / seed_kit / extra / _active_site）；`ensure_site` 改为调用 `session.copy_state_from(new_session)`。
+
+**测试**：现有 `test_ensure_site_triggers_relaunch_when_needs_relaunch_set` / `test_ensure_site_relaunch_clears_all_site_flags` / `test_ensure_site_relaunch_preserves_session_object_identity` 均 PASSED（覆盖迁移后 session 对象引用不变且状态正确）。
+
+### I3 — 缺 clear_needs_relaunch(site) 精确清除 API
+
+**问题**：实现只有全清（`session.extra["needs_relaunch"] = {}`），P3-3 可能需要在进程内单独清除某 site 标记。
+
+**修复**：`BrowserManager` 加 `clear_needs_relaunch(session, site)` 方法（内调 `extra["needs_relaunch"].pop(site, None)`），与 `mark_needs_relaunch` 成对；`ensure_site` 的懒建消费保持全清（进程级 relaunch）。
+
+**测试**：`tests/test_needs_relaunch.py::MarkNeedsRelaunchTest::test_clear_needs_relaunch_removes_single_site_flag` — 置位两 site → 清除单个 → 验证该 site 清除、另一 site 保留 — PASSED
+
+### M4 — test_relaunch_complete_clears_flag 不测生产代码
+
+**问题**：旧测试只做 `session.extra["needs_relaunch"].pop(...)` 纯 dict 操作，无生产代码触达。
+
+**修复**：替换为 `test_clear_needs_relaunch_removes_single_site_flag`，调用 `mgr.clear_needs_relaunch(session, "1688")` 生产 API 并验证行为。
+
+### M5 — _alloc_seed_kits_single 参数无类型注解
+
+**修复**：补 `seeds_dir: str`、`cfg: "RunConfig"` 类型注解（与同文件其他方法一致）。
+
+### 回归验证
+
+```
+$ cd fetcher && python -m pytest tests -q
+395 passed, 2 subtests passed in 30.65s
+```
+
+0 回归，全部修复项覆盖通过。

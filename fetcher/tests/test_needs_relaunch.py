@@ -105,13 +105,15 @@ class MarkNeedsRelaunchTest(unittest.TestCase):
         self.assertTrue(session.extra["needs_relaunch"].get("1688"))
         self.assertTrue(session.extra["needs_relaunch"].get("yiwugo"))
 
-    def test_relaunch_complete_clears_flag(self):
-        """relaunch 完成后 needs_relaunch 清除（手动 pop 模拟完成路径）。"""
+    def test_clear_needs_relaunch_removes_single_site_flag(self):
+        """clear_needs_relaunch(session, site) 精确清除单个 site 标记。"""
+        mgr = self._make_mgr()
         session = Session(browser=MagicMock(),
-                          extra={"needs_relaunch": {"1688": True}})
-        # 模拟 relaunch 完成路径：pop 清除该 site 标记
-        session.extra["needs_relaunch"].pop("1688", None)
+                          extra={"needs_relaunch": {"1688": True, "yiwugo": True}})
+        mgr.clear_needs_relaunch(session, "1688")
         self.assertNotIn("1688", session.extra.get("needs_relaunch", {}))
+        # 其他 site 标记保留
+        self.assertIn("yiwugo", session.extra.get("needs_relaunch", {}))
 
 
 # ============================================================
