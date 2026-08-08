@@ -63,3 +63,22 @@
   DROP 后悬空（代码库从未启用 PRAGMA foreign_keys，休眠地雷）。用户裁决 **方案 B（交换式）**：
   建 tasks_new → INSERT SELECT → DROP tasks → RENAME tasks_new TO tasks → DROP flows → 重建索引。
   删除面/单事务/幂等/失败留原表要求不变；外键始终指向 "tasks" 表名，最终 schema 干净。
+
+### Step 3.1（DB 死列迁移）— complete
+
+- BASE 3f70220 → HEAD 61d6758 `refactor(p5): tasks 表重建迁移——删 celery_id/flow_id 死列与 flows 表（方案 B 交换式）`
+- review：通过（spec ✅，无 Critical/Important）。Minor：① BEGIN 失败时 ROLLBACK 掩盖原始错误（影响极小）；
+  ② 方案 B 隐含依赖 FK 强制关闭，建议注释记录前提；③ before.txt 与 report 的 flows 行数不一致（1 vs 3）；
+  ④ before.txt 为逆向构造非直接快照（已披露）。均终审分诊。
+- 修复轮：0
+- **重要事件——生产库被提前迁移**（implementer 归因有误，主 Agent 已调查）：
+  - 时间线：01:26 生产库旧 schema → db.py 新代码 01:28 落盘 → 01:29:48 cp 时生产库已是新 schema。
+  - 排除项：pid 39496 是本 session 的 pi 进程（非并行 agent）；uvicorn 57435 是 23:00 旧代码进程（无法跑新迁移）；
+    implementer 的 /tmp 脚本全部显式 DB_PATH 指向副本（已读源码核实）。
+  - 结论：唯一能解释的是某个导入新 db.py 且未 patch DB_PATH 的进程在 01:28 后调了 migrate()（生产库本体）。
+    归因存疑，但**迁移结果已验证正确无损**（4 行数据与 P5 前快照逐行一致、死列/flows 已删、外键指向 tasks 完好、
+    idx_tasks_status 在、sqlite_sequence=74 保留）。生产库正式迁移时序（Step 4.2 uvicorn 重启）实际提前发生。
+  - 影响：无功能影响；Step 4.2 冒烟时重启 uvicorn 会跑幂等 migrate（no-op）并加载新代码（当前 57435 仍是
+    23:00 旧代码进程，parse 端点 500 即旧代码证据）。
+- 主 Agent 复核：全量 62 passed（56+6 新增迁移测试）；celery_id/flow_id 残留仅迁移实现与测试自身。
+- minor (deferred)：① BEGIN 失败 ROLLBACK 异常掩盖；② FK 前提注释；③ flows 行数证据不一致；④ before.txt 逆向构造。
