@@ -45,7 +45,7 @@
 
 **准入**：P5-1~P5-3 完成。**完成标准**：SPEC §3.7 文档落地；§7 验收标准逐条取证；终审 MERGE READY。
 
-- [ ] **Step 4.1** 文档修订（估 30min，依赖 3.1，状态 pending）
+- [x] **Step 4.1** 文档修订（估 30min，依赖 3.1，状态 done 2026-08-08）
   - flow-architecture.md（头部状态行 + §2 重写 + §6/§7 未落地标注 + §10 重写）；AGENTS.md §1/§5；fetcher README 定位行 + 平台 README 同步（如有任务类型清单）。
   - 验收：文档自检 + review 对照 SPEC §3.7 逐项。
 - [ ] **Step 4.2** 全量验收 + 终审（估 30min，依赖 4.1，状态 pending）
