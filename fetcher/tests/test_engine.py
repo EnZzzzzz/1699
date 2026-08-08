@@ -440,5 +440,195 @@ class SeedPoolMultiSiteTest(unittest.TestCase):
         self.assertFalse(result[1].get("x5sec"))
 
 
+# ============================================================
+# Task 6.2: Engine.run 接线 sites 到 _alloc_seed_kits
+# ============================================================
+
+class FakeLoopV2:
+    """记录装配参数的假 CrawlLoop（捕获 per_site_kits）。"""
+    instances = []
+
+    def __init__(self, ctx, task, policy=None, board=None, seed_kit=None,
+                 sites=None, per_site_kits=None, policies=None):
+        self.ctx = ctx
+        self.seed_kit = seed_kit
+        self.sites = sites
+        self.per_site_kits = per_site_kits
+        self.policies = policies
+        FakeLoopV2.instances.append(self)
+
+    def run(self):
+        return {"done": 1, "wid": self.ctx.wid}
+
+
+class EngineRunSitesWiringTest(unittest.TestCase):
+    """Engine.run() → _alloc_seed_kits 接线 sites 测试。"""
+
+    def setUp(self):
+        FakeLoopV2.instances = []
+        self._tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _config(self, **kw):
+        base = dict(headless=True, use_proxy=True, workers=0,
+                    db_path=str(Path(self._tmp.name) / "t.db"),
+                    seeds_dir=str(Path(self._tmp.name) / "no_seeds"),
+                    stagger_min=0, stagger_max=0)
+        base.update(kw)
+        return RunConfig(**base)
+
+    # ---- 6.2-1: run() 传 sites 给 _alloc_seed_kits ----
+
+    def test_run_with_sites_calls_alloc_seed_kits_with_sites(self):
+        """Engine.run() 在 multi-site 模式下传 sites 给
+        _alloc_seed_kits → 返回 dict[site, list[kit]]。"""
+        from types import SimpleNamespace
+        provider = FakeProvider(2)
+        sites_dict = {
+            "1688": SimpleNamespace(name="1688", cookie_domain="1688.com"),
+            "yiwugo": SimpleNamespace(name="yiwugo", cookie_domain="yiwugo.com"),
+        }
+        cfg = self._config(workers=2)
+        engine = Engine(cfg, FakeTask(), provider=provider,
+                        site_name="1688", sites=sites_dict,
+                        site=MagicMock(cookie_domain="1688.com"),
+                        policies={"1688": MagicMock(), "yiwugo": MagicMock()},
+                        browser_manager_factory=lambda store: object(),
+                        loop_factory=FakeLoopV2)
+
+        with unittest.mock.patch.object(
+                engine, '_alloc_seed_kits',
+                wraps=engine._alloc_seed_kits) as mock_alloc:
+            engine.run()
+            self.assertTrue(mock_alloc.called,
+                            "run() 应调用 _alloc_seed_kits")
+            # 验证 sites 参数通过（位置或关键字）
+            args, kw = mock_alloc.call_args
+            # wraps 的 bound method 会把 self 计入 args[0]；
+            # 检查传入值中是否包含 sites 列表
+            all_args = args + tuple(kw.values())
+            sites_found = any(
+                isinstance(v, list) and len(v) == 2 for v in all_args)
+            self.assertTrue(sites_found,
+                            "multi-site 时 run() 应传 sites list 给 _alloc_seed_kits")
+
+    def test_run_single_site_does_not_pass_sites(self):
+        """Engine.run() 在单站点模式下不传 sites（行为不变）。"""
+        provider = FakeProvider(2)
+        cfg = self._config(workers=2)
+        engine = Engine(cfg, FakeTask(), provider=provider,
+                        site_name="1688",
+                        site=MagicMock(cookie_domain="1688.com"),
+                        browser_manager_factory=lambda store: object(),
+                        loop_factory=FakeLoopV2)
+
+        with unittest.mock.patch.object(
+                engine, '_alloc_seed_kits',
+                wraps=engine._alloc_seed_kits) as mock_alloc:
+            engine.run()
+            self.assertTrue(mock_alloc.called,
+                            "run() 应调用 _alloc_seed_kits")
+            args, kw = mock_alloc.call_args
+            # 单站点：不传 sites（kwargs 无 sites，位置也不含 sites list）
+            all_args = args + tuple(kw.values())
+            sites_not_found = not any(
+                isinstance(v, list) and len(v) > 0 for v in all_args)
+            self.assertTrue(sites_not_found,
+                            "单站点 run() 不应传 sites 给 _alloc_seed_kits")
+
+    # ---- 6.2-2: per_site_kits 传递到 loop ----
+
+    def test_worker_passes_per_site_kits_to_loop_in_multi_site(self):
+        """multi-site 时 _worker 把 per_site_kits 传给 CrawlLoop。"""
+        from types import SimpleNamespace
+        provider = FakeProvider(2)
+        sites_dict = {
+            "1688": SimpleNamespace(name="1688", cookie_domain="1688.com"),
+            "yiwugo": SimpleNamespace(name="yiwugo", cookie_domain="yiwugo.com"),
+        }
+        cfg = self._config(workers=2)
+        engine = Engine(cfg, FakeTask(), provider=provider,
+                        site_name="1688", sites=sites_dict,
+                        site=MagicMock(cookie_domain="1688.com"),
+                        policies={"1688": MagicMock(), "yiwugo": MagicMock()},
+                        browser_manager_factory=lambda store: object(),
+                        loop_factory=FakeLoopV2)
+        engine.run()
+
+        for loop in FakeLoopV2.instances:
+            self.assertIsNotNone(
+                loop.per_site_kits,
+                f"worker {loop.ctx.wid}: per_site_kits 不应为 None")
+            self.assertIsInstance(
+                loop.per_site_kits, dict,
+                f"worker {loop.ctx.wid}: per_site_kits 应为 dict")
+            self.assertEqual(
+                set(loop.per_site_kits.keys()), {"1688", "yiwugo"},
+                f"worker {loop.ctx.wid}: per_site_kits 应含两站点")
+
+    def test_worker_per_site_kits_none_in_single_site(self):
+        """单站点时 loop 不收 per_site_kits。"""
+        provider = FakeProvider(2)
+        cfg = self._config(workers=2)
+        engine = Engine(cfg, FakeTask(), provider=provider,
+                        site_name="1688",
+                        site=MagicMock(cookie_domain="1688.com"),
+                        browser_manager_factory=lambda store: object(),
+                        loop_factory=FakeLoopV2)
+        engine.run()
+
+        for loop in FakeLoopV2.instances:
+            self.assertIsNone(
+                loop.per_site_kits,
+                f"worker {loop.ctx.wid}: 单站点时 per_site_kits 应为 None")
+
+    # ---- 6.2-3: multi-site 时 _alloc_seed_kits 返回正确结构 ----
+
+    def test_multi_site_per_worker_kits_structure(self):
+        """multi-site 时每 worker 得到 dict[site, kit] 结构。
+
+        seed_kit 是初始 site 的 kit（给 launch），per_site_kits
+        是 {site_name: kit}（给 ensure_site 跨站播种）。
+        """
+        import json
+        from types import SimpleNamespace
+
+        seeds_dir = Path(self._tmp.name) / "seeds"
+        seeds_dir.mkdir()
+        for name in ("kitA", "kitB"):
+            (seeds_dir / f"{name}.json").write_text(json.dumps([
+                {"name": "cna", "value": "v", "domain": ".1688.com"},
+                {"name": "cookie2", "value": "v", "domain": ".1688.com"},
+            ]), encoding="utf-8")
+
+        provider = FakeProvider(2)
+        sites_dict = {
+            "1688": SimpleNamespace(name="1688", cookie_domain="1688.com"),
+        }
+        cfg = self._config(workers=2, seeds_dir=str(seeds_dir))
+        engine = Engine(cfg, FakeTask(), provider=provider,
+                        site_name="1688", sites=sites_dict,
+                        site=MagicMock(cookie_domain="1688.com"),
+                        policies={"1688": MagicMock()},
+                        browser_manager_factory=lambda store: object(),
+                        loop_factory=FakeLoopV2)
+        engine.run()
+
+        # 验证每 worker 的 seed_kit 和 per_site_kits
+        for loop in FakeLoopV2.instances:
+            # per_site_kits 应包含 1688 站点的 kit
+            self.assertIn("1688", loop.per_site_kits,
+                          f"worker {loop.ctx.wid}: per_site_kits 应含 1688")
+            # seed_kit（launch 用）应为初始 site 的 kit
+            if loop.ctx.wid == 0:
+                self.assertEqual(loop.seed_kit["name"], "kitA")
+                self.assertEqual(loop.per_site_kits["1688"]["name"], "kitA")
+            else:
+                self.assertEqual(loop.seed_kit["name"], "kitB")
+                self.assertEqual(loop.per_site_kits["1688"]["name"], "kitB")
+
+
 if __name__ == "__main__":
     unittest.main()

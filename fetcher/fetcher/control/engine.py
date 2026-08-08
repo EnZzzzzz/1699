@@ -161,7 +161,8 @@ class Engine:
                               homepage=getattr(self.site, "homepage", None),
                               channel=channel)
 
-    def _worker(self, wid: int, channel, seed_kit, board):
+    def _worker(self, wid: int, channel, seed_kit, board,
+                *, per_site_kits=None):
         """worker 线程入口：独立 DB 连接 / BrowserManager / ctx / loop。
 
         channel 是本 worker 独占的隧道（一 worker 一通道）：透传给
@@ -195,6 +196,8 @@ class Engine:
         loop_kw = {}
         if self.sites is not None:
             loop_kw["sites"] = self.sites
+        if per_site_kits is not None:
+            loop_kw["per_site_kits"] = per_site_kits
         if self.policies is not None:
             loop_kw["policies"] = self.policies
         loop = self.loop_factory(ctx, self.task, policy=self.policy,
@@ -208,14 +211,33 @@ class Engine:
     def run(self) -> int:
         cfg = self.config
         workers, channels = self._alloc_workers()
-        worker_kits = self._alloc_seed_kits(workers)
-        print(f"[2] 启动 {workers} 个 worker"
-              f"（{'代理通道: ' + ', '.join(c.server for c in channels)
-                  if cfg.use_proxy else '直连'}）")
 
         board = self.board
         if board is None and workers > 0:
             board = StatusBoard(workers, compose=self.task.compose)
+
+        # P3 SPEC §3.6：种子身份池 (worker, site) 粒度
+        if self.sites:
+            kits_by_site = self._alloc_seed_kits(
+                workers, sites=list(self.sites.values()))
+            # kits_by_site: dict[site_name, list[kit]]
+            # 为每个 worker 提取初始 kit（default site）和 per-site kits
+            _thread_args = []
+            for i in range(workers):
+                init_kit = (kits_by_site[self.site_name][i]
+                            if self.site_name and self.site_name in kits_by_site
+                            else None)
+                per_site = {site: kits[i]
+                            for site, kits in kits_by_site.items()}
+                _thread_args.append((i, channels[i], init_kit, board, per_site))
+        else:
+            worker_kits = self._alloc_seed_kits(workers)
+            _thread_args = [(i, channels[i], worker_kits[i], board, None)
+                            for i in range(workers)]
+        print(f"[2] 启动 {workers} 个 worker"
+              f"（{'代理通道: ' + ', '.join(c.server for c in channels)
+                  if cfg.use_proxy else '直连'}）")
+
         if board is not None:
             board.start()
 
@@ -232,12 +254,13 @@ class Engine:
             except (OSError, ValueError):
                 pass  # 平台不支持该信号时跳过
 
-        threads = [
-            threading.Thread(target=self._worker,
-                             args=(i, channels[i], worker_kits[i], board),
-                             name=f"worker-{i}", daemon=True)
-            for i in range(workers)
-        ]
+        threads = []
+        for i in range(workers):
+            args_i, per_site = _thread_args[i][:4], _thread_args[i][4]
+            kwargs_i = {"per_site_kits": per_site} if per_site is not None else {}
+            threads.append(threading.Thread(
+                target=self._worker, args=args_i, kwargs=kwargs_i,
+                name=f"worker-{i}", daemon=True))
         for i, t in enumerate(threads):
             t.start()
             if i < len(threads) - 1:

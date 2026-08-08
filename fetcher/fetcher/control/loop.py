@@ -76,12 +76,14 @@ class CrawlLoop:
                  inspector: SceneInspector | None = None, board=None,
                  seed_kit: dict | None = None,
                  sites: dict[str, object] | None = None,
+                 per_site_kits: dict[str, dict | None] | None = None,
                  policies: dict[str, Policy] | None = None):
         self.ctx = ctx
         self.task = task
         self.policy = policy or Policy(
             max_consecutive_fail=ctx.config.max_consecutive_fail)
         self.sites = sites
+        self.per_site_kits = per_site_kits
         self.policies = policies
         if sites is not None:
             # daemon 多站点路径：inspector 延迟建，首个 item 绑定后建立
@@ -480,8 +482,14 @@ class CrawlLoop:
             if (self.ctx.session is not None
                     and self.ctx.browser_manager is not None):
                 try:
+                    # P3 SPEC §3.6：跨站 ensure_site 播种用该
+                    # (worker, site) 的 seed_kit；无 kit 时保持现状白板语义
+                    site_seed_kit = (
+                        self.per_site_kits.get(site_name)
+                        if self.per_site_kits else None)
                     self.ctx.browser_manager.ensure_site(
-                        self.ctx.session, site_name, plugin.cookie_domain)
+                        self.ctx.session, site_name, plugin.cookie_domain,
+                        seed_kit=site_seed_kit)
                     self.ctx.session.set_active_site(site_name)
                 except Exception as e:
                     self.log(f"[!] ensure_site({site_name}) 失败: {e}，"

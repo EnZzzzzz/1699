@@ -517,6 +517,21 @@ class MultiSiteScriptedTask(ScriptedTask):
 
 # ---------- 跨站 view 懒建测试 ----------
 
+class SeedKitCaptureBrowserManager(MultiSiteMockBrowserManager):
+    """MultiSiteMockBrowserManager 增强版：捕获 ensure_site 的 seed_kit。"""
+
+    def __init__(self, page, default_site="1688",
+                 identities=("1688:1.1.1.1", "1688:2.2.2.2", "1688:3.3.3.3")):
+        super().__init__(page, default_site, identities)
+        self.seed_kit_calls = []
+
+    def ensure_site(self, session, site_name, site_domain,
+                    seed_kit=None, stop=None):
+        self.seed_kit_calls.append(seed_kit)
+        return super().ensure_site(session, site_name, site_domain,
+                                   seed_kit=seed_kit, stop=stop)
+
+
 class CrossSiteLazyViewTest(LoopTestBase):
     """跨站 view 懒建补缺（SPEC §3.6 / Task 3.3 第一部分，TDD）。"""
 
@@ -639,6 +654,38 @@ class CrossSiteLazyViewTest(LoopTestBase):
         loop = CrawlLoop(ctx, task, sites=None)
         stats = loop.run()
         self.assertEqual(task.succeeded, ["item1"])
+
+    # ---- 6.2: per_site_kits 透传到 ensure_site ----
+
+    def test_bind_item_site_passes_seed_kit_to_ensure_site(self):
+        """跨站 ensure_site 播种拿对应 (worker, site) 的 kit。
+
+        RED 预期：_bind_item_site 当前未传 seed_kit → ensure_site
+        总是 seed_kit=None → seed_kit_calls 中的 kit 全为 None → 断言失败。
+        """
+        # 构造 per_site_kits（模拟 Engine 传递）
+        kit_1688 = {"name": "kitA", "cookies": [{"name": "cna", "value": "v"}]}
+        kit_mic = {"name": "kitB", "cookies": [{"name": "cna", "value": "v"}]}
+        per_site_kits = {"1688": kit_1688, "madeinchina": kit_mic}
+
+        # 用带 seed_kit 捕获的 mgr
+        mgr = SeedKitCaptureBrowserManager(self.page, default_site="1688")
+        self.mgr = mgr
+        ctx = self.make_multi_ctx()
+        ctx.state["active_site"] = "madeinchina"
+        task = ScriptedTask([("ok", {"v": 1})])
+        loop = CrawlLoop(ctx, task, sites=self.sites,
+                         per_site_kits=per_site_kits)
+        loop.run()
+        self.assertEqual(len(mgr.ensure_site_calls), 1,
+                         '应调用 ensure_site("madeinchina")')
+        # 验证传入正确的 seed_kit
+        self.assertEqual(len(mgr.seed_kit_calls), 1)
+        actual_kit = mgr.seed_kit_calls[0]
+        self.assertIsNotNone(actual_kit,
+                             "ensure_site 应收到 madeinchina 的 seed_kit")
+        self.assertEqual(actual_kit["name"], "kitB",
+                         "ensure_site 应收到 kitB（madeinchina 对应种子）")
 
 
 if __name__ == "__main__":
