@@ -9,8 +9,8 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.db import DB_PATH, connect
-from app.runner import (BATCH_TYPE_NAMES, BATCH_TYPES, IN_PROCESS_TYPES,
-                        PYTHON_BIN, TASK_COMMANDS, beijing_now, build_command,
+from app.runner import (BATCH_TYPE_NAMES, BATCH_TYPES, PYTHON_BIN,
+                        TASK_COMMANDS, beijing_now, build_command,
                         enqueue_batch_for_task, runner, stop_batch_task,
                         _insert_event)
 
@@ -114,7 +114,7 @@ class TaskParams(BaseModel):
     headless: bool | None = None            # false → --headed
     auto_solve: bool | None = None          # false → --no-auto-solve
     retry_failed: bool | None = None        # true 且 1688_contact → --retry-failed
-    # wa_check（进程内 WhatsApp 查号）专用：
+    # wa_check 专用：
     interval: float | None = None           # 旧参数：固定调用间隔秒（等价
                                             # sample_min == sample_max）
     accounts: list[str] | None = None       # 账号池，空 = 仅默认账号
@@ -200,8 +200,6 @@ def preview_task(body: TaskCreate):
         if limit:
             desc += f"，{limit} 条"
         return {"cmd": None, "cmdline": desc}
-    if body.type in IN_PROCESS_TYPES:
-        return {"cmd": None, "cmdline": "进程内执行（CheckWhatsApp 原子）"}
     try:
         cmd = build_command(body.type, params)
     except ValueError as e:

@@ -227,7 +227,7 @@ def enqueue_wa_batch(batch_id: int, accounts: list[str],
                      limit: int = 0) -> int:
     """wa_check 批次入队：contacts 未查号码 → 50/块 → 账号按块轮换。
 
-    accounts 为空拒绝（防空跑 default 主号，与 wa_tasks 拒绝语义一致）。
+    accounts 为空拒绝（防空跑 default 主号）。
     requires=["local"]、site=NULL。返回入队 item 数。
     """
     accounts = [str(a).strip() for a in (accounts or []) if str(a).strip()]
