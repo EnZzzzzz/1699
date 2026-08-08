@@ -48,6 +48,6 @@
 - [x] **Step 4.1** 文档修订（估 30min，依赖 3.1，状态 done 2026-08-08）
   - flow-architecture.md（头部状态行 + §2 重写 + §6/§7 未落地标注 + §10 重写）；AGENTS.md §1/§5；fetcher README 定位行 + 平台 README 同步（如有任务类型清单）。
   - 验收：文档自检 + review 对照 SPEC §3.7 逐项。
-- [ ] **Step 4.2** 全量验收 + 终审（估 30min，依赖 4.1，状态 pending）
+- [x] **Step 4.2** 全量验收 + 终审（估 30min，依赖 4.1，状态 done 2026-08-09，MERGE READY）
   - SPEC §7 逐条取证（grep 零残留清单 / 三侧测试绿 / 迁移实测 / uvicorn 重启冒烟：yiwugo + 批次 + wa_check 历史任务三链路）；scheduler-architecture.md §10 P5 行标完成。
   - 验收：终审 MERGE READY 后呈用户合并；合并后归档本目录到 docs/archive/。
