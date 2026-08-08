@@ -89,3 +89,21 @@
 - review：需要修复。Important×1：flow-architecture.md:48/:275 引「scheduler-architecture.md §8」实为 §3/§5（分层架构/调度循环）——主 Agent brief 失误（非 SPEC）。Minor×1：状态行「§2 历史设计」与 §2 重写为现状的表面张力（SPEC 文本自带，reviewer 判定不误导、可接受）。
 - 修复轮 1/5：resume 原 implementer，两处 §8→§3/§5；re-review 全部 ADDRESSED、无新破坏。
 - minor (deferred)：状态行张力保持 brief 逐字（终审确认）。
+
+### Step 4.2（全量验收 + 终审）— complete
+
+- 终审 review：MERGE READY。分诊 8 项 deferred minors：0 必须合并前修、7 可延期、1 驳回。
+  终审新发现 M1-M4（注释过期/2 处健壮性/FK 前提注释）→ 1 个修复子 Agent（0a232df）→ scoped
+  re-review 全部 ADDRESSED。M5/M6 park（非 P5 回归/证据卫生）。
+- 运行时冒烟（主 Agent 亲测，证据 plan/smoke-step4.2/）：
+  - uvicorn 重启（仅后端，daemon 保持现状——daemon 自 2026-08-08 23:48 起已停，早于 P5 开始，
+    非本次改动所致；work_items 积压 1705 pending，恢复与否由用户决定）。
+  - 新代码验证：/tasks/parse 已删（405）、preview 批次/yiwugo 两活分支 + wa_check 批次文案 200、
+    重启后 migrate 幂等 no-op（生产库无死列）。
+  - 三链路：yiwugo_search 创建/启动（subprocess pid 79023）/事件/done ✓；批次 1688_contact
+    创建/入队 5 项/停止→stopped ✓；wa_check 最小任务（params 无 interval/batch_rest_min/max）
+    创建/入队/停止 ✓；历史任务 73（含旧字段）PUT 保存不带旧字段 ✓（编辑走查截图见 smoke-step2.1/）。
+- scheduler-architecture.md §10 P5 行标完成（cc7ec32）；SPEC §7 逐条取证已填。
+- 终态：平台 62 passed / fetcher 583 passed / tsc 零错误；分支 21 commits，净 -1100 行（含 plan 制品）。
+- parked：M5（table_info 无表守卫，非 P5 回归）；M6（flows 行数证据 1 vs 3，已在此更正：
+  task-4-report 声称 3 行系误记，flows 内容整表丢弃不影响正确性）。
