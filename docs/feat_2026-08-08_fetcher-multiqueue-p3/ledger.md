@@ -72,3 +72,10 @@
   - **取证口径记录**：Run 5 证明跨站切换机制（同 worker 一站处理完转另一站，双向）；「冷却登记后到期前」的严格取证（sample_interval 让出冷却窗口内认领另一站）留 **P3-6 Step 6.1** 补（届时放大样本间隔制造冷却窗）
   - **Phase 3（P3-3）完成**：QueueRouter + 双队列注册表 + SwapIP 两阶段 + 跨站懒建；447 passed；跨站双向手递手取证
   - Step 3.3: minor (deferred): 无
+
+### P3-4（madeinchina 队列接入）
+
+- Step 4.1: complete (commits 54ecb07..8daf5a1, fix round 1/5 clean)
+  - 实现：MadeInChinaShopTask 重构为 work_items 驱动 feeder（payload category/discover；page_no 运行时读 next_page；链式续喂 advance/mark_exhausted 含 ZERO_NEW_LIMIT；discover 走 on_success 提取类目插 category item；refill_item 失败补插 + Task 基类默认空；CLI acquire 改 claim_next_eligible([crawl_mic_shop])；prepare 幂等播种）；QueueRouter.release_item 接 refill；crawl_mic_contact 注册/逐 site reset/域过滤复核确认（均已有）；TDD 19 新用例（全量 447→462 passed）
+  - fix round 1/5: review 需修复——C1 (Critical) validate 拒绝 discover（无 shops 键→False→giveup，生产路径封死）→ validate 对 discover 检查 discover 键放行；I2 discover 测试绕过 validate→补 fetch→validate→on_success 三段式测试；M3 fmt 硬编码 x2 局限注释（Step 4.2 议）；M4 _count_pending_by_kind 抽取；M5 移除 _now 私有导入；全部 ADDRESSED（全量 462→463 passed）
+  - Step 4.1: minor (deferred): M3 fmt=x2 播种局限（plain 类目 URL 拼错，discover 可纠正；Step 4.2 评估是否加 fmt 列）

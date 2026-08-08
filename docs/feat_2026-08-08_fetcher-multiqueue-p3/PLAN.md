@@ -74,7 +74,7 @@
 
 **准入**：P3-3 完成。**完成标准**：`crawl_mic_shop` feeder 链路（播种→discover→类目页→链式续喂）单测+冒烟。
 
-- [ ] **Step 4.1** contact 接入 + mic shop 任务拆分（估 40min，依赖 3.1，状态 pending）
+- [x] **Step 4.1** contact 接入 + mic shop 任务拆分（估 40min，依赖 3.1，状态 pending）
   - `crawl_mic_contact` 入注册表（topup 复用现函数，`.cn.made-in-china.com`）；mic contact prepare 的 reset 副作用确认/修 domain 过滤。
   - mic shop task 拆出「单类目页处理」（payload 驱动，认朗读 next_page，on_success advance/exhausted + 链式续喂 + 失败补插）；discover item 执行 = 现 cold_start 提取逻辑。
   - 验收：TDD 单测（链式续喂、ZERO_NEW_LIMIT 保护、失败补插、幂等播种）。
