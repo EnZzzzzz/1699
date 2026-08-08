@@ -30,7 +30,7 @@
 
 **准入**：无（与 P3-0 并行）。**完成标准**：新增 DB 函数与冷却语义单测全绿；`_cooldown` 让出型调用点全部改为登记即返回；现有测试基线不 regress。
 
-- [ ] **Step 1.1** work_items 扩展（估 20min，依赖无，状态 pending）
+- [x] **Step 1.1** work_items 扩展（估 20min，依赖无，状态 pending）
   - `db.py`：migrate 幂等加 `attempts INTEGER NOT NULL DEFAULT 0`；新增 `release_work_item(item_id, max_attempts=3)`、`claim_next_eligible(queues, consumer_id)`。
   - 验收：TDD 单测覆盖——release 回 pending/attempts 耗尽置 failed/claim_next_eligible 按队列集合过滤+FIFO+并发不重复认领。
 - [ ] **Step 1.2** 冷却表改建 + eligible_queues（估 20min，依赖 1.1，状态 pending）

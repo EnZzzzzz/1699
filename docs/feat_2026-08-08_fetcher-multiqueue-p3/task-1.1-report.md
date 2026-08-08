@@ -84,3 +84,63 @@ $ cd fetcher && python -m pytest tests -q
 ## 提交
 
 scoped commit：仅 `fetcher/fetcher/db.py` + `fetcher/tests/test_work_items.py`（未用 `git add -A`）。
+
+---
+
+## Review 修复（Important-1/2 + Minor-3/4）
+
+> 审查包：task-1.1-review.md。修复 commit：见下文「提交」段。
+
+### 改了什么
+
+1. **Important-1（payload_json 非法泄漏）**：`claim_next_eligible` 的 `json.loads` 从 try 块外/commit 之后移入 try 块内、**UPDATE 置 claimed 之前**执行。非法 JSON 时 JSONDecodeError 走 `except → rollback`，行保持 pending（未被认领），不再产生「已 claimed 却拿不到 id、无法 release/finish」的永久泄漏行。
+2. **Important-2（SELECT * 脆弱性）**：`claim_next_eligible` 的 `SELECT *` 改为显式列 `SELECT id, queue, site, payload_json`（sqlite3.Row 按名索引不受影响）。
+3. **Minor-3**：`release_work_item` rowcount=0 路径 `commit()` → `rollback()`（无任何写发生，与文件内其他方法风格一致），加注释说明。
+4. **Minor-4**：`claim_next_eligible` 返回构造移入 try 块内（commit 后），与 `release_work_item` 的 return-in-try 风格对称。
+
+### 新增/调整测试
+
+- 新增 `test_claim_next_eligible_invalid_payload_does_not_leak`（用例 10）：手工 UPDATE 一条非法 payload_json 的 pending 行 → claim 抛 `json.JSONDecodeError`（调用方可感知）→ 断言行保持 `pending`、`claimed_by` 为 NULL（可回收）→ 修复 payload 后可正常认领（未被卡死）。
+- 既有 9 个用例未改动，全部继续通过。
+
+### TDD 证据
+
+RED（修复前跑新测试，失败在泄漏断言）：
+
+```
+$ python -m pytest tests/test_work_items.py::WorkItemsTest::test_claim_next_eligible_invalid_payload_does_not_leak -q
+>       self.assertEqual(row["status"], "pending")
+E       AssertionError: 'claimed' != 'pending'
+1 failed in 0.05s
+```
+
+另用一次性脚本确认泄漏现形：异常后行状态为 claimed、claimed_by='w0'（LEAKED）。
+
+GREEN（修复后）：
+
+```
+$ python -m pytest tests/test_work_items.py -q
+15 passed in 0.10s
+```
+
+全量无回归：
+
+```
+$ cd fetcher && python -m pytest tests -q
+319 passed, 2 subtests passed in 15.88s   （318 + 新增 1 个泄漏用例）
+```
+
+### 改动文件
+
+- `fetcher/fetcher/db.py`：`claim_next_eligible`（解析移入 try、显式列、return 入 try、docstring 补说明）、`release_work_item`（rowcount=0 路径 rollback + 注释）
+- `fetcher/tests/test_work_items.py`：新增用例 10
+
+### 自查发现
+
+- **泄漏确认**：修复前用一次性脚本实测——非法 payload 的 claim 抛出 JSONDecodeError 后行已置 claimed 且调用方拿不到 id（只能等 daemon 重启时 reset_claimed_work_items 回收），证实 review 判定属实。
+- **解析放在 UPDATE 之前**而非「解析后 UPDATE 再 commit」：非法 payload 时 UPDATE 根本不会执行，rollback 语义最干净（避免先解析后 UPDATE 又因解析失败需手动还原的场景）。
+- 无其他回归风险：显式列与 SELECT * 的 Row 按名索引行为一致，既有测试（含 filters/fifo/no_double_claim）全绿。
+
+### 提交
+
+scoped commit：仅 `fetcher/fetcher/db.py` + `fetcher/tests/test_work_items.py`（未用 `git add -A`，未触碰他人未提交改动）。

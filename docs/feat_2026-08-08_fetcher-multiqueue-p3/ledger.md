@@ -26,6 +26,8 @@
 
 ### P3-1（调度内核）
 
-- Step 1.1: 修复轮 1 进行中（commit c87c616, review 2 Important）
-  - 实现：db.py _migrate 补 attempts 幂等迁移 + release_work_item + claim_next_eligible（TDD 9 新用例，全量 318 passed）；现有 work_items 方法未动
-  - review：spec 合规 ✅，2 Important（① claim_next_eligible json.loads 在 try 外/commit 后——payload_json 非法时行已 claimed 却拿不到返回，永久泄漏；② SELECT * 脆弱性→显式列名）+ 2 Minor（rowcount=0 路径 commit 一致性、返回位置不对称）
+- Step 1.1: complete (commits c87c616..d682282, fix round 1/5 clean)
+  - 实现：db.py _migrate 补 attempts 幂等迁移 + release_work_item + claim_next_eligible（TDD 9 新用例，全量 318→319 passed）；现有 work_items 方法未动
+  - fix round 1/5: review 2 Important（① claim_next_eligible json.loads 在 try 外/commit 后——非法 payload 时行已 claimed 拿不到返回，永久泄漏；② SELECT * 脆弱性）+ 2 Minor（rowcount=0 路径 commit 一致性、返回位置不对称）→ resume implementer 修复 commit d682282（解析移入事务内，非法 JSON → rollback 行保持 pending；显式列；rollback 统一；新泄漏测试 RED→GREEN）；re-review 全部 ADDRESSED 零新破坏
+  - Step 1.1: minor (deferred): 无
+  - 注：dispatch prompt 曾因反引号被 bash 命令替换破坏（子 Agent 仍正确理解修复目标）——后续 prompt 避免反引号
