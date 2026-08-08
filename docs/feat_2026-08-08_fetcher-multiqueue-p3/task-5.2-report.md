@@ -45,7 +45,7 @@
 
 ## Fix Round 1（reviewer 发现 I1/I2/M1）
 
-> commit: `<TBD>` | 日期: 2026-08-08 | 状态: DONE
+> commit: `cb42588` | 日期: 2026-08-08 | 状态: DONE
 
 ### I1 — company 队列未冒烟 → 已补
 

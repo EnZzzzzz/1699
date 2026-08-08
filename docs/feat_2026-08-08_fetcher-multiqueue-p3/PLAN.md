@@ -12,7 +12,7 @@
 | P3-2 | 浏览器层：Session/BrowserManager 多 context + 种子池 (worker,site) 粒度 | 3 | P3-0 结论回填 SPEC §4 | done |
 | P3-3 | QueueRouter + daemon CLI + SwapIP 两阶段 | 3 | P3-1、P3-2 | done |
 | P3-4 | madeinchina 队列接入（contact + shop feeder） | 2 | P3-3 | done |
-| P3-5 | 1688 shop/company feeder 接入 | 2 | P3-4 | pending |
+| P3-5 | 1688 shop/company feeder 接入 | 2 | P3-4 | done |
 | P3-6 | 端到端验收冒烟 + 终审 | 2 | P3-5 | pending |
 
 ---
@@ -89,7 +89,7 @@
 - [x] **Step 5.1** 1688 shop/company 任务拆分（估 40min，依赖 4.2，状态 pending）
   - 同 §4.1 模式拆 offer_search/company_search 单页处理；company 进度键 `company:` 前缀沿用；discover = 首页类目提取 + mtop 握手。
   - 验收：TDD 单测（前缀隔离、续喂、补插）。
-- [ ] **Step 5.2** 注册表装配 + 冒烟（估 30min，依赖 5.1，状态 pending）
+- [x] **Step 5.2** 注册表装配 + 冒烟（估 30min，依赖 5.1，状态 pending）
   - `iter_active_categories` 1688 变体（无拼音过滤、支持 company: 前缀）；两条队列入注册表；启动播种。
   - 验收：冒烟（直连滑块墙环境噪声下取结构证据：播种→认领→progress 读写路径走通）；旧 CLI `1688 shop --workers 1` 等价性确认。
 

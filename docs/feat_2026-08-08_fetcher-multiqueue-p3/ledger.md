@@ -92,3 +92,9 @@
   - 实现：Alibaba1688ShopTask/Alibaba1688CompanyTask 重构为 work_items 驱动 feeder（payload kind=category/discover 统一；company: 前缀 keyword 区分；page_no 运行时读；链式续喂；discover 走 on_success 含 mtop 握手；refill 补插；CLI acquire 走 claim_next_eligible；prepare 幂等播种 iter_active_categories（company 用 prefix="company:"））；ShopTask/CompanyTask 别名保留；TDD 41 新用例（全量 468→509 passed）
   - review 零 Critical/Important；4 Minor（① shop.py 死变量 name ② company prepare exhausted 残留计算 ③ _insert_work_item/_count_pending_by_kind 两文件重复→后续可提 _feeder_helpers ④ company discover mtop 未断言）→ 记 ledger，终审分诊
   - Step 5.1: minor (deferred): 同上 4 条
+- Step 5.2: complete (commits 6fd3117..cb42588, fix round 1/5 clean)
+  - 实现：注册表加 crawl_1688_shop + crawl_1688_company（topup=None, domain_suffix=""）——5 条全齐；TDD 3 新用例（全量 509→512 passed）
+  - fix round 1/5: review 需修——I1 company 未冒烟→补 company daemon 短冒烟（2080 pending payload 全含 company: 前缀；make_task(company) 实例化正常）；I2 DB 取证缺原始 SQL→analysis.md 补 sqlite3 命令+输出原文（3 次冒烟）；M1 feeder 测试范围→crawl_mic_shop 加入 len=3；全部 ADDRESSED 零新破坏
+  - **冒烟取证（smoke-step5.2/）**：A daemon 1688 shop——discover 播种→2082 category items + 50 shops 落库 + 1 行 category_progress；B 旧 CLI 1688 shop 等价（3 claimed）；C company——company: 前缀播种运行时证据
+  - **Phase 5（P3-5）完成**：1688 shop/company feeder 接入 + 注册表 5 条全齐；512 passed
+  - Step 5.2: minor (deferred): 无
