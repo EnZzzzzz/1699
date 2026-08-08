@@ -176,9 +176,23 @@ def spy_cooldown(loop):
     calls = []
     orig = loop._cooldown
 
-    def spy(seconds, reason, prefix=None):
+    def spy(seconds, reason, prefix=None, **kwargs):
         calls.append((seconds, reason, prefix))
-        return orig(seconds, reason, prefix)
+        return orig(seconds, reason, prefix, **kwargs)
+
+    loop._cooldown = spy
+    return calls
+
+
+def spy_cooldown_full(loop):
+    """spy _cooldown：记录完整参数 (seconds, reason, prefix, yield_)，
+    调用真实实现。"""
+    calls = []
+    orig = loop._cooldown
+
+    def spy(seconds, reason, prefix=None, yield_=False, **kwargs):
+        calls.append((seconds, reason, prefix, yield_))
+        return orig(seconds, reason, prefix, yield_=yield_, **kwargs)
 
     loop._cooldown = spy
     return calls
@@ -309,6 +323,78 @@ class StrategyCooldownIntegrationTest(CooldownTestBase):
 
 
 # ---------- 用例 3：4 处等待点触发 ----------
+
+# ---------- 用例 1.5：yield_ 让出型 / 原地型语义 ----------
+
+class YieldCooldownTest(CooldownTestBase):
+    def test_yield_returns_false_immediately(self):
+        """yield_=True → 登记 site 键后立即返回 False，不等待（≠ ctx.wait）。"""
+        loop, ctx = self.make_loop()
+        ctx.state["active_site"] = "1688"
+        t0 = time.monotonic()
+        interrupted = loop._cooldown(30.0, "sample_interval", yield_=True)
+        elapsed = time.monotonic() - t0
+        self.assertFalse(interrupted)
+        self.assertLess(elapsed, 0.5)  # 立即返回，绝不等待 30s
+        self.assertIn("1688", ctx.cooldown_until)
+
+    def test_yield_registers_site_key_and_skips_without_active_site(self):
+        """yield_=True + active_site → 写入 cooldown_until[site]；
+        无 active_site → 静默跳过登记，仍立即返回。"""
+        loop, ctx = self.make_loop()
+        # 未设 active_site：不登记
+        loop._cooldown(5.0, "batch_rest", prefix="批次休息", yield_=True)
+        self.assertEqual(ctx.cooldown_until, {})
+        # 设 active_site：登记 site 键
+        ctx.state["active_site"] = "1688"
+        t0 = time.time()
+        loop._cooldown(10.0, "batch_rest", prefix="批次休息", yield_=True)
+        self.assertEqual(set(ctx.cooldown_until), {"1688"})
+        self.assertAlmostEqual(ctx.cooldown_until["1688"], t0 + 10.0, delta=1.0)
+
+    def test_no_yield_keeps_waiting(self):
+        """yield_=False（默认）→ 保持原地等待行为，可被 stop 中断。"""
+        loop, ctx = self.make_loop()
+        threading.Timer(0.1, ctx.stop.set).start()
+        t0 = time.monotonic()
+        interrupted = loop._cooldown(30.0, "launch_backoff", prefix="启动退避")
+        elapsed = time.monotonic() - t0
+        self.assertTrue(interrupted)
+        self.assertLess(elapsed, 5.0)  # 被 stop 打断，未等满 30s
+        self.assertGreaterEqual(elapsed, 0.05)  # 不是立即返回的快路径
+
+    def test_yield_silent_path_no_wait_countdown(self):
+        """yield_=True 即使传了 prefix 也不调用 wait_countdown（不等待）。"""
+        loop, ctx = self.make_loop()
+        ctx.state["active_site"] = "1688"
+        t0 = time.monotonic()
+        # prefix 非空（本应走倒计时），但 yield_=True 时跳过等待
+        loop._cooldown(30.0, "periodic_rest", prefix="长休息", yield_=True)
+        elapsed = time.monotonic() - t0
+        self.assertLess(elapsed, 0.5)
+
+    def test_three_rhythm_sites_pass_yield_true(self):
+        """三处节奏冷却（batch_rest / sample_interval / periodic_rest）
+        确实传 yield_=True；launch_backoff 不传（默认原地）。"""
+        task = ScriptedTask(items=("item1", "item2"))
+        cfg = dict(batch_num=1, max_batches=2, batch_rest=0.2,
+                   sample_min=0.05, sample_max=0.10,
+                   rest_every=1, rest_min=0.06, rest_max=0.12)
+        loop, ctx = self.make_loop(task, **cfg)
+        calls = spy_cooldown_full(loop)
+
+        loop.run()
+
+        by_reason = {}
+        for seconds, reason, prefix, yield_ in calls:
+            by_reason.setdefault(reason, []).append((seconds, prefix, yield_))
+
+        # batch_rest / sample_interval / periodic_rest → yield_=True
+        for reason in ("batch_rest", "sample_interval", "periodic_rest"):
+            self.assertIn(reason, by_reason)
+            for _, _, y in by_reason[reason]:
+                self.assertTrue(y, f"{reason} 应传 yield_=True")
+
 
 class WaitPointsTest(CooldownTestBase):
     def test_batch_sample_periodic_rest_via_chokepoint(self):

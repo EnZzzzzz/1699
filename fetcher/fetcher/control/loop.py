@@ -106,19 +106,30 @@ class CrawlLoop:
     # ---- 冷却 chokepoint（SPEC §3.3：唯一等待执行点）----
 
     def _cooldown(self, seconds: float, reason: str,
-                  prefix: str | None = None) -> bool:
+                  prefix: str | None = None, yield_: bool = False) -> bool:
         """登记冷却截止时间 + 执行可中断等待。返回 True=被 stop 中断。
 
-        P3：cooldown_until 按 site 注册名登记（有 active_site 时才写入）；
+        P3 让出型 / 原地型分流：
+        - yield_=True（让出型）：登记 site 键后立即返回 False 不等待——
+          等待由下一轮 acquire_item 的 condvar timeout 执行（冷却期间
+          该站点队列对本消费者不可见 → 多队列时自然转取其他队列）。
+        - yield_=False（原地型，默认）：登记后原地等待（秒级/装配中途
+          等待用，如 launch_backoff；策略冷却待 P3-3 router 接 release
+          后改让出）。
+
+        cooldown_until 按 site 注册名登记（有 active_site 时才写入）；
         reason 参数保留，仅用于日志/展示。无 active_site 时不登记（如
         launch_backoff 在 acquire 前，active_site 未设置时天然跳过）。
 
-        展示两路径逐字保留现状：prefix 非空走 wait_countdown（秒级倒计
+        展示两路径仅原地型使用：prefix 非空走 wait_countdown（秒级倒计
         时状态行，长等待用）；prefix=None 走 ctx.wait（静默，短等待用）。
+        让出型不展示倒计时状态行（P3-3 后由 board 的「等货/等冷却」取代）。
         """
         active_site = self.ctx.state.get("active_site")
         if active_site is not None:
             self.ctx.cooldown_until[active_site] = time.time() + seconds
+        if yield_:
+            return False
         if prefix is None:
             return self.ctx.wait(seconds)
         return wait_countdown(self.board, self.ctx.wid, self.ctx.stop,
@@ -154,7 +165,8 @@ class CrawlLoop:
                     self.log(f"⏸ 第 {self.batch_no} 批已采满 "
                              f"{cfg.batch_num} 个{self.task.batch_unit}，"
                              f"强制休息 {rest / 60:.1f} 分钟（防风控）...")
-                    if self._cooldown(rest, "batch_rest", prefix="批次休息"):
+                    if self._cooldown(rest, "batch_rest", prefix="批次休息",
+                                      yield_=True):
                         return self.stats
                     self.batch_no += 1
                     self.done_in_batch = 0
@@ -217,7 +229,7 @@ class CrawlLoop:
                 hi = cfg.sample_max + self.ctx.wid * 2.5
                 t = random.uniform(lo, hi)
                 self.ctx.set_status(state=f"{self.task.unit}间隔 {t:.1f}s")
-                if self._cooldown(t, "sample_interval"):
+                if self._cooldown(t, "sample_interval", yield_=True):
                     return self.stats
 
                 # ---- 周期性随机长休息（模拟真人连续浏览后的停顿）----
@@ -228,7 +240,8 @@ class CrawlLoop:
                     t = random.uniform(cfg.rest_min, cfg.rest_max)
                     self.log(f"☕ 已连续抓取 {n_rest} 个{self.task.unit}，"
                              f"随机长休息 {t / 60:.1f} 分钟 ...")
-                    if self._cooldown(t, "periodic_rest", prefix="长休息"):
+                    if self._cooldown(t, "periodic_rest", prefix="长休息",
+                                      yield_=True):
                         return self.stats
         except UserInterrupted:
             pass
@@ -262,6 +275,7 @@ class CrawlLoop:
                 backoff = min(30 * attempt, 120)
                 self.log(f"  [!] 启动浏览器第 {attempt}/{cfg.ip_retry} "
                          f"次失败: {e}，{backoff}s 后重试...")
+                # 装配中途、秒级退避，换队列无意义——原地等待（默认）
                 if self._cooldown(backoff, "launch_backoff", prefix="启动退避"):
                     raise UserInterrupted("用户中断") from e
         raise RuntimeError(f"启动浏览器重试 {cfg.ip_retry} 次仍失败: {last_err}")
@@ -412,6 +426,8 @@ class CrawlLoop:
             # 策略冷却经 chokepoint 执行（Step 2.1 起策略只算时长不自
             # 等）；被 stop 中断按现状 stop 路径退出（与旧策略内
             # ctx.wait 中断 → 循环条件退出 → return "stop" 的终局一致）
+            # item 未完成路径暂保留原地等待（默认）；
+            # P3-3 router 接 release 后改让出
             if step.cooldown and self._cooldown(
                     step.cooldown, f"strategy:{decision.strategy}"):
                 return "stop", 0
