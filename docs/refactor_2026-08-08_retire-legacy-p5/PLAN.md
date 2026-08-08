@@ -37,7 +37,7 @@
 
 **准入**：P5-1 完成。**完成标准**：幂等表重建迁移落地，生产库副本实测数据无损。
 
-- [ ] **Step 3.1** tasks 表重建迁移（估 30min，依赖 1.1，状态 pending）
+- [x] **Step 3.1** tasks 表重建迁移（估 30min，依赖 1.1，状态 done 2026-08-08）
   - `app/db.py migrate()` 加幂等迁移（PRAGMA 探测 celery_id → RENAME/建新表/INSERT SELECT/DROP tasks_legacy/DROP flows/重建索引，单事务）；6 个测试文件建表 fixture 同步删死列。
   - 验收：TDD（迁移后 schema 正确 + 数据拷贝无损 + 重跑幂等零变化）；**生产库副本实测**（先 cp 备份 `.cache/1688.db` → `.cache/1688.db.bak-p5`，副本上跑 migrate 验证；生产库正式迁移随 uvicorn 重启发生，迁移前后行数/内容对照证据落 plan 目录）。
 
