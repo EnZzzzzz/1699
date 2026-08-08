@@ -252,6 +252,10 @@ class QueueRouter:
                         payload = dict(item["payload"])
                         # 保留 id 键：测试/DB 验证用（site 插件只依赖 domain/name/url）
                         payload["id"] = item["id"]
+                        from datetime import datetime
+                        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        ctx.log(f"[claim] queue={item['queue']} item={item['id']} "
+                                f"site={item['site']} @{ts}")
                         return payload
 
                 # topup：只对冷却到期的 contact 队列补货
@@ -297,11 +301,16 @@ class QueueRouter:
             return ""
         try:
             status = self._db(ctx).release_work_item(item_id, max_attempts=3)
+            from datetime import datetime
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             if status == "failed":
-                ctx.log(f"[!] 工作项 #{item_id} attempts exhausted，已置 failed")
+                ctx.log(f"[release] item={item_id} status=failed "
+                        f"(attempts exhausted) @{ts}")
                 item = ctx.state.get("item")
                 if item is not None:
                     self._task_for(ctx).refill_item(ctx, item)
+            else:
+                ctx.log(f"[release] item={item_id} status={status} @{ts}")
             return status
         except Exception as e:  # noqa: BLE001
             ctx.log(f"[!] 工作项 #{item_id} 释放失败: {e}")
@@ -314,5 +323,8 @@ class QueueRouter:
             return
         try:
             self._db(ctx).finish_work_item(item_id, status, result)
+            from datetime import datetime
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            ctx.log(f"[finish] item={item_id} status={status} @{ts}")
         except Exception as e:  # noqa: BLE001
             ctx.log(f"[!] 工作项 #{item_id} 落终态 {status} 失败: {e}")

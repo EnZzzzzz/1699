@@ -177,8 +177,10 @@ class Engine:
             if not text:
                 return
             if board is not None:
-                # 错误/警告进滚动日志，常规细节进状态行
-                if "[X]" in text or "[!]" in text or "[license]" in text:
+                # 错误/警告/claim/finish/release 进滚动日志，常规细节进状态行
+                if ("[X]" in text or "[!]" in text or "[license]" in text or
+                        "[claim]" in text or "[finish]" in text or
+                        "[release]" in text):
                     board.log(text)
                 else:
                     board.set(wid, detail=text[:80])

@@ -1011,5 +1011,97 @@ class ExecutionRoutingTest(QueueRouterTestBase):
         self.assertEqual(router.label(item_b), "B:shop1.cn.made-in-china.com")
 
 
+# ---------- C1: claim/finish/release 日志 ----------
+
+class ClaimFinishLoggingTest(QueueRouterTestBase):
+    """C1：acquire_item / _finish / release_item 输出 [claim]/[finish]/[release] 日志。"""
+
+    def setUp(self):
+        super().setUp()
+        self.log_lines = []
+
+    def make_ctx(self, wid=0, stop=None):
+        config = RunConfig(db_path=self.db_path, headless=True,
+                           use_proxy=False)
+        return WorkerContext(config=config, store=None,
+                             stop=stop or threading.Event(),
+                             log=lambda m: self.log_lines.append(m), wid=wid)
+
+    def _seed_and_claim(self):
+        """播种 1 个 1688 work_item 并认领，返回 (ctx, item)。"""
+        self.db.upsert_shops([_shop_1688(1)])
+        self.db.topup_contact_work_items(QUEUE_A, "1688", ".1688.com", 1)
+        ctx = self.make_ctx(wid=0)
+        # 缩短等货超时，避免无 item 时阻塞
+        self.set_wait_timeout(0.1)
+        item = self.router.acquire_item(ctx)
+        self.assertIsNotNone(item, "acquire_item 应返回 item")
+        return ctx, item
+
+    def test_acquire_item_logs_claim_with_keywords(self):
+        """acquire_item 认领成功后输出 [claim] 日志，含 queue/item/site/时间。"""
+        self._seed_and_claim()
+        claim_lines = [l for l in self.log_lines if "[claim]" in l]
+        self.assertEqual(len(claim_lines), 1, f"应有 1 条 [claim] 行: {self.log_lines}")
+        line = claim_lines[0]
+        self.assertIn("queue=", line)
+        self.assertIn(QUEUE_A, line)
+        self.assertIn("item=", line)
+        self.assertIn("site=", line)
+        self.assertIn("1688", line)
+
+    def test_on_success_logs_finish_done(self):
+        """on_success 调用 _finish 输出 [finish] status=done。"""
+        ctx, item = self._seed_and_claim()
+        # 清掉 claim 行以便精确检查
+        self.log_lines.clear()
+        self.router.on_success(ctx, item, None)
+        finish_lines = [l for l in self.log_lines if "[finish]" in l]
+        self.assertEqual(len(finish_lines), 1)
+        self.assertIn("status=done", finish_lines[0])
+        self.assertIn("item=", finish_lines[0])
+
+    def test_on_giveup_logs_finish_failed(self):
+        """on_giveup 调用 _finish 输出 [finish] status=failed。"""
+        ctx, item = self._seed_and_claim()
+        self.log_lines.clear()
+        self.router.on_giveup(ctx, item, "test reason", "block")
+        finish_lines = [l for l in self.log_lines if "[finish]" in l]
+        self.assertEqual(len(finish_lines), 1)
+        self.assertIn("status=failed", finish_lines[0])
+        self.assertIn("item=", finish_lines[0])
+
+    def test_release_item_logs_release(self):
+        """release_item 释放回 pending 输出 [release] 日志。"""
+        ctx, item = self._seed_and_claim()
+        self.log_lines.clear()
+        status = self.router.release_item(ctx)
+        self.assertEqual(status, "pending")
+        release_lines = [l for l in self.log_lines if "[release]" in l]
+        self.assertEqual(len(release_lines), 1)
+        self.assertIn("item=", release_lines[0])
+
+    def test_release_item_exhausted(self):
+        """release_item attempts 耗尽置 failed，输出 [release] status=failed。"""
+        # 直接操作 DB 模拟 item 已满 attempts
+        self.db.upsert_shops([_shop_1688(1)])
+        self.db.topup_contact_work_items(QUEUE_A, "1688", ".1688.com", 1)
+        ctx = self.make_ctx(wid=0)
+        self.set_wait_timeout(0.1)
+        item = self.router.acquire_item(ctx)
+        self.assertIsNotNone(item)
+        # 手工把 attempts 推到上限
+        self.db.conn.execute(
+            "UPDATE work_items SET attempts=3 WHERE id=?",
+            (ctx.state["daemon_work_item_id"],))
+        self.db.conn.commit()
+        self.log_lines.clear()
+        status = self.router.release_item(ctx)
+        self.assertEqual(status, "failed")
+        release_lines = [l for l in self.log_lines if "[release]" in l]
+        self.assertEqual(len(release_lines), 1)
+        self.assertIn("attempts exhausted", release_lines[0])
+
+
 if __name__ == "__main__":
     unittest.main()
