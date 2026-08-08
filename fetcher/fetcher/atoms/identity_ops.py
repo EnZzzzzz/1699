@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from fetcher.core.session import is_direct
 from fetcher.core.types import ActionResult
 
 
@@ -22,7 +23,7 @@ class ClearIdentity:
         if ctx.store is None:
             return ActionResult.fatal("未装配 identity store")
         identity = ctx.identity
-        if identity == "direct":
+        if is_direct(identity):
             return ActionResult.skipped("直连身份不清空（由人工处理）")
         try:
             n = ctx.store.burn(identity)

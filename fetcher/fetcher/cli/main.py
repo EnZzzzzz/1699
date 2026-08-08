@@ -194,9 +194,19 @@ def main(argv: list | None = None) -> int:
     if overrides:
         policy = policy.with_overrides(overrides)
 
-    from fetcher.control.engine import Engine
-    engine = Engine(cfg, task, site=site, provider=provider, policy=policy)
+    engine = _build_engine(cfg, task, site=site, provider=provider,
+                           policy=policy, site_name=args.site)
     return engine.run()
+
+
+def _build_engine(cfg, task, site, provider, policy, site_name):
+    """纯装配辅助：构造 Engine 并返回（不调 run）。
+
+    提取为独立函数便于测试 site_name 透传正确性。
+    """
+    from fetcher.control.engine import Engine
+    return Engine(cfg, task, site=site, provider=provider, policy=policy,
+                  site_name=site_name)
 
 
 def _run_daemon(args) -> int:
@@ -238,8 +248,8 @@ def _run_daemon(args) -> int:
     print(f"[daemon] 启动重置：{n_items} 个 claimed 工作项 → pending，"
           f"{n_shops} 个 in_progress 店铺 → pending")
 
-    from fetcher.control.engine import Engine
-    engine = Engine(cfg, task=task, site=site, provider=provider, policy=policy)
+    engine = _build_engine(cfg, task=task, site=site, provider=provider,
+                           policy=policy, site_name="1688")
     return engine.run()
 
 

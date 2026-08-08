@@ -5,6 +5,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock
 
 from fetcher import RunConfig, Session
 from fetcher.control import Engine, Task
@@ -50,7 +51,8 @@ class FakeLoop:
 class FakeTask(Task):
     name = "fake"
 
-    def summary(self, all_stats):
+    def summary(self, all_stats, db_path=None):
+        self._last_summary_db_path = db_path
         return f"汇总 {len(all_stats)} 个 worker"
 
 
@@ -96,7 +98,8 @@ class EngineTest(unittest.TestCase):
         provider = FakeProvider(2)
         # 不用 _engine（其 browser_manager_factory 会短路真实构造）
         engine = Engine(self._config(workers=1), FakeTask(),
-                        provider=provider, loop_factory=FakeLoop)
+                        provider=provider, loop_factory=FakeLoop,
+                        site_name="1688")
         _workers, channels = engine._alloc_workers()
         mgr = engine._make_browser_manager(None, channels[0])
         self.assertIsInstance(mgr, BrowserManager)
@@ -122,11 +125,54 @@ class EngineTest(unittest.TestCase):
 
     def test_summary_aggregates_all_workers(self):
         provider = FakeProvider(2)
-        engine = self._engine(self._config(), provider)
+        cfg = self._config()
+        engine = self._engine(cfg, provider)
         engine.run()
         self.assertEqual(sorted(engine.state["stats"]), [0, 1])
-        self.assertEqual(engine.task.summary(engine.state["stats"]),
+        self.assertEqual(engine.task.summary(engine.state["stats"],
+                                              cfg.resolved_db_path()),
                          "汇总 2 个 worker")
+
+    def test_summary_receives_db_path_from_config(self):
+        """Engine 调用 summary 时传入 config.resolved_db_path()。"""
+        provider = FakeProvider(1)
+        cfg = self._config(db_path="/tmp/test_engine.db")
+        engine = self._engine(cfg, provider)
+        engine.run()
+        self.assertEqual(engine.task._last_summary_db_path,
+                         cfg.resolved_db_path(),
+                         "Engine 应将 resolved_db_path() 传给 summary")
+
+    # ---- Step 1.3: site_name guard ----
+
+    def test_site_without_site_name_raises_runtime_error(self):
+        """site 非空而 site_name=None → RuntimeError。
+
+        RED 预期（修正前）：没有 guard，site_name=None 静默通过，
+        后续拼键出 'None:direct' 才暴露问题。
+        """
+        with self.assertRaises(RuntimeError) as ctx:
+            Engine(self._config(), FakeTask(), site=MagicMock(),
+                   site_name=None)
+        self.assertIn("site_name 必传", str(ctx.exception))
+
+    def test_site_with_site_name_constructs_successfully(self):
+        """site 非空且 site_name 传入 → 正常构造（对照）。"""
+        engine = Engine(self._config(), FakeTask(), site=MagicMock(),
+                        site_name="1688",
+                        browser_manager_factory=lambda store: object(),
+                        loop_factory=FakeLoop)
+        self.assertEqual(engine.site_name, "1688")
+        self.assertIsNotNone(engine.site)
+
+    def test_site_none_without_site_name_constructs_successfully(self):
+        """site=None 时不触发 guard（允许不指定 site_name）。"""
+        engine = Engine(self._config(), FakeTask(), site=None,
+                        site_name=None,
+                        browser_manager_factory=lambda store: object(),
+                        loop_factory=FakeLoop)
+        self.assertIsNone(engine.site)
+        self.assertIsNone(engine.site_name)
 
     def test_each_worker_gets_own_store(self):
         provider = FakeProvider(2)

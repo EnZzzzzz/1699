@@ -124,12 +124,12 @@ class ContactTask(Task):
         db.close()
         return True
 
-    def summary(self, all_stats: dict) -> str:
+    def summary(self, all_stats: dict, db_path=None) -> str:
         from fetcher.db import ShopDB  # 延迟导入
         ok = sum(s.get("ok", 0) for s in all_stats.values())
         empty = sum(s.get("empty", 0) for s in all_stats.values())
         failed = sum(s.get("failed", 0) for s in all_stats.values())
-        db = ShopDB()
+        db = ShopDB(db_path)
         stats = db.stats()
         tmd = db.format_tmd_report()
         db.close()

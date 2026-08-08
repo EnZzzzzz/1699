@@ -118,7 +118,7 @@ class MockBrowserManager:
 
     def launch(self, seed_kit=None, stop=None):
         return Session(browser=FakeBrowser(), page=self.page,
-                       identity="1.1.1.1", seed_kit=seed_kit)
+                       identity="1688:1.1.1.1", seed_kit=seed_kit)
 
     def check_ip_fresh(self, session):
         return False, session.identity, ""

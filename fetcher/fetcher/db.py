@@ -248,6 +248,26 @@ class ShopDB:
         if "req_since_block" not in evt_cols:
             self.conn.execute(
                 "ALTER TABLE ip_events ADD COLUMN req_since_block INTEGER")
+        # cookies 表裸键按 domain→site 映射加前缀（P2 identity 升级：
+        # identity 键从裸 IP 升级为 site:ip）。部署窗口：旧进程裸键读不到
+        # 新前缀 Cookie → 白板重启一次（SPEC §3.4 运维注意）。
+        # 映射清单（先长后短，SPEC §3.4 回填）：
+        self.conn.execute(
+            "UPDATE cookies SET identity = 'madeinchina:' || identity"
+            " WHERE identity NOT LIKE '%:%'"
+            " AND domain LIKE '%made-in-china.com%'")
+        self.conn.execute(
+            "UPDATE cookies SET identity = '1688:' || identity"
+            " WHERE identity NOT LIKE '%:%'"
+            " AND domain LIKE '%1688.com%'")
+        self.conn.execute(
+            "UPDATE cookies SET identity = 'taobao:' || identity"
+            " WHERE identity NOT LIKE '%:%'"
+            " AND domain LIKE '%taobao.com%'")
+        self.conn.execute(
+            "UPDATE cookies SET identity = 'yiwugo:' || identity"
+            " WHERE identity NOT LIKE '%:%'"
+            " AND domain LIKE '%yiwugo.com%'")
 
     # ---------- crawl_runs ----------
     def start_run(self, category_name: str = None,
@@ -681,7 +701,7 @@ class ShopDB:
                       SUM(event='block_slider') AS sliders,
                       SUM(event='block_login')  AS login_walls,
                       MAX(created_at)           AS last_seen
-               FROM ip_events WHERE identity != 'direct'
+               FROM ip_events WHERE identity NOT LIKE '%:direct' AND identity != 'direct'
                GROUP BY identity ORDER BY last_seen DESC""").fetchall()
         return [dict(r) for r in rows]
 
@@ -762,14 +782,14 @@ class ShopDB:
         if not rows:
             return "暂无 tmd 统计（还没有带统计的抓取记录）"
         lines = ["tmd（反爬验证）触发统计 —— 每个出口 IP 的安全性:",
-                 f"    {'出口IP':<17}{'请求':>6}{'成功':>6}{'触发':>5}"
+                 f"    {'出口IP':<22}{'请求':>6}{'成功':>6}{'触发':>5}"
                  f"{'tmd率':>8}{'平均间隔':>9}{'最少':>6}{'最多':>6}  最近触发"]
         for r in rows:
             rate = (f"{r['blocks'] / r['requests'] * 100:.1f}%"
                     if r["requests"] else "—")
             fmt = lambda v: f"{v:.0f}" if v is not None else "—"
             lines.append(
-                f"    {r['identity']:<17}{r['requests']:>6}{r['ok']:>6}"
+                f"    {r['identity']:<22}{r['requests']:>6}{r['ok']:>6}"
                 f"{r['blocks']:>5}{rate:>8}{fmt(r['avg_gap']):>9}"
                 f"{fmt(r['min_gap']):>6}{fmt(r['max_gap']):>6}  "
                 f"{r['last_block_at'] or '—'}")

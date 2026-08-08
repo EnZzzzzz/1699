@@ -36,13 +36,19 @@ class Engine:
     def __init__(self, config: RunConfig, task, site=None, provider=None,
                  policy: Policy | None = None, board=None,
                  store_factory=None, browser_manager_factory=None,
-                 loop_factory=None):
+                 loop_factory=None,
+                 site_name: str | None = None):
+        if site is not None and site_name is None:
+            raise RuntimeError(
+                "site_name 必传（CLI/daemon 传入注册名），"
+                "不可在指定 site 时遗漏")
         self.config = config
         self.task = task
         self.site = site
         self.provider = provider
         self.policy = policy
         self.board = board
+        self.site_name = site_name
         # 可注入工厂（测试用；默认每 worker 独立 ShopDB / BrowserManager /
         # CrawlLoop）
         self.store_factory = store_factory or (
@@ -117,7 +123,10 @@ class Engine:
         if self.config.auto_solve_slider:
             from fetcher.atoms.slider import make_auto_solve  # 延迟导入
             auto_solve = make_auto_solve(max_attempts=5)
-        return BrowserManager(self.config, store, provider=self.provider,
+        return BrowserManager(self.config, store,
+                              site_name=(self.site_name
+                                         if self.site_name else "unknown"),
+                              provider=self.provider,
                               auto_solve=auto_solve,
                               homepage=getattr(self.site, "homepage", None),
                               channel=channel)
@@ -211,5 +220,5 @@ class Engine:
                 t.join(timeout=90)
             (board.log if board else print)("[!] 进度已保存，下次运行自动续爬")
 
-        print(f"[OK] {self.task.summary(self.state['stats'])}")
+        print(f"[OK] {self.task.summary(self.state['stats'], self.config.resolved_db_path())}")
         return 0

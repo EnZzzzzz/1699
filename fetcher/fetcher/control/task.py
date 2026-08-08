@@ -38,8 +38,12 @@ class Task:
         """启动前准备（重置状态/打印计划）；返回 False 直接退出。"""
         return True
 
-    def summary(self, all_stats: dict) -> str:
-        """全部 worker 结束后的汇总行。"""
+    def summary(self, all_stats: dict, db_path=None) -> str:
+        """全部 worker 结束后的汇总行。
+
+        db_path: 数据库路径（str | Path），基类实现不读它；
+        子类可据此构造 ShopDB(db_path) 避免默认开生产库。
+        """
         return str(all_stats)
 
     # ---- 状态板 ----

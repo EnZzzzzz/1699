@@ -209,12 +209,12 @@ class ShopTask(Task):
         db.close()
         return True
 
-    def summary(self, all_stats: dict) -> str:
+    def summary(self, all_stats: dict, db_path=None) -> str:
         from fetcher.db import ShopDB  # 延迟导入
         shops = sum(s.get("shops", 0) for s in all_stats.values())
         new = sum(s.get("new", 0) for s in all_stats.values())
         pages = sum(s.get("pages", 0) for s in all_stats.values())
-        db = ShopDB()
+        db = ShopDB(db_path)
         stats = db.stats()
         db.close()
         return (f"本次采集: {pages} 页, 店铺 {shops} 个（新增 {new}）"

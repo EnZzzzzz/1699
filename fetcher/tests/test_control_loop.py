@@ -61,7 +61,7 @@ class FakePage:
 class MockBrowserManager:
     """launch/relaunch 返回带假 page 的 Session；身份按序轮换。"""
 
-    def __init__(self, page, identities=("1.1.1.1", "2.2.2.2", "3.3.3.3")):
+    def __init__(self, page, identities=("1688:1.1.1.1", "1688:2.2.2.2", "1688:3.3.3.3")):
         self.page = page
         self.identities = list(identities)
         self.launch_count = 0
@@ -302,7 +302,7 @@ class CrawlLoopTest(LoopTestBase):
         config = make_config(self.tmp)
         ctx = make_ctx(self.tmp, self.page, self.mgr, config)
         # 预置该身份 Cookie（identity 来自 mock 的 1.1.1.1）
-        ctx.store.save("1.1.1.1", [{"name": "cna", "value": "v",
+        ctx.store.save("1688:1.1.1.1", [{"name": "cna", "value": "v",
                                     "domain": ".1688.com", "path": "/"}])
         wait = FakeStrategy()
         task = ScriptedTask(
@@ -313,8 +313,34 @@ class CrawlLoopTest(LoopTestBase):
         CrawlLoop(ctx, task, policy=policy).run()
         # 判定当下即烧毁身份（与旧引擎同点位），不等策略链
         rows = self.db_query("SELECT COUNT(*) AS c FROM cookies"
-                             " WHERE identity='1.1.1.1'")
+                             " WHERE identity='1688:1.1.1.1'")
         self.assertEqual(rows[0]["c"], 0)
+
+    def test_login_wall_does_not_burn_prefixed_direct(self):
+        """登录墙对 identity='1688:direct' 不烧毁（视为直连）。
+
+        RED 预期（修正前）：identity != "direct" → "1688:direct" != "direct"
+        → True → 触发 burn → Cookie 被清空 → 断言 cookies 仍存在失败。
+        """
+        # 构造返回 identity='1688:direct' 的 MockBrowserManager
+        mgr = MockBrowserManager(self.page, identities=("1688:direct",))
+        config = make_config(self.tmp)
+        ctx = make_ctx(self.tmp, self.page, mgr, config)
+        # 预置 Cookie 到 "1688:direct" 名下
+        ctx.store.save("1688:direct", [{"name": "cna", "value": "v",
+                                        "domain": ".1688.com", "path": "/"}])
+        wait = FakeStrategy()
+        task = ScriptedTask(
+            [("page", "https://login.1688.com/member/signin.htm", "请登录", {})])
+        table = {Scenario.RISK_LOGIN: [("wait_login", 1),
+                                       ("give_up", None)]}
+        policy = Policy(table=table, strategies={"wait_login": wait})
+        CrawlLoop(ctx, task, policy=policy).run()
+        # 修正后：is_direct("1688:direct") → True → 不清空
+        rows = self.db_query("SELECT COUNT(*) AS c FROM cookies"
+                             " WHERE identity='1688:direct'")
+        self.assertEqual(rows[0]["c"], 1,
+                         "prefixed direct 身份应保留 Cookie，不应被烧毁")
 
     def test_swap_ip_replaces_session_and_restarts_warm(self):
         swap = SwapForReal()
@@ -327,7 +353,7 @@ class CrawlLoopTest(LoopTestBase):
         loop, ctx, _ = self.run_loop(task, table, {"swap": swap})
         self.assertEqual(task.succeeded, ["item1"])
         self.assertEqual(self.mgr.relaunch_count, 1)
-        self.assertEqual(ctx.session.identity, "2.2.2.2")
+        self.assertEqual(ctx.session.identity, "1688:2.2.2.2")
         # RelaunchBrowser 原子置位 warm（换 IP 后需重新冷启动）
         self.assertTrue(ctx.state.get("warm"))
         self.assertEqual(loop.circuit.count, 0)  # 成功后熔断清零

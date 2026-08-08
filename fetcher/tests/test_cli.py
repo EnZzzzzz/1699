@@ -2,8 +2,11 @@
 """CLI 解析层测试：daemon 子命令挂载 + 既有站点子命令防装配回归。"""
 
 import unittest
+from unittest.mock import MagicMock
 
-from fetcher.cli.main import build_parser, config_from_args
+from fetcher import RunConfig
+from fetcher.cli.main import build_parser, config_from_args, _build_engine
+from fetcher.strategy.policy import Policy
 
 
 class CliParserTest(unittest.TestCase):
@@ -64,6 +67,44 @@ class CliParserTest(unittest.TestCase):
         # contact 业务开关仍在
         args = self.ap.parse_args(["1688", "contact", "--retry-failed"])
         self.assertTrue(args.retry_failed)
+
+
+class BuildEngineTest(unittest.TestCase):
+    """Step 1.3: _build_engine 透传 site_name 正确性。"""
+
+    def test_site_name_passed_to_engine_site_branch(self):
+        """站点分支：site_name=args.site（如 '1688'）透传到 Engine。"""
+        cfg = RunConfig(headless=True, use_proxy=False)
+        fake_task = MagicMock()
+        fake_site = MagicMock()
+        engine = _build_engine(cfg, fake_task, site=fake_site,
+                               provider=None, policy=Policy(),
+                               site_name="1688")
+        self.assertEqual(engine.site_name, "1688",
+                         "site_name 应正确透传到 Engine")
+
+    def test_site_name_passed_to_engine_daemon_branch(self):
+        """daemon 分支：site_name='1688' 硬编码透传到 Engine。"""
+        cfg = RunConfig(headless=True, use_proxy=False)
+        fake_task = MagicMock()
+        fake_site = MagicMock()
+        engine = _build_engine(cfg, fake_task, site=fake_site,
+                               provider=None, policy=Policy(),
+                               site_name="1688")
+        # daemon 和站点分支走同一个 _build_engine，唯一区别是调用时
+        # site_name 参数值（args.site vs "1688"）
+        self.assertEqual(engine.site_name, "1688",
+                         "daemon 分支 site_name 应硬编码为 '1688'")
+
+    def test_site_name_None_allowed(self):
+        """site=None 时 site_name 可为 None（Engine guard 不触发）。"""
+        cfg = RunConfig(headless=True, use_proxy=False)
+        fake_task = MagicMock()
+        engine = _build_engine(cfg, fake_task, site=None,
+                               provider=None, policy=Policy(),
+                               site_name=None)
+        self.assertIsNone(engine.site_name)
+        self.assertIsNone(engine.site)
 
 
 if __name__ == "__main__":

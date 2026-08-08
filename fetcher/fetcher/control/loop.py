@@ -30,7 +30,7 @@ from fetcher.control.board import wait_countdown
 from fetcher.control.circuit import CircuitBreaker
 from fetcher.control.task import Task
 from fetcher.core.errors import UserInterrupted
-from fetcher.core.session import Session
+from fetcher.core.session import Session, is_direct
 from fetcher.core.types import Outcome, Scenario
 from fetcher.detect.base import SceneInspector
 from fetcher.net.seeds import SeedBurnTracker
@@ -448,7 +448,7 @@ class CrawlLoop:
 
         # 登录墙 = 会话身份最高级标记：判定当下立即烧毁该 IP 名下的
         # Cookie（避免轮换回来复活已烧毁会话）——与旧引擎同点位
-        if login_wall and identity != "direct" and ctx.store is not None:
+        if login_wall and not is_direct(identity) and ctx.store is not None:
             try:
                 n = ctx.store.burn(identity)
                 self.log(f"  🧹 登录墙标记：已清空 {identity} 名下的 {n} 条"
