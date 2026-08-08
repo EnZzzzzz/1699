@@ -40,6 +40,37 @@ def migrate() -> None:
             "params_json TEXT NOT NULL, "
             "created_at TEXT, "
             "updated_at TEXT)")
+        # 供应商与代理通道表（历史手工建表，补进幂等迁移；
+        # 结构以 docs/service-architecture.md 与实际库为准）
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS providers ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "kind TEXT NOT NULL, "
+            "name TEXT NOT NULL, "
+            "config_json TEXT NOT NULL, "
+            "enabled INTEGER NOT NULL DEFAULT 1, "
+            "created_at TEXT NOT NULL, "
+            "updated_at TEXT NOT NULL)")
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS proxy_channels ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "provider_id INTEGER REFERENCES providers(id), "
+            "tunnel TEXT, "
+            "exit_ip TEXT, "
+            "status TEXT NOT NULL DEFAULT 'idle', "
+            "used_by_task INTEGER REFERENCES tasks(id), "
+            "ip_expires_at TEXT, "
+            "last_probe_at TEXT, "
+            "UNIQUE(provider_id, tunnel))")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_channels_provider"
+            " ON proxy_channels(provider_id)")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_channels_status"
+            " ON proxy_channels(status)")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_channels_task"
+            " ON proxy_channels(used_by_task)")
         conn.commit()
     finally:
         conn.close()

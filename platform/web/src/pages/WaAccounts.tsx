@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { toast } from 'sonner'
-import { api, useApiData, type WaAccount } from '@/lib/api'
+import { api, useApiData, type WaAccount, type WaLoginMethod } from '@/lib/api'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -106,8 +106,10 @@ function AccountCard({ account, scanning, onDeleted }: AccountCardProps) {
 export default function WaAccounts() {
   const { data, loading, error, reload } = useApiData(api.waAccounts, 60_000)
   const [addOpen, setAddOpen] = useState(false)
-  /** 正在扫码引导的账号名；null 表示未在扫码流程中 */
-  const [scanningName, setScanningName] = useState<string | null>(null)
+  /** 正在登录引导的账号；null 表示未在登录流程中 */
+  const [scanning, setScanning] = useState<
+    { name: string; method: WaLoginMethod; phone?: string } | null
+  >(null)
 
   return (
     <div className="space-y-4">
@@ -133,7 +135,7 @@ export default function WaAccounts() {
             <AccountCard
               key={a.name}
               account={a}
-              scanning={scanningName === a.name}
+              scanning={scanning?.name === a.name}
               onDeleted={reload}
             />
           ))}
@@ -143,15 +145,17 @@ export default function WaAccounts() {
       <AddAccountDialog
         open={addOpen}
         onOpenChange={setAddOpen}
-        onCreated={(name) => {
-          setScanningName(name)
+        onCreated={(name, method, phone) => {
+          setScanning({ name, method, phone })
           reload()
         }}
       />
       <ScanLoginDialog
-        name={scanningName}
+        name={scanning?.name ?? null}
+        method={scanning?.method}
+        phone={scanning?.phone}
         onClose={(connected) => {
-          setScanningName(null)
+          setScanning(null)
           reload()
           if (connected) toast.success('账号已登录')
         }}

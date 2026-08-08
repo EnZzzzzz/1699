@@ -214,7 +214,17 @@ export interface ProbeResult {
   results: ProbeChannelResult[]
 }
 
+// /providers/config-schema 响应中的 provider_config_structure 部分
 export type ProviderConfigSchema = Record<string, string>
+
+// /providers/config-schema 完整响应（kind + 结构模板；qingguo 另附隧道缓存字段）
+export interface ProviderConfigSchemaResponse {
+  kind: string
+  provider_config_structure: ProviderConfigSchema
+  tunnel_cache_path?: string
+  tunnel_cache_exists?: boolean
+  tunnel_cache_structure?: Record<string, unknown> | null
+}
 
 export interface WaAccount {
   name: string
@@ -225,15 +235,20 @@ export interface WaAccount {
 
 export type WaLoginState = 'waiting_scan' | 'connected' | 'failed' | 'expired'
 
+export type WaLoginMethod = 'qr' | 'pairing'
+
 export interface WaAccountCreateResult {
   ok: boolean
   name: string
   state: WaLoginState
+  method?: WaLoginMethod
 }
 
 export interface WaLoginStatus {
   name: string
   state: WaLoginState
+  method?: WaLoginMethod | null
+  pairing_code?: string | null
   qr_url: string | null
   qr_mtime: number | null
 }
@@ -314,12 +329,14 @@ export const api = {
   refreshProviderChannels: async (id: number) =>
     normalizeProvider(
       await request<unknown>(`/providers/${id}/channels/refresh`, { method: 'POST' })),
-  providerConfigSchema: () => request<ProviderConfigSchema>('/providers/config-schema'),
+  providerConfigSchema: (kind?: string) =>
+    request<ProviderConfigSchemaResponse>(
+      `/providers/config-schema${kind ? `?kind=${encodeURIComponent(kind)}` : ''}`),
   waAccounts: () => request<WaAccount[]>('/wa/accounts'),
-  createWaAccount: (name: string) =>
+  createWaAccount: (name: string, method: WaLoginMethod = 'qr', phone?: string) =>
     request<WaAccountCreateResult>('/wa/accounts', {
       method: 'POST',
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ name, method, phone: phone ?? null }),
     }),
   waAccountLogin: (name: string) =>
     request<WaLoginStatus>(`/wa/accounts/${encodeURIComponent(name)}/login`),

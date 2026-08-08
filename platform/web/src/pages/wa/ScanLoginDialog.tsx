@@ -1,28 +1,39 @@
-// WhatsApp 扫码登录引导：展示二维码，2s 轮询登录状态，支持失败重试
+// WhatsApp 登录引导：扫码 / 配对码双模式，2s 轮询登录状态，支持失败重试
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { api, type WaLoginState, type WaLoginStatus } from '@/lib/api'
+import { api, type WaLoginMethod, type WaLoginState, type WaLoginStatus } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog'
+import { Skeleton } from '@/components/ui/skeleton'
 import { CheckCircle2, Loader2, RefreshCw, XCircle } from 'lucide-react'
 
 const POLL_MS = 2_000
 /** 二维码大约 60s 自动刷新一次，用于倒计时提示 */
 const QR_REFRESH_SEC = 60
 
+/** 8 位配对码展示为 XXXX-XXXX（库返回无连字符，连字符仅为展示习惯） */
+function formatPairingCode(code: string): string {
+  return code.length > 4 ? `${code.slice(0, 4)}-${code.slice(4)}` : code
+}
+
 interface ScanLoginDialogProps {
-  /** 账号名；null 表示未开启扫码流程 */
+  /** 账号名；null 表示未开启登录流程 */
   name: string | null
+  /** 登录方式，缺省扫码 */
+  method?: WaLoginMethod
+  /** 配对码方式的手机号（重试时重新发起登录要用） */
+  phone?: string
   onClose: (connected: boolean) => void
 }
 
-export function ScanLoginDialog({ name, onClose }: ScanLoginDialogProps) {
+export function ScanLoginDialog({ name, method = 'qr', phone, onClose }: ScanLoginDialogProps) {
+  const isPairing = method === 'pairing'
   const [status, setStatus] = useState<WaLoginStatus | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [retrying, setRetrying] = useState(false)
-  /** 距离下一次二维码自动刷新的倒计时（秒） */
+  /** 距离下一次二维码自动刷新的倒计时（秒，仅扫码方式） */
   const [countdown, setCountdown] = useState(QR_REFRESH_SEC)
   const connectedRef = useRef(false)
   const mtimeRef = useRef<number | null>(null)
@@ -67,25 +78,25 @@ export function ScanLoginDialog({ name, onClose }: ScanLoginDialogProps) {
 
   const state: WaLoginState | null = status?.state ?? null
 
-  // 倒计时：仅在等待扫码时每秒递减
+  // 倒计时：仅扫码方式、等待扫码时每秒递减
   useEffect(() => {
-    if (!open || state !== 'waiting_scan') return
+    if (!open || isPairing || state !== 'waiting_scan') return
     const timer = setInterval(() => {
       setCountdown((c) => (c <= 1 ? QR_REFRESH_SEC : c - 1))
     }, 1_000)
     return () => clearInterval(timer)
-  }, [open, state])
+  }, [open, isPairing, state])
 
   const handleRetry = async () => {
     if (!name) return
     setRetrying(true)
     try {
-      await api.createWaAccount(name)
+      await api.createWaAccount(name, method, phone)
       terminalRef.current = false
       mtimeRef.current = null
       setCountdown(QR_REFRESH_SEC)
       await poll(name)
-      toast.info('已重新发起登录，请扫描新二维码')
+      toast.info(isPairing ? '已重新发起登录，正在获取新配对码' : '已重新发起登录，请扫描新二维码')
     } catch (e) {
       toast.error(e instanceof Error ? e.message : '重试失败')
     } finally {
@@ -101,9 +112,13 @@ export function ScanLoginDialog({ name, onClose }: ScanLoginDialogProps) {
     <Dialog open={open} onOpenChange={(next) => !next && handleClose()}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>扫码登录「{name}」</DialogTitle>
+          <DialogTitle>
+            {isPairing ? `配对码登录「${name}」` : `扫码登录「${name}」`}
+          </DialogTitle>
           <DialogDescription>
-            打开 WhatsApp 手机端 → 已关联的设备 → 关联设备，扫描下方二维码。
+            {isPairing
+              ? '打开手机 WhatsApp → 设置 → 已链接的设备 → 关联设备 → 改用电话号码，输入下方配对码。'
+              : '打开 WhatsApp 手机端 → 已关联的设备 → 关联设备，扫描下方二维码。'}
           </DialogDescription>
         </DialogHeader>
 
@@ -118,18 +133,41 @@ export function ScanLoginDialog({ name, onClose }: ScanLoginDialogProps) {
             <div className="flex flex-col items-center gap-3 py-8">
               <XCircle className="h-14 w-14 text-danger" />
               <p className="text-base font-medium">
-                {state === 'expired' ? '二维码已过期' : '登录失败'}
+                {state === 'expired'
+                  ? isPairing ? '配对码已过期' : '二维码已过期'
+                  : '登录失败'}
               </p>
-              <p className="text-sm text-muted-foreground">请重新发起登录并扫描新的二维码。</p>
+              <p className="text-sm text-muted-foreground">
+                {isPairing ? '请重新发起登录获取新的配对码。' : '请重新发起登录并扫描新的二维码。'}
+              </p>
               <Button onClick={handleRetry} disabled={retrying}>
                 {retrying ? (
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                 ) : (
                   <RefreshCw className="mr-2 h-4 w-4" />
                 )}
-                重新获取二维码
+                {isPairing ? '重新获取配对码' : '重新获取二维码'}
               </Button>
             </div>
+          ) : isPairing ? (
+            <>
+              <div className="flex h-32 w-64 items-center justify-center rounded-lg border border-border bg-muted/40">
+                {status?.pairing_code ? (
+                  <span className="text-3xl font-mono font-medium tracking-widest">
+                    {formatPairingCode(status.pairing_code)}
+                  </span>
+                ) : (
+                  <Skeleton className="h-9 w-40" />
+                )}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {loadError ? (
+                  <span className="text-danger">{loadError}（重试中…）</span>
+                ) : (
+                  '配对码一次性且有时效，过期后请点击重新获取'
+                )}
+              </p>
+            </>
           ) : (
             <>
               <div className="flex h-64 w-64 items-center justify-center rounded-lg border border-border bg-muted/40">

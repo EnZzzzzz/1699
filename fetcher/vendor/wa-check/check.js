@@ -34,13 +34,34 @@ function resolveAuthDir(argv) {
 
 const AUTH_DIR = resolveAuthDir(process.argv);
 
+// qr/pairing 等产物文件按账号隔离：默认账号无后缀，命名账号带 -auth_info-<name>
+function authFileSuffix() {
+  return AUTH_DIR === path.join(__dirname, 'auth_info')
+    ? '' : `-${path.basename(AUTH_DIR)}`;
+}
+
+// 配对码登录（与扫码互斥）：--pairing=<带国家码纯数字，8-15 位>
+// 手机 WhatsApp → 设置 → 已链接的设备 → 关联设备 → 改用电话号码，输入 8 位配对码
+function resolvePairing(argv) {
+  const flag = argv.find((a) => a.startsWith('--pairing='));
+  if (!flag) return null;
+  const num = flag.slice('--pairing='.length).replace(/\D/g, '');
+  if (num.length < 8 || num.length > 15) {
+    console.error('--pairing 号码需为带国家码的纯数字（8-15 位）');
+    process.exit(1);
+  }
+  return num;
+}
+
+const PAIRING_PHONE = resolvePairing(process.argv);
+
 // 单号查询失败重试：重试次数 / 连续失败风控阈值 / 退避基值（可 env 覆盖）
 const MAX_RETRIES        = parseInt(process.env.WA_QUERY_RETRIES        || '2');
 const THROTTLE_THRESHOLD = parseInt(process.env.WA_THROTTLE_THRESHOLD  || '5');
 const RETRY_BACKOFF_MS   = 3000;
 
 function collectNumbers(argv) {
-  const args = argv.slice(2).filter((a) => !a.startsWith('--auth='));
+  const args = argv.slice(2).filter((a) => !a.startsWith('--auth=') && !a.startsWith('--pairing='));
   if (args.length === 0) {
     console.error('用法: node check.js [--auth=<名字>] <号码1> [号码2 ...] 或 node check.js <号码文件.txt>');
     process.exit(1);
@@ -67,6 +88,23 @@ async function connectWithRetry(state, saveCreds, version, maxRetries = 5) {
     });
     sock.ev.on('creds.update', saveCreds);
 
+    // 配对码模式：socket 创建后、未注册状态下请求 8 位配对码。
+    // 必须等 WS 握手完成（waitForSocketOpen）再请求，否则 sendNode
+    // 会抛 Connection Closed；请求成功后打印固定格式行并落盘 txt 文件
+    if (PAIRING_PHONE && !state.creds.registered) {
+      try {
+        await sock.waitForSocketOpen();
+        const code = await sock.requestPairingCode(PAIRING_PHONE);
+        console.log(`PAIRING_CODE: ${code}`);
+        const txt = path.join(__dirname, `pairing${authFileSuffix()}.txt`);
+        fs.writeFileSync(txt, code);
+        console.log(`配对码: ${code}（已保存 ${txt}）`);
+        console.log('请在手机 WhatsApp → 设置 → 已链接的设备 → 关联设备 → 改用电话号码，输入该配对码');
+      } catch (e) {
+        console.log(`请求配对码失败: ${e.message || e}`);
+      }
+    }
+
     const result = await new Promise((resolve) => {
       sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect, qr } = update;
@@ -74,9 +112,7 @@ async function connectWithRetry(state, saveCreds, version, maxRetries = 5) {
           console.log('\n请用手机 WhatsApp → 设置 → 已链接的设备 → 链接设备，扫描下方二维码：\n');
           qrcode.generate(qr, { small: true });
           // 按账号隔离二维码文件，多账号并发登录互不覆盖
-          const suffix = AUTH_DIR === path.join(__dirname, 'auth_info')
-            ? '' : `-${path.basename(AUTH_DIR)}`;
-          const png = path.join(__dirname, `qr${suffix}.png`);
+          const png = path.join(__dirname, `qr${authFileSuffix()}.png`);
           QRCode.toFile(png, qr, { width: 512 }).then(() => {
             console.log(`\n二维码已保存为图片: ${png}（可用手机扫码）\n`);
           });

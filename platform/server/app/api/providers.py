@@ -85,7 +85,8 @@ def _mask(value):
     return value
 
 
-# 青果 provider config 的默认键结构（与 fetcher/net/proxy/qingguo.py CONFIG 对齐）
+# 各 kind provider config 的默认键结构模板
+# 青果（与 fetcher/net/proxy/qingguo.py CONFIG 对齐）
 _QINGGUO_CONFIG_TEMPLATE = {
     "key": "",          # API 公共参数 key（Authkey）
     "auth_key": "",     # 代理用户名 = Authkey
@@ -98,33 +99,57 @@ _QINGGUO_CONFIG_TEMPLATE = {
     "ip_ttl_seconds": 1800,  # 出口 IP 有效期（可选，默认 30 分钟）
 }
 
+# Apify（WhatsApp 查号 API 等 actor 服务，REST 调用只需 token）
+_APIFY_CONFIG_TEMPLATE = {
+    "api_token": "",    # Apify Console → Settings → API tokens
+}
+
+_CONFIG_TEMPLATES = {
+    "qingguo": _QINGGUO_CONFIG_TEMPLATE,
+    "apify": _APIFY_CONFIG_TEMPLATE,
+}
+
 
 @router.get("/config-schema")
-def config_schema():
-    """返回青果隧道缓存文件的键结构（值打码），供前端表单参考。"""
-    path = Path(proxy_ops.QINGGUO_CACHE_FILE)
-    tunnel_cache = None
-    try:
-        tunnel_cache = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        pass
+def config_schema(kind: str = "qingguo"):
+    """返回指定 kind 的 provider config 键结构（值打码），供前端表单参考。
 
-    # 附一份 provider config 参考：优先用库内现有 qingguo provider 的实际键
+    缺省 kind=qingguo 保持历史行为（附青果隧道缓存结构）；
+    未知 kind 返回 422。
+    """
+    template = _CONFIG_TEMPLATES.get(kind)
+    if template is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"未知 provider kind: {kind!r}（支持: {sorted(_CONFIG_TEMPLATES)}）")
+
+    # 优先用库内现有同 kind provider 的实际键作为参考
     config_example = None
     with connect() as conn:
         row = conn.execute(
-            "SELECT config_json FROM providers WHERE kind = 'qingguo'"
-            " ORDER BY id LIMIT 1").fetchone()
+            "SELECT config_json FROM providers WHERE kind = ?"
+            " ORDER BY id LIMIT 1", (kind,)).fetchone()
     if row:
         config_example = _parse_json(row["config_json"])
 
-    return {
-        "kind": "qingguo",
-        "tunnel_cache_path": str(path),
-        "tunnel_cache_exists": tunnel_cache is not None,
-        "tunnel_cache_structure": _mask(tunnel_cache) if tunnel_cache else None,
-        "provider_config_structure": _mask(config_example or _QINGGUO_CONFIG_TEMPLATE),
+    result = {
+        "kind": kind,
+        "provider_config_structure": _mask(config_example or template),
     }
+    if kind == "qingguo":
+        # 历史行为：附青果隧道缓存文件的键结构
+        path = Path(proxy_ops.QINGGUO_CACHE_FILE)
+        tunnel_cache = None
+        try:
+            tunnel_cache = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            pass
+        result.update({
+            "tunnel_cache_path": str(path),
+            "tunnel_cache_exists": tunnel_cache is not None,
+            "tunnel_cache_structure": _mask(tunnel_cache) if tunnel_cache else None,
+        })
+    return result
 
 
 # ==================== 写入 ====================

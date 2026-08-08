@@ -57,20 +57,22 @@ def list_accounts():
 
 class LoginStartBody(BaseModel):
     name: str
+    method: str = "qr"          # qr（扫码）| pairing（手机号配对码）
+    phone: str | None = None    # pairing 方式必填，带国家码纯数字
 
 
 @router.post("/accounts", status_code=201)
 def start_login(body: LoginStartBody):
-    """启动扫码登录流程；非法名字 422，冲突（已登录/进行中）409。"""
+    """启动登录流程；非法名字/方式/手机号 422，冲突（已登录/进行中）409。"""
     try:
-        return wa_login.start_login(body.name)
+        return wa_login.start_login(body.name, body.method, body.phone)
     except wa_login.LoginError as e:
         raise HTTPException(status_code=e.status_code, detail=str(e))
 
 
 @router.get("/accounts/{name}/login")
 def login_status(name: str):
-    """登录状态 + 二维码信息（前端按 mtime 变化轮询刷新）。"""
+    """登录状态 + 二维码/配对码信息（前端按 mtime 变化轮询刷新）。"""
     try:
         wa_login.validate_name(name)
     except wa_login.LoginError as e:
@@ -81,6 +83,8 @@ def login_status(name: str):
         "name": name,
         "state": st["state"],
         "started_at": st["started_at"],
+        "method": st.get("method"),
+        "pairing_code": st.get("pairing_code"),
         "tail": st.get("tail", []),
         "qr_url": (f"/api/wa/accounts/{name}/qr?t={int(mtime)}"
                    if mtime is not None else None),

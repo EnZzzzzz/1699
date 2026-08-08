@@ -36,7 +36,7 @@ export function ProviderFormDialog({ open, onOpenChange, provider, onSaved }: Pr
   const [schemaKeys, setSchemaKeys] = useState<string[]>([])
   const [submitting, setSubmitting] = useState(false)
 
-  // 打开时回填 + 拉取 config-schema 提示
+  // 打开时回填
   useEffect(() => {
     if (!open) return
     setName(provider?.name ?? '')
@@ -45,12 +45,24 @@ export function ProviderFormDialog({ open, onOpenChange, provider, onSaved }: Pr
     const config = provider?.config ?? {}
     const entries = Object.entries(config)
     setRows(entries.length > 0 ? entries.map(([key, value]) => ({ key, value: String(value) })) : [{ key: '', value: '' }])
+  }, [open, provider])
+
+  // kind 确定后拉对应 config-schema 提示（新增模式切换类型时也会触发）
+  useEffect(() => {
+    if (!open) return
     setSchemaKeys([])
     api
-      .providerConfigSchema()
-      .then((schema) => setSchemaKeys(Object.keys(schema)))
+      .providerConfigSchema(kind)
+      .then((res) => setSchemaKeys(Object.keys(res.provider_config_structure ?? {})))
       .catch(() => setSchemaKeys([]))
-  }, [open, provider])
+  }, [open, kind])
+
+  // 切换类型：apify 且当前配置行为空时预填 api_token 行
+  const handleKindChange = (next: string) => {
+    setKind(next)
+    const blank = rows.every((r) => !r.key.trim() && !r.value.trim())
+    if (next === 'apify' && blank) setRows([{ key: 'api_token', value: '' }])
+  }
 
   const setRow = (idx: number, patch: Partial<ConfigRow>) => {
     setRows((prev) => prev.map((r, i) => (i === idx ? { ...r, ...patch } : r)))
@@ -128,12 +140,13 @@ export function ProviderFormDialog({ open, onOpenChange, provider, onSaved }: Pr
               {editing ? (
                 <Input value={kind} disabled />
               ) : (
-                <Select value={kind} onValueChange={setKind}>
+                <Select value={kind} onValueChange={handleKindChange}>
                   <SelectTrigger>
                     <SelectValue placeholder="选择类型" />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="qingguo">qingguo（青果）</SelectItem>
+                    <SelectItem value="apify">apify（WhatsApp 查号 API）</SelectItem>
                   </SelectContent>
                 </Select>
               )}
@@ -185,7 +198,7 @@ export function ProviderFormDialog({ open, onOpenChange, provider, onSaved }: Pr
                 </div>
               ))}
             </div>
-            {schemaKeys.length > 0 && (
+            {schemaKeys.length > 0 && kind === 'qingguo' && (
               <p className="text-xs text-muted-foreground">
                 提示：缺失字段会导致通道创建失败，请按上方字段清单填写。
               </p>

@@ -14,6 +14,15 @@ import { Activity, Loader2, Network, Pencil, Plus, RefreshCw } from 'lucide-reac
 import { ProviderFormDialog } from './providers/ProviderFormDialog'
 import WaAccounts from './WaAccounts'
 
+// 有代理通道概念的供应商类型；其他类型（如 apify 查号 API）不显示通道相关 UI
+const PROXY_KINDS = new Set(['qingguo'])
+
+// 配置值打码展示：长字符串保留前 4 位 + ****（仅卡片摘要，编辑表单仍回显明文）
+function maskConfigValue(value: unknown): string {
+  const s = String(value ?? '')
+  return s.length > 4 ? `${s.slice(0, 4)}****` : s
+}
+
 function channelStatusBadge(status: string) {
   switch (status) {
     case 'ok':
@@ -76,7 +85,9 @@ interface ProviderCardProps {
 
 function ProviderCard({ provider, onEdit, onChanged }: ProviderCardProps) {
   const enabled = provider.enabled === 1
+  const isProxy = PROXY_KINDS.has(provider.kind)
   const okCount = provider.channels.filter((c) => ['ok', 'active', 'ready'].includes(c.status)).length
+  const configEntries = Object.entries(provider.config ?? {})
   const [toggling, setToggling] = useState(false)
   const [probing, setProbing] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
@@ -134,7 +145,9 @@ function ProviderCard({ provider, onEdit, onChanged }: ProviderCardProps) {
           <div>
             <CardTitle className="text-base">{provider.name}</CardTitle>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              类型 {provider.kind} · 通道 {provider.channels.length} 条（可用 {okCount}）
+              {isProxy
+                ? `类型 ${provider.kind} · 通道 ${provider.channels.length} 条（可用 ${okCount}）`
+                : `类型 ${provider.kind}`}
             </p>
           </div>
         </div>
@@ -157,27 +170,44 @@ function ProviderCard({ provider, onEdit, onChanged }: ProviderCardProps) {
               <Pencil className="mr-2 h-4 w-4" />
               编辑
             </Button>
-            <Button variant="outline" size="sm" onClick={handleRefresh} disabled={refreshing || probing}>
-              {refreshing ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : (
-                <RefreshCw className="mr-2 h-4 w-4" />
-              )}
-              同步通道
-            </Button>
-            <Button size="sm" onClick={handleProbe} disabled={probing || refreshing}>
-              {probing ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : (
-                <Activity className="mr-2 h-4 w-4" />
-              )}
-              {probing ? '探测中…' : '探测全部通道'}
-            </Button>
+            {isProxy && (
+              <>
+                <Button variant="outline" size="sm" onClick={handleRefresh} disabled={refreshing || probing}>
+                  {refreshing ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : (
+                    <RefreshCw className="mr-2 h-4 w-4" />
+                  )}
+                  同步通道
+                </Button>
+                <Button size="sm" onClick={handleProbe} disabled={probing || refreshing}>
+                  {probing ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : (
+                    <Activity className="mr-2 h-4 w-4" />
+                  )}
+                  {probing ? '探测中…' : '探测全部通道'}
+                </Button>
+              </>
+            )}
           </div>
         </div>
       </CardHeader>
       <CardContent>
-        <ChannelTable channels={provider.channels} />
+        {isProxy ? (
+          <ChannelTable channels={provider.channels} />
+        ) : configEntries.length > 0 ? (
+          <div className="space-y-1.5">
+            {configEntries.map(([key, value]) => (
+              <div key={key} className="flex items-center gap-3 text-sm">
+                <span className="w-36 shrink-0 font-mono text-muted-foreground">{key}</span>
+                <span className="font-mono">{maskConfigValue(value)}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="py-2 text-sm text-muted-foreground">暂无配置</p>
+        )}
       </CardContent>
     </Card>
   )
@@ -198,13 +228,31 @@ export default function Providers() {
     setFormOpen(true)
   }
 
+  // 代理类供应商（有通道概念）与第三方 API 供应商（纯凭证，如 apify）分 Tab 展示
+  const proxyProviders = (data ?? []).filter((p) => PROXY_KINDS.has(p.kind))
+  const apiProviders = (data ?? []).filter((p) => !PROXY_KINDS.has(p.kind))
+
+  const renderCards = (providers: Provider[], emptyText: string) => {
+    if (loading && !data) return <LoadingState />
+    if (error && !data) return <ErrorState message={error} onRetry={reload} />
+    if (providers.length === 0) return <EmptyState text={emptyText} />
+    return (
+      <div className="space-y-4">
+        {providers.map((p) => (
+          <ProviderCard key={p.id} provider={p} onEdit={openEdit} onChanged={reload} />
+        ))}
+      </div>
+    )
+  }
+
   return (
     <div className="p-6">
-      <PageHeader title="供应商" desc="代理池与 WhatsApp 账号池管理" />
+      <PageHeader title="供应商" desc="代理池、第三方 API 与 WhatsApp 账号池管理" />
 
       <Tabs defaultValue="proxy">
         <TabsList>
           <TabsTrigger value="proxy">代理池</TabsTrigger>
+          <TabsTrigger value="api">第三方 API</TabsTrigger>
           <TabsTrigger value="wa">WhatsApp 账号池</TabsTrigger>
         </TabsList>
 
@@ -218,20 +266,20 @@ export default function Providers() {
               添加供应商
             </Button>
           </div>
+          {renderCards(proxyProviders, '暂无代理供应商，点击右上角「添加供应商」开始')}
+        </TabsContent>
 
-          {loading && !data ? (
-            <LoadingState />
-          ) : error && !data ? (
-            <ErrorState message={error} onRetry={reload} />
-          ) : !data || data.length === 0 ? (
-            <EmptyState text="暂无供应商配置，点击右上角「添加供应商」开始" />
-          ) : (
-            <div className="space-y-4">
-              {data.map((p) => (
-                <ProviderCard key={p.id} provider={p} onEdit={openEdit} onChanged={reload} />
-              ))}
-            </div>
-          )}
+        <TabsContent value="api" className="mt-4 space-y-4">
+          <div className="flex items-center justify-between">
+            <p className="text-sm text-muted-foreground">
+              第三方 API 供应商（Apify 等）的凭证管理
+            </p>
+            <Button size="sm" onClick={openAdd}>
+              <Plus className="mr-2 h-4 w-4" />
+              添加供应商
+            </Button>
+          </div>
+          {renderCards(apiProviders, '暂无第三方 API 供应商，点击右上角「添加供应商」开始')}
         </TabsContent>
 
         <TabsContent value="wa" className="mt-4">
