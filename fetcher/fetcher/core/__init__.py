@@ -14,7 +14,7 @@ from fetcher.core.errors import (
     is_fatal_browser_error,
     is_network_error,
 )
-from fetcher.core.session import Session
+from fetcher.core.session import Session, SiteView
 from fetcher.core.types import ActionResult, Outcome, Scenario
 
 __all__ = [
@@ -29,6 +29,7 @@ __all__ = [
     "RunConfig",
     "Scenario",
     "Session",
+    "SiteView",
     "UserInterrupted",
     "WorkerContext",
     "browser_alive",

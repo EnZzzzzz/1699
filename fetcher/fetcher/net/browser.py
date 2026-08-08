@@ -36,7 +36,7 @@ from fetcher.core.errors import (
     LicenseSeatTimeout,
     UserInterrupted,
 )
-from fetcher.core.session import Session, bare_identity
+from fetcher.core.session import Session, SiteView, bare_identity
 from fetcher.net.identity import IdentityStore
 
 # ---------- 配置加载 ----------
@@ -219,7 +219,6 @@ class BrowserManager:
 
         cfg = self.config
         proxy_conf = None
-        identity = f"{self.site_name}:direct"
         req_proxies = None
 
         if cfg.use_proxy:
@@ -235,43 +234,13 @@ class BrowserManager:
             if exit_ip is None:
                 raise ExitIPError(f"经通道 {ch.server} 查询出口 IP 失败，"
                                   f"隧道疑似不可用，无法绑定 Cookie identity")
-            identity = f"{self.site_name}:{exit_ip}"
             channel = ch
             self.log(f"    [proxy] 青果住宅代理: {ch.server}，出口 IP: {exit_ip}")
 
-        # ---- Cookie：库优先；仅直连模式用 JSON 种子兜底 ----
-        cookies = self.store.load(identity)
-        if not cookies and not cfg.use_proxy:
-            seed_json = cfg.resolved_cookie_json()
-            if not seed_json.exists():
-                raise BrowserLaunchError(
-                    f"数据库中没有 identity={identity} 的 Cookie，"
-                    f"且找不到种子文件 {seed_json}，请先导出 Cookie")
-            n = self.store.seed_from_json(identity, seed_json)
-            cookies = self.store.load(identity)
-            self.log(f"    [cookie] 已从 {seed_json.name} 导入 {n} 个 Cookie "
-                     f"到 identity={identity}")
-        info = self.store.info(identity)
-        self.log(f"    [cookie] identity={identity}，可用 {len(cookies)} 个"
-                 f"（库内共 {info['total']}，已过期剔除 {info['expired']}，"
-                 f"最近过期: {info['earliest_expiry'] or '未知'}）")
-        if cfg.use_proxy and not cookies and seed_kit:
-            # 种子身份池：本 worker 独占的熟身份（仅设备绑定 Cookie），
-            # 写入该出口 IP 名下，让会话链路在此 IP 上沉淀
-            cookies = [dict(c) for c in seed_kit["cookies"]]
-            self.store.save(identity, cookies)
-            self.store.record_event(
-                identity, "seed",
-                f"kit={seed_kit['name']} x5sec={1 if seed_kit.get('x5sec') else 0}")
-            self.log(f"    [cookie] 新出口 IP 播种独占种子身份"
-                     f"「{seed_kit['name']}」（{len(cookies)} 个 Cookie"
-                     f"{'，含 x5sec 实验组' if seed_kit.get('x5sec') else ''}）")
-        elif cfg.use_proxy and not cookies:
-            self.log(f"    [cookie] 无种子身份，新出口 IP 空会话白板启动，"
-                     f"warmup 时由站点为 {identity} 现场签发全新匿名身份")
-        if not cookies and not cfg.use_proxy:
-            raise BrowserLaunchError(
-                f"identity={identity} 下没有可用 Cookie（可能全部过期）")
+        # Cookie 装载已移入 ensure_site（per-view），此处不再重复。
+        # 指纹身份：种子名优先，否则裸 IP（直连直接传 'direct'）。
+        fp_id = (seed_kit["name"] if seed_kit
+                 else (exit_ip if cfg.use_proxy else "direct"))
 
         # ---- 席位等待 ----
         self.log(f"    [launch] 检查 CloakBrowser 会话席位…")
@@ -292,7 +261,7 @@ class BrowserManager:
                          f"无法安全跨线程中止，请人工观察处理")
 
         threading.Thread(target=_watchdog, daemon=True,
-                         name=f"launch-watchdog-{identity}").start()
+                         name="launch-watchdog").start()
         try:
             browser = cloak_launch(
                 headless=cfg.headless,
@@ -301,7 +270,7 @@ class BrowserManager:
                 locale="zh-CN",
                 timezone="Asia/Shanghai",
                 stealth_args=False,
-                args=fingerprint_args(seed_kit["name"] if seed_kit else bare_identity(identity)),
+                args=fingerprint_args(fp_id),
                 **({"proxy": proxy_conf, "geoip": True} if proxy_conf else {}),
             )
         except SystemExit as e:
@@ -311,21 +280,17 @@ class BrowserManager:
         finally:
             launch_done.set()
 
-        self.log(f"    [launch] 浏览器进程已启动，创建上下文并注入 Cookie…")
-        ctx = browser.new_context(locale="zh-CN")
-        if cookies:
-            ctx.add_cookies(cookies)
-        page = ctx.new_page()
-        session = Session(browser=browser, page=page, identity=identity,
+        self.log(f"    [launch] 浏览器进程已启动，创建初始 view…")
+        session = Session(browser=browser,
                           channel=channel, req_proxies=req_proxies,
                           seed_kit=seed_kit)
+        # 懒建初始 view（含 Cookie 装载 + 上下文创建 + warmup）
+        site_domain = getattr(self.store, "domain", "")
+        self.ensure_site(session, self.site_name, site_domain,
+                         seed_kit=seed_kit, stop=stop)
         if cfg.use_proxy:
-            # 新 IP / 新会话预热：访问首页让站点现场签发独立 Cookie 并
-            # 立即回写；有头模式首页弹滑块会停下来等手动/自动过证。
-            # homepage 由 engine 透传 site.homepage（默认仍 1688 首页）
-            self.warmup(session, homepage=self.homepage, stop=stop)
             self.store.record_event(
-                identity, "launch", channel.server if channel else "")
+                session.identity, "launch", channel.server if channel else "")
         return session
 
     def _resolve_channel(self, channel):
@@ -388,13 +353,89 @@ class BrowserManager:
         raise BrowserLaunchError(
             f"重试 {retries} 次仍无法获取新 IP: {last_err}")
 
+    # ---- view 管理 ----
+
+    def ensure_site(self, session: Session, site_name: str,
+                    site_domain: str, seed_kit: dict | None = None,
+                    stop: threading.Event | None = None) -> SiteView:
+        """确保 session 有 site_name 的 view；无则懒建。
+
+        懒建：browser.new_context(locale="zh-CN") → 按 f"{site_name}:{bare}"
+        装载 Cookie（库优先；直连无库时 JSON 种子兜底；代理新 IP 播种
+        seed_kit——复用 launch 的 Cookie 装载段逻辑）→ new_page →
+        warmup（该站首页现场签发 Cookie）。返回 view。
+        """
+        if site_name in session.views:
+            return session.views[site_name]
+
+        cfg = self.config
+        # 确定 identity
+        if cfg.use_proxy and session.req_proxies is not None:
+            exit_ip = self._query_exit_ip_with_retry(session.req_proxies)
+            if exit_ip is None:
+                raise ExitIPError(f"经通道查询出口 IP 失败，"
+                                  f"隧道疑似不可用，无法绑定 Cookie identity")
+            identity = f"{site_name}:{exit_ip}"
+        else:
+            identity = f"{site_name}:direct"
+
+        # ---- Cookie 装载（与 launch 现状逐字一致）----
+        cookies = self.store.load(identity)
+        if not cookies and not cfg.use_proxy:
+            seed_json = cfg.resolved_cookie_json()
+            if not seed_json.exists():
+                raise BrowserLaunchError(
+                    f"数据库中没有 identity={identity} 的 Cookie，"
+                    f"且找不到种子文件 {seed_json}，请先导出 Cookie")
+            n = self.store.seed_from_json(identity, seed_json)
+            cookies = self.store.load(identity)
+            self.log(f"    [cookie] 已从 {seed_json.name} 导入 {n} 个 Cookie "
+                     f"到 identity={identity}")
+        info = self.store.info(identity)
+        self.log(f"    [cookie] identity={identity}，可用 {len(cookies)} 个"
+                 f"（库内共 {info['total']}，已过期剔除 {info['expired']}，"
+                 f"最近过期: {info['earliest_expiry'] or '未知'}）")
+        if cfg.use_proxy and not cookies and seed_kit:
+            cookies = [dict(c) for c in seed_kit["cookies"]]
+            self.store.save(identity, cookies)
+            self.store.record_event(
+                identity, "seed",
+                f"kit={seed_kit['name']} x5sec={1 if seed_kit.get('x5sec') else 0}")
+            self.log(f"    [cookie] 新出口 IP 播种独占种子身份"
+                     f"「{seed_kit['name']}」（{len(cookies)} 个 Cookie"
+                     f"{'，含 x5sec 实验组' if seed_kit.get('x5sec') else ''}）")
+        elif cfg.use_proxy and not cookies:
+            self.log(f"    [cookie] 无种子身份，新出口 IP 空会话白板启动，"
+                     f"warmup 时由站点为 {identity} 现场签发全新匿名身份")
+        if not cookies and not cfg.use_proxy:
+            raise BrowserLaunchError(
+                f"identity={identity} 下没有可用 Cookie（可能全部过期）")
+
+        # ---- 创建 context + 注入 Cookie + new_page ----
+        ctx = session.browser.new_context(locale="zh-CN")
+        if cookies:
+            ctx.add_cookies(cookies)
+        page = ctx.new_page()
+
+        view = SiteView(context=ctx, page=page, identity=identity,
+                        domain=site_domain, seed_kit=seed_kit)
+        session.views[site_name] = view
+
+        # ---- warmup（代理模式访问首页现场签发 Cookie）----
+        if cfg.use_proxy:
+            self.warmup(session, site_name, homepage=self.homepage, stop=stop)
+
+        return view
+
     # ---- 预热 ----
 
-    def warmup(self, session: Session, homepage: str = "https://www.1688.com/",
+    def warmup(self, session: Session, site_name: str,
+               homepage: str = "https://www.1688.com/",
                stop: threading.Event | None = None,
                block_check=None, max_wait: float = 600.0) -> bool:
         """新 IP 的 Cookie 自动更新：访问首页触发站点现场签发并回写。
 
+        site_name: 要预热的 view 的站点注册名（session.views[site_name]）。
         block_check: fn(page) -> str | None 的风控检测回调（站点插件提供，
         如 sites.alibaba1688.page_block_reason）；None 时跳过检测。
         返回 True 表示预热顺利（含过证后）；未过证/失败返回 False
@@ -402,7 +443,8 @@ class BrowserManager:
         homepage: 落地页；None 归一到默认 1688 首页（兼容旧调用不传参）。
         """
         homepage = homepage or "https://www.1688.com/"
-        page, ctx, identity = session.page, session.ctx, session.identity
+        view = session.views[site_name]
+        page, ctx, identity = view.page, view.context, view.identity
         headed = not self.config.headless
         try:
             page.goto(homepage, wait_until="domcontentloaded", timeout=60000)
@@ -416,7 +458,8 @@ class BrowserManager:
                         if self.auto_solve(page) \
                                 and (block_check is None
                                      or block_check(page) is None):
-                            n = self.store.save_from_context(identity, ctx, self.log)
+                            n = self.store.save_from_context(
+                                identity, ctx, self.log, domain=view.domain)
                             self.log(f"    [warmup] ✓ 自动过证成功，{n} 个 Cookie"
                                      f"（含新 x5sec）已写回 {identity} 名下")
                             return True
@@ -429,7 +472,8 @@ class BrowserManager:
                 if self._wait_manual_pass(
                         page, stop, max_wait, block_check=block_check,
                         auto_solve=self.auto_solve):
-                    n = self.store.save_from_context(identity, ctx, self.log)
+                    n = self.store.save_from_context(
+                        identity, ctx, self.log, domain=view.domain)
                     self.log(f"    [warmup] ✓ 检测到验证已通过，{n} 个 Cookie"
                              f"（含新 x5sec）已写回 {identity} 名下")
                     return True
@@ -437,7 +481,8 @@ class BrowserManager:
                     return False
                 self.log(f"    [warmup] 等待超时仍未过证（不阻断启动）")
                 return False
-            n = self.store.save_from_context(identity, ctx, self.log)
+            n = self.store.save_from_context(
+                identity, ctx, self.log, domain=view.domain)
             if blocked:
                 self.log(f"    [warmup] 首页即命中风控（{blocked}），已回写 {n} 个"
                          f" Cookie；headed 模式可在窗口手动过证后自动继续")
@@ -493,6 +538,10 @@ class BrowserManager:
     # ---- Cookie 回写 ----
 
     def save_cookies(self, session: Session) -> int:
-        """把浏览器最新 Cookie（含新 x5sec）写回该出口 IP 名下。"""
-        return self.store.save_from_context(session.identity, session.ctx,
-                                            self.log)
+        """把浏览器所有 view 的最新 Cookie（含新 x5sec）写回各 identity 名下。"""
+        total = 0
+        for _site_name, view in session.views.items():
+            if view.context is not None:
+                total += self.store.save_from_context(
+                    view.identity, view.context, self.log, domain=view.domain)
+        return total

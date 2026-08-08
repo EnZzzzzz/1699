@@ -1,0 +1,1 @@
+<frozen runpy>:128: RuntimeWarning: 'fetcher.cli.main' found in sys.modules after import of package 'fetcher.cli', but prior to execution of 'fetcher.cli.main'; this may result in unpredictable behaviour

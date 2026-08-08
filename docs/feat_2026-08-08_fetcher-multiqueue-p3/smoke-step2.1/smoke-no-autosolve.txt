@@ -1,0 +1,25 @@
+=== 1688 contact 直连冒烟（--no-auto-solve，30s 超时截断）===
+
+$ cd fetcher && python -m fetcher.cli.main 1688 contact --db /tmp/smoke_p3_21.db --workers 1 --limit 1 -n 1 --no-auto-solve
+
+[0] 已把 1 个中断残留的 in_progress 店铺重置回 pending
+[1] 待抓取 2593 个，每个 worker 每批 1 个（不限批数，抓完 pending 为止），批间强制休息 15 分钟
+[2] 启动 1 个 worker（直连）
+    [launch] 检查 CloakBrowser 会话席位…
+    [launch] 启动 CloakBrowser 二进制（含 GeoIP 探测）…
+    [launch] 浏览器进程已启动，创建初始 view…          ← 新代码路径
+    [cookie] identity=1688:direct，可用 151 个（库内共 177，已过期剔除 26，最近过期: 2026-08-31 02:46:57）
+
+关键证据：
+- "浏览器进程已启动，创建初始 view…" 来自 launch() 中新的 Session(browser=browser) + ensure_site() 路径
+- identity=1688:direct 带 site 前缀（P2 格式）
+- Cookie 装载通过 ensure_site 的 Cookie 装载段（与旧 launch 逐字一致）
+- 无异常、无崩溃
+- 进程被 30s alarm 截断（非错误退出）；滑块墙是环境噪声
+
+环境说明：
+- macOS + CloakBrowser 二进制可用
+- 席位未满（lanuch 直接通过席位检查）
+- 直连模式，不经过 warmup（直连不 warmup）
+- --limit 1 限制每 worker 只处理 1 个店铺
+
