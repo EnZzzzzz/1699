@@ -18,7 +18,9 @@ ctx.state 上（WorkerContext 每 worker 独立），天然隔离无需加锁。
 from __future__ import annotations
 
 import threading
+import time
 
+from fetcher.control.queue_router import condvar_timeout
 from fetcher.db import ShopDB
 
 # 等货条件变量自醒超时（秒）：保证 stop 置位后 acquire_item 最多 30s 内返回
@@ -132,11 +134,11 @@ class DaemonTaskProxy:
     def acquire_item(self, ctx):
         """认领一个工作项；仅 stop 置位时返回 None，否则阻塞等货。
 
-        1. claim 命中 → 记录 work_item id 后返回 payload dict
-           （必含 domain/name/url 三键，由 claim_work_item 保证）；
-        2. 未命中 → 补货（limit=消费者数×4），补到则 notify_all 唤醒
-           等货的其他 worker 并重试 claim；
-        3. 仍无货 → 条件变量 wait（30s 自醒兜底），醒后先查 stop。
+        1. 冷却过滤：claim 前查冷却（site 键），冷却中不 claim 不 topup，
+           直接进 condvar wait（timeout 经 condvar_timeout 计算）；
+        2. claim 命中 → 记录 work_item id + active_site 后返回 payload；
+        3. 未命中 → 补货（limit=消费者数×4），补到则 notify_all 并重试；
+        4. 仍无货 → 条件变量 wait（30s 自醒兜底），醒后先查 stop。
         """
         consumer_id = f"w{ctx.wid}"
         db = self._db(ctx)
@@ -145,10 +147,20 @@ class DaemonTaskProxy:
             while True:
                 if ctx.stopped():
                     return None
+                now = time.time()
+                # 冷却中：不 claim 不 topup，直接进 condvar wait
+                if now < ctx.cooldown_until.get(self._site, 0):
+                    timeout = condvar_timeout(
+                        ctx.cooldown_until, self._site, now)
+                    self._cond.wait(timeout=timeout)
+                    if ctx.stopped():
+                        return None
+                    continue
                 item = db.claim_work_item(self._queue, consumer_id)
                 if item is not None:
                     # 记在本 worker 自己的 ctx.state 上，跨 worker 天然隔离
                     ctx.state[_STATE_KEY] = item["id"]
+                    ctx.state["active_site"] = self._site
                     return item
                 n = db.topup_contact_work_items(
                     self._queue, self._site, self._domain_suffix, limit=limit)

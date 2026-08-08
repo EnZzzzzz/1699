@@ -109,11 +109,16 @@ class CrawlLoop:
                   prefix: str | None = None) -> bool:
         """登记冷却截止时间 + 执行可中断等待。返回 True=被 stop 中断。
 
-        cooldown_until 的唯一写入者（P1 只写不读，P3 调度器查询接口）。
+        P3：cooldown_until 按 site 注册名登记（有 active_site 时才写入）；
+        reason 参数保留，仅用于日志/展示。无 active_site 时不登记（如
+        launch_backoff 在 acquire 前，active_site 未设置时天然跳过）。
+
         展示两路径逐字保留现状：prefix 非空走 wait_countdown（秒级倒计
         时状态行，长等待用）；prefix=None 走 ctx.wait（静默，短等待用）。
         """
-        self.ctx.cooldown_until[reason] = time.time() + seconds
+        active_site = self.ctx.state.get("active_site")
+        if active_site is not None:
+            self.ctx.cooldown_until[active_site] = time.time() + seconds
         if prefix is None:
             return self.ctx.wait(seconds)
         return wait_countdown(self.board, self.ctx.wid, self.ctx.stop,

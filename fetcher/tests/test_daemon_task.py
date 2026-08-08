@@ -238,6 +238,62 @@ class AcquireItemTest(DaemonTaskTestBase):
         self.assertLess(elapsed, 5.0)
 
 
+class CooldownFilterTest(DaemonTaskTestBase):
+    # 用例 4：冷却中不 claim——注入带冷却的 ctx → acquire 阻塞（等超时
+    # 唤醒路径），不 claim 不 topup
+    def test_cooldown_blocks_claim(self):
+        """冷却中 → acquire_item 不 claim 不 topup，等待冷却到期后才认领。"""
+        self.db.upsert_shops([_shop(1), _shop(2)])
+        self.db.topup_contact_work_items(QUEUE, "1688", ".1688.com", 2)
+        ctx = self.make_ctx(wid=0)
+        # 设置 0.25s 冷却（短但可观测）
+        ctx.cooldown_until["1688"] = time.time() + 0.25
+
+        result_holder = []
+        t = threading.Thread(target=lambda:
+                             result_holder.append(self.proxy.acquire_item(ctx)),
+                             daemon=True)
+        t.start()
+
+        # 0.1s 后冷却应仍有效：工作项未认领
+        time.sleep(0.10)
+        rows = self.query("SELECT status FROM work_items WHERE queue=?"
+                          " ORDER BY id", (QUEUE,))
+        self.assertEqual([r["status"] for r in rows], ["pending", "pending"])
+
+        # 等待 acquire 完成（冷却到期后自动认领）
+        t.join(timeout=5)
+        self.assertFalse(t.is_alive(), "acquire_item 线程应在冷却到期后完成")
+        self.assertEqual(len(result_holder), 1)
+        self.assertIsNotNone(result_holder[0])
+        self.assertEqual(result_holder[0]["domain"], "shop1.1688.com")
+
+    # 用例 5：冷却到期后恢复认领
+    def test_cooldown_expired_allows_claim(self):
+        """冷却已到期 → acquire_item 正常 claim（不阻塞）。"""
+        self.db.upsert_shops([_shop(1)])
+        self.db.topup_contact_work_items(QUEUE, "1688", ".1688.com", 1)
+        ctx = self.make_ctx(wid=0)
+        # 冷却已过期（过去）
+        ctx.cooldown_until["1688"] = time.time() - 1.0
+
+        item = self.proxy.acquire_item(ctx)
+
+        self.assertIsNotNone(item)
+        self.assertEqual(item["domain"], "shop1.1688.com")
+
+    # 用例 6：claim 成功后 active_site 正确写入
+    def test_active_site_set_on_claim(self):
+        """claim 成功后 ctx.state["active_site"] = self._site。"""
+        self.db.upsert_shops([_shop(1)])
+        self.db.topup_contact_work_items(QUEUE, "1688", ".1688.com", 1)
+        ctx = self.make_ctx(wid=0)
+
+        self.assertNotIn("active_site", ctx.state)
+        self.proxy.acquire_item(ctx)
+        self.assertEqual(ctx.state.get("active_site"), "1688")
+
+
 class TerminalHookTest(DaemonTaskTestBase):
     # 用例 4：终态钩子——on_success→done / on_giveup→failed，重复 finish 幂等
     def test_terminal_hooks_finish_work_item(self):

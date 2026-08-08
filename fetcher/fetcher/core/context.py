@@ -107,10 +107,13 @@ class WorkerContext:
     last_result: Any = None
     # 控制层/策略层暂存（如 AttemptTracker）
     state: dict = field(default_factory=dict)
-    # 冷却截止时间登记处：reason → time.time()+seconds。唯一写入者是
-    # loop 的 chokepoint（Step 2.2 落地），P1 阶段只写不读，是 P3
-    # 调度器的查询接口。
+    # 冷却截止时间登记处：site 注册名 → 到期时刻（time.time()+seconds）。
+    # 唯一写入者是 loop 的 chokepoint（有 active_site 时才登记）；
+    # 查询者是 daemon_task 的冷却过滤与 queue_router 的 eligible_queues。
     cooldown_until: dict[str, float] = field(default_factory=dict)
+    # 消费者持有的资源集（供 eligible_queues 过滤用）；daemon 消费者
+    # 天然持有 {"channel", "browser"}（与 SPEC §4.2 BrowserConsumer 一致）
+    resources: set[str] = field(default_factory=lambda: {"channel", "browser"})
 
     # ---- 便捷访问 ----
     @property

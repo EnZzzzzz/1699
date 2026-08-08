@@ -207,20 +207,17 @@ class CooldownTestBase(unittest.TestCase):
 
 class CooldownChokepointTest(CooldownTestBase):
     def test_silent_path_writes_deadline_and_returns_false(self):
-        """静默路径（prefix=None → ctx.wait）：写入 cooldown_until[reason]
-        ≈ time.time()+seconds，正常等完返回 False。"""
+        """静默路径（prefix=None → ctx.wait）：无 active_site 时不登记冷却。
+        P3 键语义：cooldown_until 按 site 注册名登记，只有 active_site 设置
+        时才写入；本测试路径无 active_site，cooldown_until 保持空。"""
         loop, ctx = self.make_loop()
-        t0 = time.time()
         interrupted = loop._cooldown(0.05, "ut_silent")
         self.assertFalse(interrupted)
-        # 唯一写入者语义：只写了这一个 reason，值 ≈ 调用时刻 + seconds
-        self.assertEqual(set(ctx.cooldown_until), {"ut_silent"})
-        self.assertAlmostEqual(ctx.cooldown_until["ut_silent"], t0 + 0.05,
-                               delta=1.0)
+        self.assertEqual(ctx.cooldown_until, {})
 
     def test_countdown_path_stop_interrupt_returns_true_fast(self):
         """倒计时路径（prefix 传 → wait_countdown）：等待期间置 stop
-        立即返回 True（远小于 seconds），cooldown_until 同样登记。"""
+        立即返回 True（远小于 seconds）。无 active_site 时不登记冷却。"""
         loop, ctx = self.make_loop()
         threading.Timer(0.1, ctx.stop.set).start()
         t0 = time.monotonic()
@@ -229,8 +226,23 @@ class CooldownChokepointTest(CooldownTestBase):
         self.assertTrue(interrupted)
         self.assertLess(elapsed, 5.0)  # 远小于 30s：确实被 stop 打断
         self.assertGreaterEqual(elapsed, 0.05)  # 非「立即返回」的快路径
-        self.assertAlmostEqual(ctx.cooldown_until["ut_countdown"],
-                               time.time() + 30.0, delta=1.0)
+        self.assertEqual(ctx.cooldown_until, {})
+
+    def test_site_key_when_active_site_set(self):
+        """设 active_site="1688" → 登记 cooldown_until["1688"] 而非 reason。"""
+        loop, ctx = self.make_loop()
+        ctx.state["active_site"] = "1688"
+        t0 = time.time()
+        loop._cooldown(10.0, "sample_interval")
+        self.assertNotIn("sample_interval", ctx.cooldown_until)
+        self.assertEqual(set(ctx.cooldown_until), {"1688"})
+        self.assertAlmostEqual(ctx.cooldown_until["1688"], t0 + 10.0, delta=1.0)
+
+    def test_no_registration_without_active_site(self):
+        """未设 active_site → _cooldown 不登记任何键（仍执行等待）。"""
+        loop, ctx = self.make_loop()
+        loop._cooldown(0.1, "any_reason")
+        self.assertEqual(ctx.cooldown_until, {})
 
 
 # ---------- 用例 2：_process_item 策略冷却集成 ----------
@@ -262,10 +274,8 @@ class StrategyCooldownIntegrationTest(CooldownTestBase):
         self.assertIsNone(prefix)  # 策略冷却走静默路径
         # 真实等待过（spy 调的是真实实现）
         self.assertGreaterEqual(elapsed, 0.25)
-        # cooldown_until 已登记，值 ≈ 写入时刻 + seconds
-        # （run 结束可能已过截止点，用宽容差而非「在未来」断言）
-        self.assertAlmostEqual(ctx.cooldown_until["strategy:cool"],
-                               time.time() + 0.3, delta=1.0)
+        # 无 active_site，cooldown_until 保持空（P3 site 键语义）
+        self.assertEqual(ctx.cooldown_until, {})
 
     def test_strategy_cooldown_interrupted_by_stop_is_stop_terminal(self):
         """冷却中被 stop 中断 → _process_item return "stop" 终局：
@@ -346,9 +356,13 @@ class WaitPointsTest(CooldownTestBase):
             self.assertLessEqual(seconds, 0.12)
             self.assertEqual(prefix, "长休息")
 
-        # cooldown_until 三类 reason 均登记（唯一写入者语义）
+        # 无 active_site → cooldown_until 保持空（P3 site 键语义）
+        self.assertEqual(ctx.cooldown_until, {})
+        # reason 仍传对（spy 证据）
+        self.assertEqual(set(by_reason), {"batch_rest", "sample_interval",
+                                           "periodic_rest"})
         for reason in ("batch_rest", "sample_interval", "periodic_rest"):
-            self.assertIn(reason, ctx.cooldown_until)
+            self.assertIn(reason, by_reason)
 
     def test_launch_backoff_via_chokepoint(self):
         """启动退避：首次 launch 失败 → _cooldown(backoff, "launch_backoff",
@@ -376,7 +390,8 @@ class WaitPointsTest(CooldownTestBase):
         self.assertEqual(prefix, "启动退避")
         # 被 stop 中断（UserInterrupted），未等满 30s、未二次 launch
         self.assertLess(elapsed, 5.0)
-        self.assertIn("launch_backoff", ctx.cooldown_until)
+        # 无 active_site（launch_backoff 在 acquire 前）→ 不登记
+        self.assertEqual(ctx.cooldown_until, {})
 
 
 if __name__ == "__main__":
