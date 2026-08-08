@@ -216,3 +216,24 @@
   回退（其 schema 无 fb_contacts）
 - review：spec 合规 ✅（与 fetcher 侧同口径双源 + 抽样）代码质量 ✅
 - minor (deferred)：无
+
+### Step 3.4 — wa_check 端到端冒烟（真实执行，2026-08-09 03:43 北京时间）
+- **环境事实**：生产库有 165 条 2026-08-08 23:44 排队的旧 wa_check item
+  （8237 个旧号，生产 daemon 从未跑 wa_check）——冒烟不可动它们。
+  已登录 WhatsApp 账号：auth_info-xiaohao-4/5（vendor/wa-check/）。
+- 裁定：独立临时库（/tmp/fb_wa_smoke.db）+ `daemon --queues wa_check
+  --db <tmp>` + `WA_CHECK_ACCOUNTS=xiaohao-4,xiaohao-5` 跑真实查号；
+  平台 API 双源路径由 3.3 单测覆盖（enqueue 与 topup 同口径）。
+- 种子：fb_contacts cn_uncertain×2（真实号 18588244213 + 13912345678）
+  + declared×1（8618588244213）；contacts×2（回归抽查）
+- 执行证据（/tmp/fb_wa_smoke_daemon.log）：真实 Baileys 查号 4 个号
+  ——8618588244213 ✅已注册、其余 ❌未注册；「写回 5 行（1 已注册）」
+- 回写验证（临时库）：
+  - fb_contacts 三行全部 wa_source='checked' + wa_checked_at 落时间；
+    wa_registered：18588244213=1、13912345678=0、8618588244213=1
+  - contacts 两行 wa_registered=0 + wa_checked_at 落时间（双表回归）
+  - work_items done
+- 数据事实：18588244213 与 8618588244213 是同一物理号码（同帖 bare 号
+  + wa.me 双桶），seen 去重后只查一次，回写命中两行——符合设计
+- 清理：冒烟 daemon 已停、临时库已删、生产 daemon 与 165 旧 item 未动
+- **P3 wa_check 衔接完成**：完成标准逐项达成（真实查号回写 + 双表回归）

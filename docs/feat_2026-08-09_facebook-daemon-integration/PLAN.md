@@ -176,7 +176,7 @@ P2 与 P3 互不依赖，P1 完成后可并行推进。
   - `app/db.py` 的 wa 批次挑号 SQL 同步扩展（与 fetcher 侧同口径：双源
     UNION + 抽样），平台侧重写 SQL 不 import fetcher。
   - 验收：平台测试（双源入队数量、去重、账号轮换不回归）。
-- [ ] **3.4 wa_check 端到端冒烟**（预估 20min，依赖：3.1-3.3、P1 冒烟数据）
+- [x] **3.4 wa_check 端到端冒烟**（预估 20min，依赖：3.1-3.3、P1 冒烟数据）
   - 种子 fb_contacts（真实 PoC 号码：cn_uncertain 2 个 + declared 1 个）
     → 平台 wa_check 任务 → 回写验证 → contacts 既有号码回归抽查。
   - 验收：回写行 wa_registered/wa_checked_at/wa_source 正确；证据记
