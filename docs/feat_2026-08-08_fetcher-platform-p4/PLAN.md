@@ -7,11 +7,11 @@
 
 | Phase | 目标 | 预计 Step | 依赖 | 状态 |
 |---|---|---|---|---|
-| P4-0 | fetcher 批次底座：stopped 态 + batch_id 链路 + consumer_status + 租约 | 3 | §3.0 工作区裁定落地 | pending |
-| P4-1 | wa_check 迁入：LocalExecutor + WaCheckTask + 队列入注册表 | 3 | P4-0 | pending |
-| P4-2 | 平台后端：批次任务类型 + sweeper + SSE 合成 + dispatcher API + 脚本纳管 | 3 | P4-0（P4-1 可并行） | pending |
-| P4-3 | 前端：表单分支 + 批次进度 + 调度器看板页 | 2 | P4-2 | pending |
-| P4-4 | 端到端验收 + 终审 | 2 | P4-1、P4-3 | pending |
+| P4-0 | fetcher 批次底座：stopped 态 + batch_id 链路 + consumer_status + 租约 | 3 | §3.0 工作区裁定落地 | done |
+| P4-1 | wa_check 迁入：LocalExecutor + WaCheckTask + 队列入注册表 | 3 | P4-0 | done |
+| P4-2 | 平台后端：批次任务类型 + sweeper + SSE 合成 + dispatcher API + 脚本纳管 | 3 | P4-0（P4-1 可并行） | done |
+| P4-3 | 前端：表单分支 + 批次进度 + 调度器看板页 | 2 | P4-2 | done |
+| P4-4 | 端到端验收 + 终审 | 2 | P4-1、P4-3 | done |
 
 ---
 
@@ -73,9 +73,9 @@
 
 **准入**：P4-1、P4-3 完成。**完成标准**：SPEC §7 逐条取证；全分支终审 MERGE READY。
 
-- [ ] **Step 4.1** 全链路验收冒烟（估 40min，依赖 3.2、1.3，状态 pending）
+- [x] **Step 4.1** 全链路验收冒烟（估 40min，依赖 3.2、1.3，状态 done）
   - SPEC §7 全 7 条逐条取证（contact 批次全链路 + 停止链路 + 看板跨站切换可见 + wa_check 写回 + 脚本纳管 + uvicorn 重启不丢 + 测试/tsc 绿）。
   - 证据（命令 + 输出 + 截图）落 plan 目录 report。
-- [ ] **Step 4.2** 全量回归 + 终审（估 30min，依赖 4.1，状态 pending）
+- [x] **Step 4.2** 全量回归 + 终审（估 30min，依赖 4.1，状态 done）
   - fetcher 全量测试 + 平台冒烟 + tsc；终审；scheduler-architecture.md §10 P4 行标完成；归档本目录到 docs/archive/（合并后）。
   - 验收：终审 MERGE READY 后呈用户合并。

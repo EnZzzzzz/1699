@@ -229,6 +229,24 @@
 - **commits**：待提交
 - **状态**：complete
 
+### P4-4 Step 4.2 — 全量回归 + 终审
+
+- **终审结论：MERGE READY**。
+- **全量回归**：fetcher 583 passed + 平台 62 passed + 前端 npx tsc -b 零错误。
+- **终审审查**（merge-base f6a497e..HEAD，11 commit，51 文件 +5549/-131）：
+  - spec 合规：P4-0~P4-4 全部 Phase/Step checkbox 勾选完成；SPEC §7 全 7 条
+    取证（见 Step 4.1 ledger）；
+  - 代码质量：TASK_COMMANDS 只剩 yiwugo、IN_PROCESS 清空（wa_tasks 冻结
+    未删）、BATCH_TYPES 6 类型、平台不 import fetcher（SQL 双份裁定落地）、
+    consumer_id 命名统一、线程本地 DB 连接、sweeper 状态机；
+  - 装配层冒烟：uvicorn 重启后 dispatcher API 可达（真实聚合生产数据）；
+    前端 5 路由浏览器走查全部渲染（Dashboard 非白屏 + 任务管理/调度器/
+    数据浏览/供应商）；
+  - deferred/parked：无（ledger 仅 2 条备注：P3 遗留 daemon 已处理、
+    condvar 30s 为 P0 既有语义）。
+- **commits**：b0131e2 + 终审提交
+- **状态**：complete（MERGE READY，呈用户合并）
+
 ### P4-1 Step 1.3 — wa_check 真实冒烟
 
 - **冒烟**：plan/smoke-step1.3/run.log + run2.log（临时库 /tmp 已清理）。
