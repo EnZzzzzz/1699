@@ -213,7 +213,7 @@ CREATE INDEX idx_work_items_claim ON work_items(queue, status, id);
 | P2 identity 分桶 | identity 键升级 `f"{site}:{ip}"`（拼前缀仅诞生点一处）；6 处隐藏使用点修正（保鲜检查/直连判定/报表/指纹）；Cookie 域过滤收紧 + cookies 表幂等迁移（历史 ip_stats/ip_events 保持裸键） | 同 IP 两站点 Cookie/簿记互不污染（隔离性单测）；✅ 已完成（2026-08-08，实施记录 docs/archive/feat_2026-08-08_fetcher-identity-p2/） |
 | P3 第二站点接入 | madeinchina 队列接入，跨站填充生效；BrowserContext 多站点隔离（自 P2 移入） | 同通道 madeinchina 冷却期间执行 1688 工作项，两边各自预算不超标；✅ 已完成（2026-08-08，实施记录 docs/archive/feat_2026-08-08_fetcher-multiqueue-p3/） |
 | P4 平台切换 | runner 改批次提交、wa_check 迁入、API + 前端看板 | 平台创建/停止/监控全流程走 dispatcher；✅ 已完成（2026-08-08，实施记录 docs/archive/feat_2026-08-08_fetcher-platform-p4/） |
-| P5 退役旧路径 | 旧 subprocess 采集路径冻结→删除；修订 flow-architecture.md §2/§10 | 旧代码路径删除，文档同步；✅ 已完成（2026-08-09，实施记录 docs/refactor_2026-08-08_retire-legacy-p5/，合并后归档） |
+| P5 退役旧路径 | 旧 subprocess 采集路径冻结→删除；修订 flow-architecture.md §2/§10 | 旧代码路径删除，文档同步；✅ 已完成（2026-08-09，实施记录 docs/archive/refactor_2026-08-08_retire-legacy-p5/） |
 
 每个阶段独立可回滚：P0~P3 期间旧 CLI 路径保持可用，灰度对比等价后再切。
 
