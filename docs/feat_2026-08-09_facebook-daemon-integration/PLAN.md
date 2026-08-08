@@ -158,7 +158,7 @@ P2 与 P3 互不依赖，P1 完成后可并行推进。
 
 ### Step 明细
 
-- [ ] **3.1 fetcher wa_check 双源挑号 + 回写双表**（预估 35min，依赖：1.1）
+- [x] **3.1 fetcher wa_check 双源挑号 + 回写双表**（预估 35min，依赖：1.1）
   - `wa_task.py`：`wa_check_topup` 挑号 SQL 扩展为
     `contacts ∪ fb_contacts`（fb 侧仅 bucket='cn_uncertain' 且
     wa_checked_at IS NULL；DISTINCT 去重）；WaCheckTask 回写按号码双表
@@ -166,7 +166,7 @@ P2 与 P3 互不依赖，P1 完成后可并行推进。
     附带 wa_source='checked'）。
   - 验收：TDD——双源混合、去重、仅 cn_uncertain 桶、回写落表正确、
     1688-only 场景零回归；全绿。
-- [ ] **3.2 declared 桶抽样校准混入**（预估 20min，依赖：3.1）
+- [x] **3.2 declared 桶抽样校准混入**（预估 20min，依赖：3.1）
   - 挑号时 declared_wa 桶按 ~5-10% 随机抽样混入（实现：每批 N 个不确定
     号配 max(1, N×10%) 个 declared 抽样，SQL `ORDER BY RANDOM() LIMIT`
     或等效）；抽样结果同样回写 wa_source='checked'，供一致率统计。

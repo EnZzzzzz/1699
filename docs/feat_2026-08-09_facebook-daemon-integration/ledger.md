@@ -181,3 +181,27 @@
   + fb 队列，feature 意图的最终形态）
 - **P1 核心抓取链路完成**：完成标准逐项达成（fetcher 624 绿、1.4 冒烟
   证据、1.7 端到端证据、tsc 通过）
+
+### Step 3.1 — fetcher wa_check 双源挑号 + 回写双表
+- commit 范围：`fetcher/fetcher/wa_task.py`（wa_check_topup UNION + 回写
+  双表）、`fetcher/tests/test_wa_task_fb.py`（9 例）、brief/ledger/PLAN
+- TDD：6 failed → 9 passed；全量 633 passed 零回归
+- 设计要点：
+  - 挑号 SQL：`contacts(mobile 未查) UNION fb_contacts(bucket=cn_uncertain
+    且 wa_checked_at IS NULL)`，UNION 天然 DISTINCT（SPEC §7.6 双源口径）
+  - 回写：contacts 既有逻辑不动；fb_contacts 按号码后 11 位 LIKE +
+    normalize 严格匹配，附带 wa_source='checked'（SPEC §4.2）
+  - 行为细节：原 contacts 歧义 `continue`（整号跳过）改为歧义时跳过
+    contacts 但仍按 fb 精确命中回写 fb（fb.number 已规范化，精确命中
+    高置信；contacts 行为不变）
+- review：spec 合规 ✅（§7.6 改动面逐条）代码质量 ✅
+
+### Step 3.2 — declared 桶抽样校准混入
+- 同 wa_task.py：挑号后按 max(1, N×10%) 抽 declared_wa 未查号
+  （ORDER BY RANDOM() LIMIT），混入同批入队；已查不重抽；抽样号回写
+  wa_source='checked'（供一致率统计）
+- TDD：2 failed → 5 例新增全过；全量 638 passed
+- 既有测试更新（plan-mandated）：`test_fb_only_cn_uncertain_bucket`
+  原断言「declared 不入队」被 Step 3.2 抽样机制合法推翻 → declared 标记
+  已查（抽样排除），保留原意图（UNION 桶过滤 + 已查不重抽）
+- review：spec 合规 ✅（§7.6 declared 抽样 + 比例边界测试）代码质量 ✅

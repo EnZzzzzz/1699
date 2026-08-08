@@ -49,14 +49,36 @@ def wa_check_topup(db, limit: int = 0) -> int:
         " AND status IN ('pending','claimed')", (WA_QUEUE,)).fetchone()[0]
     if in_flight:
         return 0
+    # 双源挑号（P3）：contacts 未查 mobile ∪ fb_contacts 未查 cn_uncertain
+    # 桶（declared_wa/overseas 桶不进 wa_check；declared 抽样见 Step 3.2）。
+    # UNION 天然 DISTINCT 去重（SPEC §7.6 双源口径）。
     rows = db.conn.execute(
-        "SELECT mobile FROM contacts WHERE wa_checked_at IS NULL"
-        " AND mobile IS NOT NULL AND TRIM(mobile) <> ''"
-        " ORDER BY id ASC").fetchall()
+        "SELECT mobile AS number FROM contacts"
+        " WHERE wa_checked_at IS NULL AND mobile IS NOT NULL"
+        "   AND TRIM(mobile) <> ''"
+        " UNION"
+        " SELECT number FROM fb_contacts"
+        " WHERE bucket='cn_uncertain' AND wa_checked_at IS NULL"
+        " ORDER BY number").fetchall()
     numbers: list[str] = []
     seen: set[str] = set()
-    for (mobile,) in rows:
-        for n in normalize_numbers([mobile], DEFAULT_CC):
+    for (number,) in rows:
+        for n in normalize_numbers([number], DEFAULT_CC):
+            if n not in seen:
+                seen.add(n)
+                numbers.append(n)
+    if not numbers:
+        return 0
+    # declared_wa 抽样校准（Step 3.2）：每批 N 个不确定号配
+    # max(1, N×10%) 个 declared 抽样（SQL ORDER BY RANDOM() LIMIT），
+    # 供自声明 vs 协议验证一致率统计；已查过（wa_checked_at 非空）不重抽。
+    n_sample = max(1, int(len(numbers) * 0.10))
+    declared_rows = db.conn.execute(
+        "SELECT number FROM fb_contacts WHERE bucket='declared_wa'"
+        " AND wa_checked_at IS NULL ORDER BY RANDOM() LIMIT ?",
+        (n_sample,)).fetchall()
+    for (number,) in declared_rows:
+        for n in normalize_numbers([number], DEFAULT_CC):
             if n not in seen:
                 seen.add(n)
                 numbers.append(n)
@@ -166,6 +188,7 @@ class WaCheckTask(Task):
             if not num or reg is None:
                 continue
             pat = "%" + num[-11:]
+            # ---- contacts（既有语义不动）----
             rows = conn.execute(
                 "SELECT id, mobile, phone FROM contacts "
                 "WHERE REPLACE(mobile, ' ', '') LIKE :p "
@@ -179,14 +202,37 @@ class WaCheckTask(Task):
             elif len(rows) == 1:
                 targets = rows
             else:
-                continue  # 歧义跳过
-            marks = ",".join("?" * len(targets))
-            conn.execute(
-                f"UPDATE contacts SET wa_registered=?, wa_checked_at=? "
-                f"WHERE id IN ({marks})",
-                (1 if reg else 0, ts,
-                 *[row["id"] for row in targets]))
-            written += len(targets)
+                targets = []
+            if targets:
+                marks = ",".join("?" * len(targets))
+                conn.execute(
+                    f"UPDATE contacts SET wa_registered=?, wa_checked_at=? "
+                    f"WHERE id IN ({marks})",
+                    (1 if reg else 0, ts,
+                     *[row["id"] for row in targets]))
+                written += len(targets)
+            # ---- fb_contacts（双源回写，幂等命中；附带 wa_source='checked'）----
+            fb_rows = conn.execute(
+                "SELECT id, number FROM fb_contacts "
+                "WHERE REPLACE(number, ' ', '') LIKE :p",
+                {"p": pat}).fetchall()
+            fb_exact = [row for row in fb_rows
+                        if num in normalize_numbers([row["number"]],
+                                                    DEFAULT_CC)]
+            if fb_exact:
+                fb_targets = fb_exact
+            elif len(fb_rows) == 1:
+                fb_targets = fb_rows
+            else:
+                fb_targets = []
+            if fb_targets:
+                marks = ",".join("?" * len(fb_targets))
+                conn.execute(
+                    "UPDATE fb_contacts SET wa_registered=?, wa_checked_at=?, "
+                    "wa_source='checked' WHERE id IN (" + marks + ")",
+                    (1 if reg else 0, ts,
+                     *[row["id"] for row in fb_targets]))
+                written += len(fb_targets)
             if reg:
                 hits += 1
         conn.commit()
