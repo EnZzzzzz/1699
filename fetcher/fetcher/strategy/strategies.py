@@ -116,13 +116,17 @@ class RelaunchBrowserStrategy(_AtomStrategy):
 class SwapIPStrategy:
     """换 IP：重启浏览器绑定新出口 IP（通道不变，靠出口轮换/重连）。
 
-    冷却例外：内部等待夹在两次 relaunch 之间，保持原地等待（P3-3 router 接 release 后改让出）。
+    P3 已拆无头两阶段；有头 WaitHumanLogin 例外保留原地（人工辅助场景）。
 
     迁移旧引擎 block_stage==1 的完整逻辑：
         1. 重启浏览器（旧 Cookie 先回写）；
-        2. 出口尚未轮换（青果 30 分钟时效，identity 没变）：休息一轮
-           等其过期（有头模式期间可人工登录，登录成功立即算解决），
-           再重启一次绑定新 IP；
+        2. 出口尚未轮换（青果 30 分钟时效，identity 没变）：
+           有头 → WaitHumanLogin 轮询人工登录（需活 page，不拆分），
+                 登录成功即可，否则第二次 relaunch；
+           无头 → P3 两阶段：回写 Cookie → 关闭本站 context →
+                 登记 needs_relaunch → 输出让出型冷却，冷却到期
+                 重领时由 ensure_site 懒建路径消费 needs_relaunch
+                 （完整 relaunch），不再显式执行第二次 relaunch。
         3. 两步都成功即 solved（是否真换到 IP 由 data["rotated"] 标注）。
     """
 
@@ -143,28 +147,50 @@ class SwapIPStrategy:
         if result.data.get("rotated") or not ctx.config.use_proxy:
             return StepResult(True, result.detail, result.data)
 
-        # 出口还没轮换（休息不足 30 分钟）：再等一轮让青果轮换
+        # 出口还没轮换（休息不足 30 分钟）
         rest = random.uniform(ctx.config.block_rest_min,
                               ctx.config.block_rest_max)
-        ctx.log(f"    [!] 出口 IP 尚未轮换（青果 30 分钟时效），"
-                f"再休息 {rest / 60:.1f} 分钟等其过期后重试")
         if ctx.headed:
-            # 有头模式：等轮换期间轮询用户是否手动登录（Cookie 增量检测），
-            # 登录成功立即继续，不必等轮换
+            # P3 已拆无头两阶段；有头 WaitHumanLogin 例外保留原地（人工辅助场景）
+            ctx.log(f"    [!] 出口 IP 尚未轮换（青果 30 分钟时效），"
+                    f"再休息 {rest / 60:.1f} 分钟等其过期后重试")
             login = WaitHumanLogin().run(ctx, {"seconds": rest})
             if login.outcome is Outcome.OK:
                 SaveCookies().run(ctx, {})
                 return StepResult(True, f"等轮换期间手动登录成功: {login.detail}")
             if login.outcome is Outcome.SKIPPED:
                 return StepResult(False, "用户中断")
-        elif ctx.wait(rest):
-            return StepResult(False, "用户中断")
-        result2 = RelaunchBrowser().run(ctx, self._params)
-        if result2.outcome is Outcome.OK:
-            return StepResult(True, result2.detail, result2.data)
-        if result2.outcome is Outcome.SKIPPED:
-            return StepResult(False, "用户中断")
-        return StepResult(False, result2.detail, result2.data)
+            # WaitHumanLogin 非 OK 非 SKIPPED → 落回第二次 relaunch（有头保留原地逻辑）
+            result2 = RelaunchBrowser().run(ctx, self._params)
+            if result2.outcome is Outcome.OK:
+                return StepResult(True, result2.detail, result2.data)
+            if result2.outcome is Outcome.SKIPPED:
+                return StepResult(False, "用户中断")
+            return StepResult(False, result2.detail, result2.data)
+
+        # 无头两阶段（P3）：回写 Cookie → 关闭本站 context →
+        # 登记 needs_relaunch → 输出让出型冷却；冷却到期重领时由
+        # ensure_site 懒建路径消费 needs_relaunch（完整 relaunch）
+        site = ctx.state.get("active_site")
+        ctx.log(f"    [!] 出口 IP 尚未轮换（青果 30 分钟时效），"
+                f"登记 needs_relaunch[{site}]，让出冷却 {rest / 60:.1f} 分钟，"
+                f"冷却到期重领时走完整 relaunch")
+        # 回写本站 Cookie
+        try:
+            SaveCookies().run(ctx, {})
+        except Exception:  # noqa: BLE001
+            pass
+        # 关闭本站 context（浏览器进程保留，其他 site view 不受影响）
+        if site:
+            try:
+                ctx.session.close_site(site, store=ctx.store, log=ctx.log)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                ctx.browser_manager.mark_needs_relaunch(ctx.session, site)
+            except Exception:  # noqa: BLE001
+                pass
+        return StepResult(False, f"未轮换，已登记两阶段", cooldown=rest)
 
 
 class WaitHumanVerifyStrategy(_AtomStrategy):

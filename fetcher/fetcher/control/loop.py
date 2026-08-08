@@ -216,6 +216,13 @@ class CrawlLoop:
                 kind, count = self._process_item(item)
                 if kind in ("abort", "stop"):
                     return self.stats
+                if kind == "release":
+                    # 策略冷却让出：释放 item 回 pending（attempts 熔断），
+                    # 冷却到期重领时策略链从头开始（SPEC §3.4）
+                    self.task.release_item(self.ctx)
+                    self.task.after_item(self.ctx, item)
+                    # stop 由下一轮 acquire 的 condvar 检查处理
+                    continue
                 self.done_in_batch += count
                 self.total_done += count
                 if kind == "success":
@@ -442,14 +449,15 @@ class CrawlLoop:
             step = strategy.run(ctx)
             if step.solved:
                 self.log(f"✓ 策略 {decision.strategy} 完成: {step.detail}")
-            # 策略冷却经 chokepoint 执行（Step 2.1 起策略只算时长不自
-            # 等）；被 stop 中断按现状 stop 路径退出（与旧策略内
-            # ctx.wait 中断 → 循环条件退出 → return "stop" 的终局一致）
-            # item 未完成路径暂保留原地等待（默认）；
-            # P3-3 router 接 release 后改让出
-            if step.cooldown and self._cooldown(
-                    step.cooldown, f"strategy:{decision.strategy}"):
-                return "stop", 0
+            # 策略冷却统一让出 + release（P3 SPEC §3.4）：冷却期间该
+            # 站点队列不可见，item 释放回 pending（attempts 熔断），
+            # 冷却到期重领（策略链从头开始）
+            if step.cooldown:
+                if self._cooldown(step.cooldown,
+                                  f"strategy:{decision.strategy}",
+                                  yield_=True):
+                    return "stop", 0
+                return "release", 0
         return "stop", 0
 
     def _bind_item_site(self):

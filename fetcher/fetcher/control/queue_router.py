@@ -277,6 +277,23 @@ class QueueRouter:
         self._finish(ctx, "failed", result={"reason": reason, "kind": kind})
         return phrase
 
+    def release_item(self, ctx) -> str:
+        """当前 worker 的 item 释放回 pending（attempts+1，耗尽置 failed）。
+
+        返回终态（"pending"/"failed"）供日志；无认领记录时返回 ""。
+        """
+        item_id = ctx.state.pop(_STATE_KEY, None)
+        if item_id is None:
+            return ""
+        try:
+            status = self._db(ctx).release_work_item(item_id, max_attempts=3)
+            if status == "failed":
+                ctx.log(f"[!] 工作项 #{item_id} attempts exhausted，已置 failed")
+            return status
+        except Exception as e:  # noqa: BLE001
+            ctx.log(f"[!] 工作项 #{item_id} 释放失败: {e}")
+            return ""
+
     def _finish(self, ctx, status: str, result: dict | None = None):
         """把当前 worker 认领的 work_item 落终态（done/failed）。"""
         item_id = ctx.state.pop(_STATE_KEY, None)

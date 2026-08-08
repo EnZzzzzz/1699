@@ -265,9 +265,9 @@ class StrategyCooldownIntegrationTest(CooldownTestBase):
     TABLE = {Scenario.RISK_SLIDER_PAGE: [("cool", 1), ("give_up", None)]}
 
     def test_strategy_cooldown_via_chokepoint_then_retry_success(self):
-        """首次 fetch 自报 blocked → 策略输出 cooldown=0.3 → loop 经
-        chokepoint 真实等待后重试 fetch → 成功收尾。
-        同时验证策略冷却保持 yield_=False（原地型，P3-3 改让出）。"""
+        """首次 fetch 自报 blocked → 策略输出 cooldown=0.3 → P3 策略冷却
+        统一让出 + release（yield_=True）：登记冷却后立即返回，item 释放
+        回 pending 然后循环退出（单 item 无更多任务）。"""
         strategy = CooldownStrategy(cooldown=0.3, solved=True)
         task = ScriptedTask([("blocked", "滑块拦截"), ("ok", {"v": 1})])
         loop, ctx = self.make_loop(task, self.TABLE, {"cool": strategy})
@@ -277,9 +277,9 @@ class StrategyCooldownIntegrationTest(CooldownTestBase):
         loop.run()
         elapsed = time.monotonic() - t0
 
-        # 重试发生且终态正确
-        self.assertEqual(task.fetches, 2)
-        self.assertEqual(task.succeeded, ["item1"])
+        # P3：策略冷却 → release（不再 wait + retry）
+        self.assertEqual(task.fetches, 1)
+        self.assertEqual(task.succeeded, [])
         self.assertEqual(task.given_up, [])
         # 冷却经 chokepoint：spy 记录 reason=f"strategy:cool"、秒数原样透传
         strat_calls = [c for c in calls if c[1] == "strategy:cool"]
@@ -287,34 +287,41 @@ class StrategyCooldownIntegrationTest(CooldownTestBase):
         seconds, _reason, prefix, yield_ = strat_calls[0]
         self.assertAlmostEqual(seconds, 0.3, delta=1e-6)
         self.assertIsNone(prefix)  # 策略冷却走静默路径
-        self.assertFalse(yield_, "策略冷却应保持 yield_=False（原地型）")
-        # 真实等待过（spy 调的是真实实现）
-        self.assertGreaterEqual(elapsed, 0.25)
+        self.assertTrue(yield_, "P3 策略冷却已改为 yield_=True（让出型）")
+        # 让出型不等待（立即返回）
+        self.assertLess(elapsed, 0.2)
         # 无 active_site，cooldown_until 保持空（P3 site 键语义）
         self.assertEqual(ctx.cooldown_until, {})
 
     def test_strategy_cooldown_interrupted_by_stop_is_stop_terminal(self):
-        """冷却中被 stop 中断 → _process_item return "stop" 终局：
-        当前 item 不放弃、后续 item 不再认领，loop 快速退出。
-        同时验证策略冷却保持 yield_=False。"""
+        """P3 策略冷却让出 + release：stop 由下一轮 acquire 处理。
+        设 active_site 后 cooldown 登记冷却，stop 置位后 while 循环退出。
+        当前 item 不放弃、后续 item 不再认领，loop 快速退出。"""
         strategy = CooldownStrategy(cooldown=30.0)
-        task = ScriptedTask([("blocked", "滑块拦截"), ("ok", {"v": 1}),
-                             ("ok", {"v": 2})], items=("item1", "item2"))
+        # 在 fetch 中设 stop：第一次 fetch 后 stop 置位，
+        # release+continue 后 while 循环立即捕获
+        class StopAfterFetch(ScriptedTask):
+            def fetch(self, ctx, item):
+                result = super().fetch(ctx, item)
+                ctx.stop.set()
+                return result
+        task = StopAfterFetch([("blocked", "滑块拦截"), ("ok", {"v": 1}),
+                               ("ok", {"v": 2})], items=("item1", "item2"))
         stop = threading.Event()
         config = make_config(self.tmp)
         ctx = make_ctx(config, self.mgr, stop=stop)
+        ctx.state["active_site"] = "1688"
         policy = Policy(table=self.TABLE, strategies={"cool": strategy},
                         max_consecutive_fail=config.max_consecutive_fail)
         loop = CrawlLoop(ctx, task, policy=policy)
         calls = spy_cooldown_full(loop)
 
-        threading.Timer(0.15, stop.set).start()
         t0 = time.monotonic()
         loop.run()
         elapsed = time.monotonic() - t0
 
-        # 被 stop 打断而非等满 30s
-        self.assertLess(elapsed, 5.0)
+        # stop 快速捕获（不等待 30s）
+        self.assertLess(elapsed, 0.3)
         self.assertTrue(stop.is_set())
         # "stop" 终局：item1 未成功也未放弃，item2 未被认领（fetch 只 1 次）
         self.assertEqual(task.fetches, 1)
@@ -323,7 +330,7 @@ class StrategyCooldownIntegrationTest(CooldownTestBase):
         strat_calls = [c for c in calls if c[1] == "strategy:cool"]
         self.assertEqual(len(strat_calls), 1)
         self.assertAlmostEqual(strat_calls[0][0], 30.0, delta=1e-6)
-        self.assertFalse(strat_calls[0][3], "策略冷却应保持 yield_=False")
+        self.assertTrue(strat_calls[0][3], "P3 策略冷却已改为 yield_=True（让出型）")
 
 
 # ---------- 用例 3：4 处等待点触发 ----------

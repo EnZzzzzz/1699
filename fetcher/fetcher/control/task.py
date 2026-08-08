@@ -122,5 +122,12 @@ class Task:
         """放弃的任务项计入批次配额的数量。"""
         return 0
 
+    def release_item(self, ctx) -> str:
+        """当前 worker 的 item 释放回 pending（CLI 路径默认空实现）。
+
+        daemon 多队列路径由 QueueRouter 覆盖为 DB release_work_item。
+        """
+        return ""
+
     def after_item(self, ctx, item) -> None:
         """当前任务项处理完毕（含放弃）后的收尾（如释放类目占用）。"""
