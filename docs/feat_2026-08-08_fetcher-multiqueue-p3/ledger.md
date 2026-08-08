@@ -65,3 +65,10 @@
   - 注：implementer 超时未写 report/commit，主 Agent 已代 commit 5c1afe8 并核实范围（未碰用户文件）；reviewer 以 diff 为准
   - fix round 1/5（新 implementer，原 implementer 失联）：I1 (防御性) step.cooldown 无条件优先 solved→加 not step.solved 守护+注释；M1 site=None 静默耗尽→WARNING+不输出 cooldown；M2 ctx.wait 断言；M3 result_json 断言去耦合；全量 438→440 passed，全部 ADDRESSED 零新破坏
   - Step 3.2: minor (deferred): 无
+- Step 3.3: complete (commits 7595c5b..dd599ce, fix round 1/5 clean)
+  - 实现：跨站 view 懒建补缺（loop._bind_item_site 补 ensure_site + set_active_site + try/except 容错，TDD 5 用例）；双队列跨站冒烟（Run 5 双向手递手取证：1688#1 failed 17:39:38 → mic#1 claimed 同秒 → mic#1 done → 1688#2 claimed 同秒 → 1688#2 failed → mic#2 claimed，两轮双向）
+  - **debug 子任务（p3-3-debug1）**：冒烟发现 worker 异常退出 'empty'/'failed'（KeyError）→ traceback 定位根因：QueueRouter.make_stats 返回 {done:0} 与 contact task 的 {ok,empty,failed} 键不符 → **P3 引入**（非预存）→ 修复 ca35d5e（make_stats 合并所有 task 统计键 + rest_counter 委托首个 task + loop except 加 traceback 打印产品改进保留）；TDD +3，全量 445→447 passed
+  - fix round 1/5: review 需修——C1 _bound_site 在 plugin 块内设（改无条件设）；C2 report 误标预存（改 P3 引入已修）；I3 补 Run 5 取证（dd599ce）；M5/M6 import 位置/截断；全部 ADDRESSED 零新破坏
+  - **取证口径记录**：Run 5 证明跨站切换机制（同 worker 一站处理完转另一站，双向）；「冷却登记后到期前」的严格取证（sample_interval 让出冷却窗口内认领另一站）留 **P3-6 Step 6.1** 补（届时放大样本间隔制造冷却窗）
+  - **Phase 3（P3-3）完成**：QueueRouter + 双队列注册表 + SwapIP 两阶段 + 跨站懒建；447 passed；跨站双向手递手取证
+  - Step 3.3: minor (deferred): 无

@@ -10,7 +10,7 @@
 | P3-0 | CloakBrowser 多 context 席位 spike（C1 实测） | 1 | 无 | done |
 | P3-1 | 调度内核：work_items 扩展 + 冷却表改建 + 让出型 chokepoint | 3 | P3-0（可并行，不依赖其结果） | done |
 | P3-2 | 浏览器层：Session/BrowserManager 多 context + 种子池 (worker,site) 粒度 | 3 | P3-0 结论回填 SPEC §4 | done |
-| P3-3 | QueueRouter + daemon CLI + SwapIP 两阶段 | 3 | P3-1、P3-2 | pending |
+| P3-3 | QueueRouter + daemon CLI + SwapIP 两阶段 | 3 | P3-1、P3-2 | done |
 | P3-4 | madeinchina 队列接入（contact + shop feeder） | 2 | P3-3 | pending |
 | P3-5 | 1688 shop/company feeder 接入 | 2 | P3-4 | pending |
 | P3-6 | 端到端验收冒烟 + 终审 | 2 | P3-5 | pending |
@@ -66,7 +66,7 @@
 - [x] **Step 3.2** SwapIP 两阶段（估 30min，依赖 3.1，状态 pending）
   - 无头：未轮换→回写关本站 context→置 needs_relaunch→让出冷却→release item；有头 WaitHumanLogin 保留原地例外（注释更新）；懒建路径消费 needs_relaunch。
   - 验收：单测覆盖两阶段状态流转（mock relaunch rotated=False）；策略冷却后 release→重领→attempts 熔断链路单测。
-- [ ] **Step 3.3** 双队列跨站冒烟（估 30min，依赖 3.2，状态 pending）
+- [x] **Step 3.3** 双队列跨站冒烟（估 30min，依赖 3.2，状态 pending）
   - `--workers 1` 直连临时库跑 `daemon --queues crawl_1688_contact,crawl_mic_contact`：人为注货两站店铺，日志验证同 worker 在一站冷却期认领另一站 item。
   - 验收：日志证据落 plan 目录（report 文件随跑随写）。
 
