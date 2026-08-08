@@ -58,3 +58,8 @@
 
 - 生产库核对：tasks 仅 idx_tasks_status 索引；flows 表存在；4 行 celery_id/flow_id 全 NULL。
 - 测试 fixture：Step 1.1 已删 2 个 wa_tasks 测试文件，剩 4 个含死列（test_batch_tasks/test_dispatcher_api/test_loop_restart/test_task_waiting_status(dict 形式)）。
+- 决策点（2026-08-08 用户裁决）：tasks 表重建顺序——SPEC §3.4 字面为 RENAME-first（tasks→tasks_legacy），
+  但 SQLite RENAME 会把 task_events.task_id / proxy_channels.used_by_task 外键改写指向 tasks_legacy，
+  DROP 后悬空（代码库从未启用 PRAGMA foreign_keys，休眠地雷）。用户裁决 **方案 B（交换式）**：
+  建 tasks_new → INSERT SELECT → DROP tasks → RENAME tasks_new TO tasks → DROP flows → 重建索引。
+  删除面/单事务/幂等/失败留原表要求不变；外键始终指向 "tasks" 表名，最终 schema 干净。
