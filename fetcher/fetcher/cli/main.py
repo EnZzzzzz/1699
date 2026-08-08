@@ -241,6 +241,16 @@ def _build_registry(selected_queues: list[str] | None = None) -> list:
         domain_suffix=".cn.made-in-china.com",
     ))
 
+    # crawl_mic_shop（feeder 队列：topup=None，不参与 in_progress reset）
+    specs.append(QueueSpec(
+        queue="crawl_mic_shop",
+        site="madeinchina",
+        task=site_mic.make_task("shop"),
+        topup=None,
+        domain_suffix="",
+        requires={"channel", "browser"},
+    ))
+
     if selected_queues:
         specs = [s for s in specs if s.queue in selected_queues]
     return specs
@@ -249,14 +259,17 @@ def _build_registry(selected_queues: list[str] | None = None) -> list:
 def reset_daemon_state(db, registry: list) -> tuple[int, int]:
     """daemon 启动崩溃恢复：全量回收 claimed + 逐 site 重置 in_progress。
 
+    只对 topup 非 None 的队列做 reset_in_progress（feeder 队列跳过——
+    它不产生 in_progress shops）。
     返回 (n_claimed_reset, n_in_progress_reset)。
     提取为独立函数便于测试（I2）。
     """
     n_items = db.reset_claimed_work_items()
     total_shops = 0
     for spec in registry:
-        n = db.reset_in_progress(spec.domain_suffix)
-        total_shops += n
+        if spec.topup is not None:
+            n = db.reset_in_progress(spec.domain_suffix)
+            total_shops += n
     return n_items, total_shops
 
 

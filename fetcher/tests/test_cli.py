@@ -46,6 +46,7 @@ class CliParserTest(unittest.TestCase):
         all_names = [s.queue for s in full]
         self.assertIn("crawl_1688_contact", all_names)
         self.assertIn("crawl_mic_contact", all_names)
+        self.assertIn("crawl_mic_shop", all_names)
 
     def test_daemon_config_from_args(self):
         # config_from_args 不读 args.task，daemon 命名空间可直接复用
@@ -198,6 +199,54 @@ class ResetDaemonStateTest(unittest.TestCase):
             self.db.conn.execute(
                 "SELECT status FROM shops WHERE domain=?",
                 ("s1.1688.com",)
+            ).fetchone()[0],
+            "in_progress")
+
+    def test_reset_skips_feeder_queues(self):
+        """feeder 队列（topup=None）不触发 reset_in_progress。
+
+        feeder 的 domain_suffix="" 若被调用 → 重置所有 in_progress
+        （含 other.example.com）；修复后跳过 feeder → other.example.com
+        保持 in_progress。
+        """
+        from fetcher.cli.main import reset_daemon_state
+        from fetcher.control.queue_router import QueueSpec
+
+        # feeder 队列：topup=None, domain_suffix 为空
+        feeder = QueueSpec(
+            queue="crawl_mic_shop", site="madeinchina",
+            task=lambda: None, topup=None, domain_suffix="",
+            requires={"channel", "browser"})
+        # contact 队列：topup 非 None
+        contact = QueueSpec(
+            queue="crawl_mic_contact", site="madeinchina",
+            task=lambda: None,
+            topup=lambda db, limit: 0,
+            domain_suffix=".cn.made-in-china.com",
+            requires={"channel", "browser"})
+
+        # Seed: mic contact shop + 不匹配任何 contact domain_suffix 的 shop
+        self._seed_in_progress([
+            "s1.cn.made-in-china.com",
+            "other.example.com"])
+
+        registry = [feeder, contact]
+        n_items, total_shops = reset_daemon_state(self.db, registry)
+        self.assertEqual(n_items, 0)
+        # 只 contact 队列的 domain_suffix 被重置（1 个），feeder 跳过
+        self.assertEqual(total_shops, 1)
+        # s1.cn.made-in-china.com 被重置为 pending
+        self.assertEqual(
+            self.db.conn.execute(
+                "SELECT status FROM shops WHERE domain=?",
+                ("s1.cn.made-in-china.com",)
+            ).fetchone()[0],
+            "pending")
+        # other.example.com 保持 in_progress（feeder 未触发全量重置）
+        self.assertEqual(
+            self.db.conn.execute(
+                "SELECT status FROM shops WHERE domain=?",
+                ("other.example.com",)
             ).fetchone()[0],
             "in_progress")
 

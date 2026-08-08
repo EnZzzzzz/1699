@@ -631,9 +631,28 @@ class ShopDB:
             "SELECT keyword FROM category_progress WHERE exhausted=1").fetchall()
         return {r[0] for r in rows}
 
+    def iter_active_categories(self, prefix: str = "") -> list[dict]:
+        """返回未采完的类目（启动播种用，幂等）。
+
+        prefix 非空 → 只返回 keyword 以 prefix 开头的行（如 "company:"）。
+        prefix 为空 → 返回全部未采完类目。
+        返回 [{"keyword","name"}]，按 id 排序。
+        """
+        if prefix:
+            rows = self.conn.execute(
+                "SELECT keyword, name FROM category_progress"
+                " WHERE exhausted=0 AND keyword LIKE ? ORDER BY id",
+                (prefix + "%",)).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT keyword, name FROM category_progress"
+                " WHERE exhausted=0 ORDER BY id").fetchall()
+        return [{"keyword": r[0], "name": r[1] or r[0]} for r in rows]
+
     def get_active_categories(self) -> list[dict]:
         """返回未采完的拼音类目（madeinchina market slug 是拼音缩写）。
 
+        委托 iter_active_categories() 获取全量未采完类目，再经拼音过滤。
         当前首页只暴露少量 market 链接，类目池只靠首页提取会把大量
         已发现但未采完的类目搁浅在 category_progress 里；这里把
         非 exhausted 的拼音类目捞回来，prepare 时播种进类目池续采。
@@ -641,11 +660,10 @@ class ShopDB:
         过滤规则：keyword 是纯拼音（ASCII [a-zA-Z0-9_]+）——1688 等其他
         任务的中文/company: 关键词行与 madeinchina 无关，排除。
         """
-        rows = self.conn.execute(
-            "SELECT keyword, name FROM category_progress WHERE exhausted=0"
-        ).fetchall()
-        return [{"slug": r[0], "name": r[1] or r[0]} for r in rows
-                if r[0] and _is_pinyin_slug(r[0])]
+        all_cats = self.iter_active_categories()
+        return [{"slug": cat["keyword"], "name": cat["name"]}
+                for cat in all_cats
+                if cat["keyword"] and _is_pinyin_slug(cat["keyword"])]
 
     def mark_category_exhausted(self, keyword: str, name: str = None):
         """标记类目已采到末页（页码不前进，之后采集跳过该类目）。"""

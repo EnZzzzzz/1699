@@ -612,6 +612,140 @@ class ShopTaskTest(unittest.TestCase):
         # 验证 goto 正常完成即可
         self.assertEqual(len(urls), 2)
 
+    # ---- iter_active_categories - 统一类目查询 ----
+
+    def test_iter_active_categories_returns_non_exhausted(self):
+        """未采完类目返回，exhausted 排除，按 id 排序。"""
+        import tempfile
+        from pathlib import Path
+        from fetcher.db import ShopDB
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            db_path = Path(tmp.name) / "t.db"
+            db = ShopDB(db_path)
+            # Seed: 3 条 exhausted=0，1 条 exhausted=1
+            db.conn.execute(
+                "INSERT INTO category_progress (keyword, name, exhausted)"
+                " VALUES ('cat_c', 'C 类目', 0)")
+            db.conn.execute(
+                "INSERT INTO category_progress (keyword, name, exhausted)"
+                " VALUES ('cat_a', 'A 类目', 0)")
+            db.conn.execute(
+                "INSERT INTO category_progress (keyword, name, exhausted)"
+                " VALUES ('cat_ex', 'Exhausted 类目', 1)")
+            db.conn.execute(
+                "INSERT INTO category_progress (keyword, name, exhausted)"
+                " VALUES ('cat_b', 'B 类目', 0)")
+            db.conn.commit()
+            result = db.iter_active_categories()
+            # exhausted=1 的被排除
+            self.assertEqual(len(result), 3)
+            keywords = [r["keyword"] for r in result]
+            self.assertNotIn("cat_ex", keywords)
+            # 按 id 排序 → cat_c, cat_a, cat_b
+            self.assertEqual(keywords, ["cat_c", "cat_a", "cat_b"])
+            # 字段含 keyword/name
+            self.assertEqual(result[0]["name"], "C 类目")
+            db.close()
+        finally:
+            tmp.cleanup()
+
+    def test_iter_active_categories_prefix_filter(self):
+        """prefix='company:' 只返回 company: 前缀行。"""
+        import tempfile
+        from pathlib import Path
+        from fetcher.db import ShopDB
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            db_path = Path(tmp.name) / "t.db"
+            db = ShopDB(db_path)
+            db.conn.execute(
+                "INSERT INTO category_progress (keyword, name, exhausted)"
+                " VALUES ('company:abc', 'ABC 公司', 0)")
+            db.conn.execute(
+                "INSERT INTO category_progress (keyword, name, exhausted)"
+                " VALUES ('bxgyxg', '不锈钢型材', 0)")
+            db.conn.execute(
+                "INSERT INTO category_progress (keyword, name, exhausted)"
+                " VALUES ('company:xyz', 'XYZ 公司', 0)")
+            db.conn.execute(
+                "INSERT INTO category_progress (keyword, name, exhausted)"
+                " VALUES ('company:done', 'Done 公司', 1)")
+            db.conn.commit()
+            result = db.iter_active_categories(prefix="company:")
+            keywords = [r["keyword"] for r in result]
+            # 只返回 company: 开头 + exhausted=0 的
+            self.assertEqual(len(result), 2)
+            self.assertIn("company:abc", keywords)
+            self.assertIn("company:xyz", keywords)
+            self.assertNotIn("bxgyxg", keywords)
+            self.assertNotIn("company:done", keywords)
+            # prefix="" 返回全部未采完
+            all_result = db.iter_active_categories()
+            self.assertEqual(len(all_result), 3)  # company:abc,bxgyxg,company:xyz
+            db.close()
+        finally:
+            tmp.cleanup()
+
+    def test_get_active_categories_delegates_to_iter(self):
+        """get_active_categories 经 iter_active_categories + 拼音过滤后行为一致。"""
+        import tempfile
+        from pathlib import Path
+        from fetcher.db import ShopDB
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            db_path = Path(tmp.name) / "t.db"
+            db = ShopDB(db_path)
+            # 拼音类目 + 中文类目（非拼音）+ company: 前缀
+            db.conn.execute(
+                "INSERT INTO category_progress (keyword, name, exhausted)"
+                " VALUES ('bxgyxg', '不锈钢型材', 0)")
+            db.conn.execute(
+                "INSERT INTO category_progress (keyword, name, exhausted)"
+                " VALUES ('中文类目', '中文类目名', 0)")
+            db.conn.execute(
+                "INSERT INTO category_progress (keyword, name, exhausted)"
+                " VALUES ('company:test', '测试公司', 0)")
+            db.conn.execute(
+                "INSERT INTO category_progress (keyword, name, exhausted)"
+                " VALUES ('jgdbj', '激光打标机', 0)")
+            db.conn.commit()
+            result = db.get_active_categories()
+            # 只返回纯拼音 slug（bxgyxg, jgdbj），排除中文/company:
+            keywords = [r["slug"] for r in result]
+            self.assertIn("bxgyxg", keywords)
+            self.assertIn("jgdbj", keywords)
+            self.assertNotIn("中文类目", keywords)
+            self.assertNotIn("company:test", keywords)
+            # 字段名仍为 slug/name（向后兼容）
+            for r in result:
+                self.assertIn("slug", r)
+                self.assertIn("name", r)
+            db.close()
+        finally:
+            tmp.cleanup()
+
+    def test_iter_active_categories_empty_name_defaults_to_keyword(self):
+        """name 为 NULL 时回退为 keyword。"""
+        import tempfile
+        from pathlib import Path
+        from fetcher.db import ShopDB
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            db_path = Path(tmp.name) / "t.db"
+            db = ShopDB(db_path)
+            db.conn.execute(
+                "INSERT INTO category_progress (keyword, name, exhausted)"
+                " VALUES ('testcat', NULL, 0)")
+            db.conn.commit()
+            result = db.iter_active_categories()
+            self.assertEqual(len(result), 1)
+            self.assertEqual(result[0]["keyword"], "testcat")
+            self.assertEqual(result[0]["name"], "testcat")  # NULL → keyword
+            db.close()
+        finally:
+            tmp.cleanup()
+
 
 # ---------- 策略覆盖 ----------
 

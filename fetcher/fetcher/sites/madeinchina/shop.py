@@ -272,15 +272,20 @@ class MadeInChinaShopTask(Task):
     def _seed_category_items(self, db) -> int:
         """活跃拼音类目逐条插 category item（已有同 keyword pending 跳过）。
 
-        ⚠️ 已知局限：get_active_categories 不含 fmt 字段，播种一律 "x2"；
+        经 iter_active_categories 取全量未采完类目，再 _is_pinyin_slug
+        过滤拼音 slug（与 get_active_categories 同口径）。
+
+        ⚠️ 已知局限：category_progress 不含 fmt 字段，播种一律 "x2"；
         plain 体系类目（如 jgdbj）首次 fetch 会拼错 URL 而失败；
         discover 从页面提取时带正确 fmt 后纠正。Step 4.2 若 category_progress
         加 fmt 列可根除。
         """
-        active = db.get_active_categories()
+        from fetcher.db import _is_pinyin_slug
+        active = [cat for cat in db.iter_active_categories()
+                  if _is_pinyin_slug(cat["keyword"])]
         n = 0
         for cat in active:
-            slug = cat["slug"]
+            slug = cat["keyword"]
             name = cat.get("name", slug)
             existing = self._count_pending_by_kind(db, "category", slug)
             if existing > 0:
