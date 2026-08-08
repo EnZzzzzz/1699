@@ -29,7 +29,7 @@
 
 **准入**：P5-1 完成（parse 端点已删、TaskParams 契约冻结）。**完成标准**：SPEC §3.2/§3.3 前端部分落地；`npx tsc -b` 零错误；浏览器走查。
 
-- [ ] **Step 2.1** 表单裁剪 + 清理（估 30min，依赖 1.2，状态 pending）
+- [x] **Step 2.1** 表单裁剪 + 清理（估 30min，依赖 1.2，状态 done 2026-08-08）
   - api.ts：删 `parseCommand`/`TaskParseResult`、TaskParams 删 3 死字段、`channels` 改 number、`retry_failed`/preview 注释同步；TaskFormDialog：删「从命令导入」折叠区与 handleParse、wa 表单裁 4 字段（保留 limit/accounts）；task-ui.tsx：paramsSummary wa 分支裁 interval/rest 展示、兜底分支删 retry_failed。
   - 验收：`npx tsc -b` 零错误；vite dev 浏览器走查（wa_check 新建/编辑历史任务含旧字段渲染正常、yiwugo 完整表单正常、批次类型表单正常）；走查截图落 plan 目录。
 
