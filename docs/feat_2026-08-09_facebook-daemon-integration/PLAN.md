@@ -82,7 +82,7 @@ P2 与 P3 互不依赖，P1 完成后可并行推进。
     表单=limit+循环间隔）。
   - 验收：`npx tsc -b` 通过；对照 DESIGN.md 自查（Select h-8 font-medium、
     按钮 outline sm 等铁律）。
-- [ ] **1.7 平台端到端冒烟**（预估 20min，依赖：1.4、1.5、1.6）
+- [x] **1.7 平台端到端冒烟**（预估 20min，依赖：1.4、1.5、1.6）
   - `platform/start.sh` 拉起全栈 → 前端创建 fb_post 任务（limit=3，种子
     数据沿用 1.4）→ daemon 消费 → 任务页进度/事件流/停止按钮全流程；
     dispatcher 看板出现 crawl_fb_post 队列（SPEC §6.3 未核实项一并验证）。

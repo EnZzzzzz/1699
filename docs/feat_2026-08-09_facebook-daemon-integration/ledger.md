@@ -163,3 +163,21 @@
 - review：spec 合规 ✅（SPEC §6.2：fb_post 进 isBatch 列表、label
   「Facebook 帖子采集」）代码质量 ✅
 - minor (deferred)：无
+
+### Step 1.7 — 平台端到端冒烟（真实执行，2026-08-09 03:35-03:37 北京时间）
+- 流程：重置种子 pending → 创建任务 82（fb_post limit=2）→ start 入队 2
+  item（batch_id=82）→ fb-only daemon 消费 → 验证进度/SSE → 恢复生产 daemon
+- 证据：
+  - 任务 82 status=done，progress {total:2,done:2,failed:0,...}
+  - SSE 事件流：两条 success（帖子 URL）+ status done 事件
+  - work_items batch 82 两 item done；fb_contacts 落号
+    （18588244213 cn_uncertain）
+  - 前端 vite 已服务新类型「Facebook 帖子采集」（HMR 生效）
+  - dispatcher 看板自动出现 crawl_fb_post（§6.3 已核实）
+- 观察：daemon 启动 prepare 重置 in_progress → topup 自喂会把批次外重复
+  抓一遍（幂等，不产生数据错误）——崩溃恢复路径按设计工作，非缺陷
+- 生产 daemon 最终配置：`--workers 1 --queues crawl_1688_contact
+  crawl_mic_contact crawl_fb_post --max-consecutive-fail 100`（原配置
+  + fb 队列，feature 意图的最终形态）
+- **P1 核心抓取链路完成**：完成标准逐项达成（fetcher 624 绿、1.4 冒烟
+  证据、1.7 端到端证据、tsc 通过）
