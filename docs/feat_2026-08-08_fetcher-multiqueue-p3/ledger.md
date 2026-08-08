@@ -79,3 +79,9 @@
   - 实现：MadeInChinaShopTask 重构为 work_items 驱动 feeder（payload category/discover；page_no 运行时读 next_page；链式续喂 advance/mark_exhausted 含 ZERO_NEW_LIMIT；discover 走 on_success 提取类目插 category item；refill_item 失败补插 + Task 基类默认空；CLI acquire 改 claim_next_eligible([crawl_mic_shop])；prepare 幂等播种）；QueueRouter.release_item 接 refill；crawl_mic_contact 注册/逐 site reset/域过滤复核确认（均已有）；TDD 19 新用例（全量 447→462 passed）
   - fix round 1/5: review 需修复——C1 (Critical) validate 拒绝 discover（无 shops 键→False→giveup，生产路径封死）→ validate 对 discover 检查 discover 键放行；I2 discover 测试绕过 validate→补 fetch→validate→on_success 三段式测试；M3 fmt 硬编码 x2 局限注释（Step 4.2 议）；M4 _count_pending_by_kind 抽取；M5 移除 _now 私有导入；全部 ADDRESSED（全量 462→463 passed）
   - Step 4.1: minor (deferred): M3 fmt=x2 播种局限（plain 类目 URL 拼错，discover 可纠正；Step 4.2 评估是否加 fmt 列）
+- Step 4.2: complete (commits 379b8c9..14c92d4, fix round 1/5 clean)
+  - 实现：db.py iter_active_categories(prefix=) 统一查询（get_active_categories 改造为调它 + 拼音过滤，返回结构兼容）；cli/main.py 注册表加 crawl_mic_shop（topup=None, domain_suffix=""）+ reset 精确化（只对 topup 非 None 队列 reset_in_progress）；shop.py 播种切 iter_active_categories；TDD 5 新用例（全量 463→468 passed）
+  - fix round 1/5: review 需修——I1 shop.py 导入 db 私有 _is_pinyin_slug→本地复制 regex；I2 冒烟取证不足→sqlite3 只读查询补证（category=1053 pending+2 done、jgdbj next_page=2 pages=1 shops=15、shops 落库 15 pending、链式续喂页 2 item 已插入）；M3 docstring；M4 结构断言；全部 ADDRESSED 零新破坏
+  - **冒烟取证（smoke-step4.2/）**：空库启动→播种 discover→提取 ~360 类目→jgdbj 类目页真实抓取 15 家店铺→category_progress 推进→链式续喂页 2 item；feeder 队列不触发 in_progress reset
+  - **Phase 4（P3-4）完成**：crawl_mic_contact（Step 3.1 已入）+ crawl_mic_shop feeder 链路（播种→discover→类目页→链式续喂）；468 passed
+  - Step 4.2: minor (deferred): 无

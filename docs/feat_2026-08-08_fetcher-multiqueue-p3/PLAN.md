@@ -11,7 +11,7 @@
 | P3-1 | 调度内核：work_items 扩展 + 冷却表改建 + 让出型 chokepoint | 3 | P3-0（可并行，不依赖其结果） | done |
 | P3-2 | 浏览器层：Session/BrowserManager 多 context + 种子池 (worker,site) 粒度 | 3 | P3-0 结论回填 SPEC §4 | done |
 | P3-3 | QueueRouter + daemon CLI + SwapIP 两阶段 | 3 | P3-1、P3-2 | done |
-| P3-4 | madeinchina 队列接入（contact + shop feeder） | 2 | P3-3 | pending |
+| P3-4 | madeinchina 队列接入（contact + shop feeder） | 2 | P3-3 | done |
 | P3-5 | 1688 shop/company feeder 接入 | 2 | P3-4 | pending |
 | P3-6 | 端到端验收冒烟 + 终审 | 2 | P3-5 | pending |
 
@@ -78,7 +78,7 @@
   - `crawl_mic_contact` 入注册表（topup 复用现函数，`.cn.made-in-china.com`）；mic contact prepare 的 reset 副作用确认/修 domain 过滤。
   - mic shop task 拆出「单类目页处理」（payload 驱动，认朗读 next_page，on_success advance/exhausted + 链式续喂 + 失败补插）；discover item 执行 = 现 cold_start 提取逻辑。
   - 验收：TDD 单测（链式续喂、ZERO_NEW_LIMIT 保护、失败补插、幂等播种）。
-- [ ] **Step 4.2** mic shop feeder 装配 + 冒烟（估 30min，依赖 4.1，状态 pending）
+- [x] **Step 4.2** mic shop feeder 装配 + 冒烟（估 30min，依赖 4.1，状态 pending）
   - `iter_active_categories`（mic 拼音 slug 过滤沿用）；启动播种（幂等）；注册表加 `crawl_mic_shop`。
   - 验收：冒烟——临时库播种后 daemon 消费类目页 item，category_progress 推进、shops 落库；日志落 plan 目录。
 
