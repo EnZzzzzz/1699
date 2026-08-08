@@ -98,3 +98,12 @@
   - **冒烟取证（smoke-step5.2/）**：A daemon 1688 shop——discover 播种→2082 category items + 50 shops 落库 + 1 行 category_progress；B 旧 CLI 1688 shop 等价（3 claimed）；C company——company: 前缀播种运行时证据
   - **Phase 5（P3-5）完成**：1688 shop/company feeder 接入 + 注册表 5 条全齐；512 passed
   - Step 5.2: minor (deferred): 无
+
+### P3-6（端到端验收 + 终审）
+
+- Step 6.1: complete (commits 8250c02..9fff6a0, fix round 1/5 clean)
+  - 实现：QueueRouter acquire_item/_finish/release_item 加 [claim]/[finish] 含时间戳日志（SPEC §4.4 观测事件精神，TDD 5 用例）；重跑冒烟取证
+  - fix round 1/5: review 需修——C1 (Critical) daemon 无 claim-level 日志致验收证据不符 SPEC §7「日志显示」要求→加日志+重跑冒烟，report 证据节改摘录真实日志行；I1 时间表来源标注；I2 SIGTERM 改自然收工；I3 Cookie 计数说明；C4 主冒烟无重复认领 total=distinct=1057 查询；M1/M2；全部 ADDRESSED（全量 512→517 passed）
+  - **验收取证（smoke-step6.1/ + task-6.1-report.md）**：① 双向跨站填充——[claim]/[finish] 同秒手递手（mic_shop item=1 @19:12:42 → finish done → claim 1688_shop item=2 @19:12:57 同秒 → failed → claim mic_shop @19:13:02 回切；次冒烟 1688→mic→1688 三向同秒）② 预算合规（1688:direct 4~7 req ≤ 12；madeinchina:direct 2 req ≤ 60/80）③ 无重复认领（total=distinct=1057）
+  - **concern（观察性，记录不扩大范围）**：5 队列混合时 contact 队列被 feeder 高产出挤占致 topup 不触发（lazy fallback 设计内行为——topup 仅 eligible 全空时执行；SPEC §3.2 跨队列 FIFO 无优先级的裁定代价）。双队列 contact-only 冒烟已补全 contact 手递手证据。终审呈用户决定是否开 issue 记录
+  - Step 6.1: minor (deferred): 无
