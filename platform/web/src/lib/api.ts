@@ -75,9 +75,19 @@ export interface Task {
   next_restart_at: string | null
 }
 
-export type TaskType = '1688_shop' | '1688_company' | '1688_contact' | 'yiwugo_search' | 'wa_check'
+export type TaskType =
+  | '1688_shop'
+  | '1688_company'
+  | '1688_contact'
+  | 'madeinchina_contact'
+  | 'madeinchina_shop'
+  | 'yiwugo_search'
+  | 'wa_check'
 
 // 采集类参数全量可选键：留空即不传，由 CLI 默认值生效。
+// 批次类型（1688/madeinchina 采集 + wa_check）只读 limit / repeat_interval /
+// accounts，其余 daemon 级参数（workers/proxy/节奏等）已收敛到 daemon 启动，
+// 逐任务覆盖取消（SPEC §3.2 用户可见变化）；旧模板多余字段后端忽略。
 // wa_check 使用 limit / accounts / sample_min / sample_max / batch_num /
 // batch_rest_min / batch_rest_max（interval 为旧参数，向后兼容）。
 export interface TaskParams {
@@ -253,6 +263,29 @@ export interface WaLoginStatus {
   qr_mtime: number | null
 }
 
+// ---------- 调度器可观测（P4 看板） ----------
+
+// GET /api/dispatcher/status：daemon 存活 + 队列深度 + 今日完成
+export interface DispatcherStatus {
+  daemon_alive: boolean
+  queue_depth: Record<string, Record<string, number>>
+  today_done: number
+}
+
+// GET /api/dispatcher/consumers：消费者状态行 + offline 标记
+export interface DispatcherConsumer {
+  consumer_id: string
+  kind: string
+  tunnel: string | null
+  exit_ip: string | null
+  current_queue: string | null
+  current_item_id: number | null
+  current_batch_id: number | null
+  cooldowns: Record<string, number>
+  updated_at: string
+  offline: boolean
+}
+
 // ---------- 接口方法 ----------
 
 // 后端 provider 原始结构（config_json / proxy_channels）归一化为前端
@@ -333,6 +366,8 @@ export const api = {
     request<ProviderConfigSchemaResponse>(
       `/providers/config-schema${kind ? `?kind=${encodeURIComponent(kind)}` : ''}`),
   waAccounts: () => request<WaAccount[]>('/wa/accounts'),
+  dispatcherStatus: () => request<DispatcherStatus>('/dispatcher/status'),
+  dispatcherConsumers: () => request<DispatcherConsumer[]>('/dispatcher/consumers'),
   createWaAccount: (name: string, method: WaLoginMethod = 'qr', phone?: string) =>
     request<WaAccountCreateResult>('/wa/accounts', {
       method: 'POST',

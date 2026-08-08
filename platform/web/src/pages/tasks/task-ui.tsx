@@ -73,6 +73,8 @@ export const TASK_TYPE_OPTIONS: { value: TaskType; label: string }[] = [
   { value: '1688_shop', label: '1688 店铺采集' },
   { value: '1688_company', label: '1688 公司采集' },
   { value: '1688_contact', label: '1688 联系方式采集' },
+  { value: 'madeinchina_shop', label: '中国制造网 展厅采集' },
+  { value: 'madeinchina_contact', label: '中国制造网 联系方式采集' },
   { value: 'yiwugo_search', label: '义乌购搜索' },
   { value: 'wa_check', label: 'WhatsApp 查号' },
 ]
@@ -152,6 +154,18 @@ export function paramsSummary(task: { type: string; params: Record<string, unkno
     if (batchNum !== null && batchNum > 0) {
       parts.push(`批=${batchNum}个` + (rest !== null ? `·休${rest}s` : ''))
     }
+    if (repeatPart) parts.push(repeatPart)
+    return parts.length > 0 ? parts.join(' ') : '默认参数'
+  }
+
+  // P4 批次采集类型（1688/madeinchina shop/company/contact）：
+  // 只读 limit（contact=条数、shop/company=页数）+ repeat_interval
+  const BATCH_TYPES = new Set(['1688_shop', '1688_company', '1688_contact',
+                               'madeinchina_shop', 'madeinchina_contact'])
+  if (BATCH_TYPES.has(task.type)) {
+    const parts: string[] = []
+    const limit = num('limit')
+    if (limit !== null) parts.push(limit > 0 ? `上限=${limit}` : '不限量')
     if (repeatPart) parts.push(repeatPart)
     return parts.length > 0 ? parts.join(' ') : '默认参数'
   }

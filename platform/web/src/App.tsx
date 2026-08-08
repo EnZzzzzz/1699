@@ -3,6 +3,7 @@ import Layout from '@/components/Layout'
 import Dashboard from '@/pages/Dashboard'
 import Tasks from '@/pages/Tasks'
 import Providers from '@/pages/Providers'
+import Dispatcher from '@/pages/Dispatcher'
 import { DataPage } from './pages/Data'
 
 export default function App() {
@@ -13,6 +14,7 @@ export default function App() {
         <Route path="/tasks" element={<Tasks />} />
         <Route path="/data" element={<DataPage />} />
         <Route path="/providers" element={<Providers />} />
+        <Route path="/dispatcher" element={<Dispatcher />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>

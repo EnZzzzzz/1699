@@ -47,14 +47,14 @@
 
 **准入**：P4-0 完成（与 P4-1 可并行，wa_check 批次类型部分依赖 P4-1 注册表）。**完成标准**：5+1 批次类型全流程（建/启/停/进度/事件）API 级打通；start.sh/stop.sh 纳管 daemon。
 
-- [ ] **Step 2.1** 批次任务类型 + sweeper（估 40min，依赖 0.2，状态 pending）
+- [x] **Step 2.1** 批次任务类型 + sweeper（估 40min，依赖 0.2，状态 done）
   - runner：TASK_COMMANDS 只留 yiwugo_search、IN_PROCESS_TYPES 清空、BATCH_TYPES 映射表；start=批次入队（平台侧 SQL，§3.1 裁定）；sweeper 守护线程（5s tick 状态派生 + 1s 节流 progress + stopped 兜底 + repeat_interval 重入队 + startup 重建）；孤儿清理跳过批次类型。
   - api/tasks.py：TASK_TYPES/TaskParams 适配、preview/parse 冻结文案。
   - 验收：FastAPI TestClient 或 httpx 级测试（批次生命周期：create→start→sweeper 状态流转→stop）；**冒烟：重启 uvicorn 批次不丢**。
-- [ ] **Step 2.2** SSE 事件合成 + dispatcher API（估 30min，依赖 2.1，状态 pending）
+- [x] **Step 2.2** SSE 事件合成 + dispatcher API（估 30min，依赖 2.1，状态 done）
   - events 端点批次分支（回放 200 + 1s 增量 + status 帧复用）；`GET /api/dispatcher/status` + `GET /api/dispatcher/consumers`（新 router，注册进 main.py）。
   - 验收：端点级测试 + curl 冒烟截图/输出落 plan 目录。
-- [ ] **Step 2.3** start.sh/stop.sh 纳管 + 冒烟（估 20min，依赖 无，状态 pending）
+- [x] **Step 2.3** start.sh/stop.sh 纳管 + 冒烟（估 20min，依赖 无，状态 done）
   - start_daemon/stop_daemon（pidfile/日志/幂等/SIGTERM 优雅/pkill 兜底特征）；README/AGENTS.md §1 daemon 段落同步。
   - 验收：真起真停——起后 consumer_status 有心跳、停后清空；重复 start 幂等；证据落 plan 目录。
 
@@ -62,7 +62,7 @@
 
 **准入**：P4-2 完成（API 契约冻结）。**完成标准**：三页面改造/新增渲染正确，`npx tsc -b` 零错误，浏览器走查。
 
-- [ ] **Step 3.1** 任务类型表单 + 批次进度（估 40min，依赖 2.1，状态 pending）
+- [x] **Step 3.1** 任务类型表单 + 批次进度（估 40min，依赖 2.1，状态 done）
   - api.ts TaskType/TaskParams；task-ui.tsx TASK_TYPE_OPTIONS/paramsSummary；TaskFormDialog 三分支（批次采集只留 limit+repeat_interval；wa_check 保留）；Tasks 列表批次进度列（done/total + failed 标红）。
   - 验收：`npx tsc -b` + vite dev 浏览器走查（建批次任务表单渲染、旧模板兼容读取）。
 - [ ] **Step 3.2** 调度器看板页（估 40min，依赖 2.2，状态 pending）

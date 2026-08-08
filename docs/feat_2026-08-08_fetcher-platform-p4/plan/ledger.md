@@ -177,6 +177,39 @@
   兜底清理；退出后 consumer_status 清空 0。冒烟前停掉 P3 遗留 daemon
   （pid 28917，P3 冒烟 /tmp 临时库残留）。
 - **测试**：fetcher 583 + 平台 62 全绿（board 修复复跑相关 37 passed）。
+- **commits**：e9bc28f
+- **状态**：complete
+
+### P4-3 Step 3.1 — 任务类型表单 + 批次进度
+
+- **实现**：
+  - api.ts：TaskType 加 madeinchina_contact/madeinchina_shop；
+  - task-ui.tsx：TASK_TYPE_OPTIONS 加两项；paramsSummary 批次分支
+    （只显 limit + repeat_interval）；
+  - TaskFormDialog：isBatch 三分支（批次采集只留 limit + repeat_interval，
+    Label 按 contact=条数/shop=页数切换文案，daemon 收敛提示；validate/
+    buildParams/fillFromParams 适配）；
+  - Tasks.tsx：批次进度列 done/total + failed 标红（text-destructive）。
+- **验收**：npx tsc -b 零错误；浏览器走查（playwright 截图见 Step 3.2）。
+- **commits**：待提交
+- **状态**：complete
+
+### P4-3 Step 3.2 — 调度器看板页
+
+- **实现**：
+  - 新页 Dispatcher.tsx（/dispatcher）：StatCard 行（daemon 在线 sky/离线
+    neutral、工作项积压、今日完成）+ 队列深度表（数值列右对齐、failed
+    标红）+ 消费者表（workerChip、kind、通道/IP、当前队列+工作项、
+    CooldownBadges amber 徽标 + 1s 倒计时）；useApiData 自适应轮询（在线
+    5s/离线 30s）；PageState 三态；
+  - api.ts：DispatcherStatus/DispatcherConsumer 接口 + dispatcherStatus/
+    dispatcherConsumers 方法；
+  - App.tsx 路由 + Layout navItems「调度器」（Network 图标，供应商改
+    ServerCog）。
+- **验收**：npx tsc -b 零错误；浏览器走查（playwright 截图 plan/
+  smoke-step3.2/）：看板页标题/StatCard/队列表/消费者表/导航全部渲染；
+  任务表单三分支（默认 1688_shop 批次表单 + 切 madeinchina_contact 条数
+  文案 + 预览文案）。DESIGN.md 逐条对照自查通过。
 - **commits**：待提交
 - **状态**：complete
 
