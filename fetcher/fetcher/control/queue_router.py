@@ -252,6 +252,10 @@ class QueueRouter:
                         payload = dict(item["payload"])
                         # 保留 id 键：测试/DB 验证用（site 插件只依赖 domain/name/url）
                         payload["id"] = item["id"]
+                        # P4 批次：把 batch_id 注入 payload（feeder 续喂/
+                        # 补插继承用；daemon 自喂为 None 时不注入）
+                        if item.get("batch_id") is not None:
+                            payload["batch_id"] = item["batch_id"]
                         from datetime import datetime
                         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         ctx.log(f"[claim] queue={item['queue']} item={item['id']} "

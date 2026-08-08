@@ -33,5 +33,23 @@
   batch 索引存在）。全量 532 passed（基线 523 + 9）。
 - **review**：自检通过。限量为 0 的处理从魔数 1<<30 改为条件拼 SQL（
   修复后复跑 test_batch_enqueue + test_work_items 24 passed）。
-- **commits**：待提交（Step 0.1 完成后一并）
+- **commits**：900ff06
+- **状态**：complete
+
+### P4-0 Step 0.2 — feeder 批次继承与限量收束
+
+- **实现**：
+  - db.py claim_next_eligible 返回 batch_id（透传上层）；
+  - 三个 feeder task（1688 shop / 1688 company / mic shop）：
+    acquire_item 注入 batch_id；_insert_work_item 支持 batch_id；
+    discover 产出/链式续喂/refill 补插继承 batch_id + batch_limit；
+    _batch_reached_limit（batch_id 非空 ∧ batch_limit>0 ∧ done ≥ limit
+    → 停止续喂/补插）；
+  - queue_router.acquire_item 同样注入 batch_id（daemon 认领批次 item）。
+- **测试**：fetcher/tests/test_batch_inherit.py 10 用例（TDD 先失败后转绿：
+  claim 透传/继承链/discover 产出继承/收束边界（达限停、未达续、limit=0
+  不限）/refill 继承+收束/自喂路径 batch_id NULL 零变化）。全量 542 passed。
+- **review**：自检通过（测试修正：item dict 模拟 acquire 注入 batch_id；
+  当前 item 不入库——真实链路已 claim）。
+- **commits**：待提交
 - **状态**：complete

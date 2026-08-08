@@ -357,9 +357,12 @@ class MadeInChinaShopTask(Task):
         item = db.claim_next_eligible([self.QUEUE], consumer_id)
         if item is None:
             return None
-        # item = {"id", "queue", "site", "payload"}
+        # item = {"id", "queue", "site", "batch_id", "payload"}
         payload = dict(item["payload"])
         payload["id"] = item["id"]  # 保留 id 供 refill / 日志
+        # P4 批次：把 batch_id 注入 payload（feeder 续喂/补插继承用）
+        if item.get("batch_id") is not None:
+            payload["batch_id"] = item["batch_id"]
         return payload
 
     def label(self, item) -> str:
@@ -469,7 +472,13 @@ class MadeInChinaShopTask(Task):
             payload = {"kind": "category", "keyword": slug,
                        "name": c.get("name", slug),
                        "fmt": c.get("fmt", "x2")}
-            self._insert_work_item(db, payload)
+            # P4 批次继承：discover item 属批次时，产出的 category item
+            # 继承父 item 的 batch_id 与 batch_limit（batch_limit 收束用）
+            if item.get("batch_id") is not None:
+                payload["batch_id"] = item["batch_id"]
+                payload["batch_limit"] = item.get("batch_limit", 0)
+            self._insert_work_item(db, payload,
+                                   batch_id=item.get("batch_id"))
             n += 1
         if n:
             ctx.log(f"discover 产出 {n} 个新类目 category item")
@@ -532,11 +541,20 @@ class MadeInChinaShopTask(Task):
         stats["pages"] += 1
         ctx.set_status(n=stats["shops"], new=stats["new"],
                        pages=stats["pages"])
-        # 链式续喂：未采完则 INSERT 下一页 item
+        # 链式续喂：未采完则 INSERT 下一页 item（P4 批次：继承 batch_id，
+        # done ≥ batch_limit 后收束）
         if not exhausted:
-            payload = {"kind": "category", "keyword": slug,
-                       "name": cat_name, "fmt": item.get("fmt", "x2")}
-            self._insert_work_item(db, payload)
+            if self._batch_reached_limit(db, item):
+                ctx.log(f"■ 类目 {cat_name} 批次已达上限"
+                        f"（{item.get('batch_limit')} 页），停止续喂")
+            else:
+                payload = {"kind": "category", "keyword": slug,
+                           "name": cat_name, "fmt": item.get("fmt", "x2")}
+                if item.get("batch_id") is not None:
+                    payload["batch_id"] = item["batch_id"]
+                    payload["batch_limit"] = item.get("batch_limit", 0)
+                self._insert_work_item(db, payload,
+                                       batch_id=item.get("batch_id"))
         return len(page_shops)
 
     def on_giveup(self, ctx, item, reason: str, kind: str) -> str:
@@ -548,20 +566,37 @@ class MadeInChinaShopTask(Task):
 
     def refill_item(self, ctx, item) -> None:
         """attempts 耗尽补插：category 同 payload 新 item（attempts=0），
-        discover 也补插一次。"""
+        discover 也补插一次。P4 批次：补插继承 batch_id；批次已达上限
+        （done ≥ batch_limit）时不再补插。"""
         db = ctx.store.db if ctx.store else None
         if db is None:
             return
         kind = item.get("kind", "")
         if kind == "category":
+            if self._batch_reached_limit(db, item):
+                ctx.log(f"[refill] 类目 {item.get('keyword')} 批次已达上限，"
+                        f"不再补插")
+                return
             payload = {"kind": "category",
                        "keyword": item["keyword"],
                        "name": item.get("name", item["keyword"]),
                        "fmt": item.get("fmt", "x2")}
-            self._insert_work_item(db, payload)
+            if item.get("batch_id") is not None:
+                payload["batch_id"] = item["batch_id"]
+                payload["batch_limit"] = item.get("batch_limit", 0)
+            self._insert_work_item(db, payload,
+                                   batch_id=item.get("batch_id"))
             ctx.log(f"[refill] 类目 {item.get('keyword')} 补插 category item")
         elif kind == "discover":
-            self._insert_work_item(db, {"kind": "discover"})
+            if self._batch_reached_limit(db, item):
+                ctx.log("[refill] discover 批次已达上限，不再补插")
+                return
+            payload = {"kind": "discover"}
+            if item.get("batch_id") is not None:
+                payload["batch_id"] = item["batch_id"]
+                payload["batch_limit"] = item.get("batch_limit", 0)
+            self._insert_work_item(db, payload,
+                                   batch_id=item.get("batch_id"))
             ctx.log("[refill] 补插 discover item")
 
     def after_item(self, ctx, item) -> None:
@@ -573,16 +608,43 @@ class MadeInChinaShopTask(Task):
     # ---- work_items 辅助 ----
 
     @staticmethod
-    def _insert_work_item(db, payload: dict) -> int:
-        """向 work_items 插 pending 行，返回 id。"""
+    def _insert_work_item(db, payload: dict,
+                          batch_id: int | None = None) -> int:
+        """向 work_items 插 pending 行，返回 id。
+
+        batch_id 非空时写入批次归属（P4 平台批次）；None 为 daemon 自喂。
+        """
         import json as _json
-        cur = db.conn.execute(
-            "INSERT INTO work_items (queue, site, payload_json, created_at)"
-            " VALUES (?, ?, ?, datetime('now','localtime'))",
-            (MadeInChinaShopTask.QUEUE, MadeInChinaShopTask.SITE,
-             _json.dumps(payload, ensure_ascii=False)))
+        if batch_id is not None:
+            cur = db.conn.execute(
+                "INSERT INTO work_items (queue, site, batch_id, payload_json,"
+                " created_at) VALUES (?, ?, ?, ?, datetime('now','localtime'))",
+                (MadeInChinaShopTask.QUEUE, MadeInChinaShopTask.SITE,
+                 batch_id, _json.dumps(payload, ensure_ascii=False)))
+        else:
+            cur = db.conn.execute(
+                "INSERT INTO work_items (queue, site, payload_json, created_at)"
+                " VALUES (?, ?, ?, datetime('now','localtime'))",
+                (MadeInChinaShopTask.QUEUE, MadeInChinaShopTask.SITE,
+                 _json.dumps(payload, ensure_ascii=False)))
         db.conn.commit()
         return cur.lastrowid
+
+    @staticmethod
+    def _batch_reached_limit(db, item: dict) -> bool:
+        """批次收束判定：item 属批次且 batch_limit>0 时，该批次已 done
+        计数 ≥ batch_limit 返回 True（停止续喂/补插）。
+
+        batch_id 为 None（daemon 自喂）或 batch_limit<=0（不限）恒 False。
+        """
+        batch_id = item.get("batch_id")
+        limit = item.get("batch_limit", 0)
+        if batch_id is None or not limit:
+            return False
+        done = db.conn.execute(
+            "SELECT COUNT(*) FROM work_items WHERE batch_id=? "
+            "AND status='done'", (batch_id,)).fetchone()[0]
+        return done >= limit
 
     @staticmethod
     def _count_pending_by_kind(db, kind: str, keyword: str = None) -> int:

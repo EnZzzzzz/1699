@@ -655,8 +655,11 @@ class ShopDB:
 
         单事务（BEGIN IMMEDIATE）：WHERE status='pending' AND queue IN (...)
         ORDER BY id LIMIT 1 → 置 claimed（claimed_by/claimed_at）。返回
-        {"id", "queue", "site", "payload"}（payload 为 json.loads 解码后
-        的字典）；无货（含空 queues）返回 None。
+        {"id", "queue", "site", "batch_id", "payload"}（payload 为
+        json.loads 解码后的字典）；无货（含空 queues）返回 None。
+
+        batch_id 透传供上层（feeder 链式续喂/补插继承父 item 的批次
+        归属；daemon 自喂为 None）。
 
         payload 解析在 commit 前完成：payload_json 非法（手工修库/上游
         bug）时 JSONDecodeError 走 except → rollback，行保持 pending，
@@ -668,7 +671,7 @@ class ShopDB:
         try:
             self.conn.execute("BEGIN IMMEDIATE")
             row = self.conn.execute(
-                f"SELECT id, queue, site, payload_json FROM work_items"
+                f"SELECT id, queue, site, batch_id, payload_json FROM work_items"
                 f" WHERE status='pending' AND queue IN ({placeholders})"
                 " ORDER BY id LIMIT 1", queues).fetchone()
             if not row:
@@ -681,7 +684,8 @@ class ShopDB:
                 (consumer_id, _now(), row["id"]))
             self.conn.commit()
             return {"id": row["id"], "queue": row["queue"],
-                    "site": row["site"], "payload": payload}
+                    "site": row["site"], "batch_id": row["batch_id"],
+                    "payload": payload}
         except Exception:
             self.conn.rollback()
             raise
