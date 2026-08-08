@@ -35,3 +35,8 @@
   - 实现：context.py（cooldown_until 键改 site 语义 + resources 字段默认 {channel,browser}）；control/queue_router.py 新建（QueueSpec 三字段 + eligible_queues + condvar_timeout 两纯函数）；loop._cooldown 写 active_site 键（未设不登记）；daemon_task proxy claim 冷却过滤 + condvar timeout + active_site 写入（TDD 17 新用例，全量 319→336 passed）
   - review 零 Critical/Important；2 Minor（eligible_queues 类型标注不一致→P3-3 补齐；test_cooldown_blocks_claim 时序 0.15s 缓冲无下界）→ 记 ledger，不进修复轮
   - Step 1.2: minor (deferred): 同上 2 条 Minor
+- Step 1.3: complete (commits 8aef518..feb7c95, fix round 1/5 clean)
+  - 实现：loop._cooldown 加 yield_ 参数——让出型（sample_interval/batch_rest/periodic_rest）登记 site 键后立即返回；原地型（launch_backoff/策略冷却）保持等待 + 注释；strategies.py SwapIP「P3 重议」→「P3-3 改让出」同步；TDD 5 新用例 + fix 轮 +1 集成测试（全量 336→342 passed）
+  - fix round 1/5: review 需修复——F1 (Important) 冒烟未触达让出型节奏冷却（直连滑块墙 abort）→ B 方案补成功路径集成测试（CrawlLoop+DaemonTaskProxy 假基建，断言等待发生在 acquire condvar、loop 内无 ctx.wait，report 如实声明）；F2 注释检查未记录→已核实 context.py 无残留 + strategies.py 同步；F3 缺 negative 断言→补 launch_backoff/策略冷却 yield_=False 断言；F4/F5/F6 文档/注释 minor；全部 ADDRESSED，零新破坏
+  - **Phase 1（P3-1）完成**：冷却表 site 键 + eligible_queues/condvar_timeout + 让出型 chokepoint + work_items attempts/release/claim_next_eligible；342 passed；单队列 daemon 冒烟结构证据（smoke-step1.3/）
+  - Step 1.3: minor (deferred): 无

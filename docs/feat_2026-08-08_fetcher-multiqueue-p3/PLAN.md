@@ -8,7 +8,7 @@
 | Phase | 目标 | 预计 Step | 依赖 | 状态 |
 |---|---|---|---|---|
 | P3-0 | CloakBrowser 多 context 席位 spike（C1 实测） | 1 | 无 | done |
-| P3-1 | 调度内核：work_items 扩展 + 冷却表改建 + 让出型 chokepoint | 3 | P3-0（可并行，不依赖其结果） | pending |
+| P3-1 | 调度内核：work_items 扩展 + 冷却表改建 + 让出型 chokepoint | 3 | P3-0（可并行，不依赖其结果） | done |
 | P3-2 | 浏览器层：Session/BrowserManager 多 context + 种子池 (worker,site) 粒度 | 3 | P3-0 结论回填 SPEC §4 | pending |
 | P3-3 | QueueRouter + daemon CLI + SwapIP 两阶段 | 3 | P3-1、P3-2 | pending |
 | P3-4 | madeinchina 队列接入（contact + shop feeder） | 2 | P3-3 | pending |
@@ -36,7 +36,7 @@
 - [x] **Step 1.2** 冷却表改建 + eligible_queues（估 20min，依赖 1.1，状态 pending）
   - `WorkerContext.cooldown_until` 键改 site；`ctx.state["active_site"]` 约定；新增 `eligible_queues(registry, ctx, now)`（纯函数，可单测）；claim 过滤 + condvar `timeout=min(最近冷却到期剩余, 30s)`。
   - 验收：单测——冷却中站点被过滤、到期恢复可见、timeout 计算正确。
-- [ ] **Step 1.3** `_cooldown` 让出型改造（估 30min，依赖 1.2，状态 pending）
+- [x] **Step 1.3** `_cooldown` 让出型改造（估 30min，依赖 1.2，状态 pending）
   - loop 让出型调用点（sample_interval/batch_rest/periodic_rest/策略冷却）登记即返回；launch_backoff 保留原地并加注释；P1 遗留注释同步更新。
   - 策略冷却后 item 未完成的路径暂保留现状（等 P3-3 router 接 release），本 Step 只保证单队列行为等价。
   - 验收：单队列 daemon 冒烟（`--workers 1` 直连临时库，日志放 plan 目录）行为与改造前等价；全量测试绿。
