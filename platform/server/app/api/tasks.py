@@ -115,11 +115,7 @@ class TaskParams(BaseModel):
     auto_solve: bool | None = None          # false → --no-auto-solve
     retry_failed: bool | None = None        # true 且 1688_contact → --retry-failed
     # wa_check 专用：
-    interval: float | None = None           # 旧参数：固定调用间隔秒（等价
-                                            # sample_min == sample_max）
     accounts: list[str] | None = None       # 账号池，空 = 仅默认账号
-    batch_rest_min: float | None = None     # wa_check 批间休息下限（秒）
-    batch_rest_max: float | None = None     # wa_check 批间休息上限（秒）
     # 注：wa_check 复用上方 batch_num（每批调用次数）、
     # sample_min / sample_max（调用间隔范围）三个字段
     # 循环模式：本轮正常结束（done/failed）后 N 秒自动重启；None/<=0 = 不循环
@@ -166,23 +162,6 @@ def _get_task_row(task_id: int):
 
 
 # ---------------- 命令预览 / 参数修改 ----------------
-
-
-class CommandParse(BaseModel):
-    command: str = Field(..., min_length=1)
-
-
-@router.post("/tasks/parse")
-def parse_task_command(body: CommandParse):
-    """把 fetcher CLI 命令文本解析回 type + params（build_command 的反向）。
-
-    容忍 python -m fetcher / 直接 fetcher 前缀与 while/for + sleep N 循环包裹。
-    """
-    from app.cmdparse import CommandParseError, parse_command
-    try:
-        return parse_command(body.command)
-    except CommandParseError as e:
-        raise HTTPException(status_code=422, detail=str(e))
 
 
 @router.post("/tasks/preview")

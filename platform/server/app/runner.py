@@ -117,7 +117,6 @@ def build_command(task_type: str, params: dict) -> list:
     - 数值/时长参数值非 None 才输出（缺省=CLI 自带默认值，保持命令干净）；
     - 开关：use_proxy=true→--proxy；headless=false→--headed；
       auto_solve=false→--no-auto-solve；
-      retry_failed=true 且 1688_contact→--retry-failed；
     """
     sub = TASK_COMMANDS.get(task_type)
     if not sub:
@@ -134,8 +133,6 @@ def build_command(task_type: str, params: dict) -> list:
         cmd.append("--headed")
     if params.get("auto_solve") is False:
         cmd.append("--no-auto-solve")
-    if task_type == "1688_contact" and params.get("retry_failed") is True:
-        cmd.append("--retry-failed")
     return cmd
 
 
