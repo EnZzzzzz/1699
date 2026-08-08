@@ -183,5 +183,242 @@ class EngineTest(unittest.TestCase):
         self.assertIsNot(stores[0].db.conn, stores[1].db.conn)
 
 
+# ============================================================
+# Task 2.2: 种子池 (worker, site) 粒度
+# ============================================================
+
+class SeedPoolMultiSiteTest(unittest.TestCase):
+    """_alloc_seed_kits 多站点支持。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _config(self, **kw):
+        base = dict(headless=True, use_proxy=True, workers=0,
+                    db_path=str(Path(self._tmp.name) / "t.db"),
+                    seeds_dir=str(Path(self._tmp.name) / "no_seeds"),
+                    stagger_min=0, stagger_max=0)
+        base.update(kw)
+        return RunConfig(**base)
+
+    def _engine(self, cfg, site=None, site_name=None):
+        return Engine(cfg, FakeTask(), site=site, site_name=site_name,
+                      browser_manager_factory=lambda store: object(),
+                      loop_factory=FakeLoop)
+
+    # ---- sites=None 返回 list（CLI 等价） ----
+
+    def test_sites_none_returns_list_unchanged(self):
+        """sites=None（CLI 单站点路径）→ 返回 list[kit]，行为逐字不变。"""
+        cfg = self._config(workers=3, use_proxy=False)
+        engine = self._engine(cfg)
+        result = engine._alloc_seed_kits(3)
+        self.assertIsInstance(result, list,
+                              f"sites=None 应返回 list，实际={type(result)}")
+        self.assertEqual(len(result), 3)
+        # 直连模式全为 None
+        self.assertEqual(result, [None, None, None])
+
+    def test_sites_none_with_seeds_returns_list(self):
+        """sites=None 有种子时仍返回 list。"""
+        import json
+        seeds = Path(self._tmp.name) / "seeds"
+        seeds.mkdir()
+        for name in ("kitA", "kitB"):
+            (seeds / f"{name}.json").write_text(json.dumps([
+                {"name": "cna", "value": "v", "domain": ".1688.com"},
+                {"name": "cookie2", "value": "v", "domain": ".1688.com"},
+            ]), encoding="utf-8")
+        cfg = self._config(workers=3, seeds_dir=str(seeds))
+        engine = Engine(
+            cfg, FakeTask(), site=MagicMock(cookie_domain="1688.com"),
+            site_name="1688",
+            browser_manager_factory=lambda store: object(),
+            loop_factory=FakeLoop)
+        result = engine._alloc_seed_kits(3)
+        self.assertIsInstance(result, list)
+        self.assertEqual(len(result), 3)
+        self.assertEqual(result[0]["name"], "kitA")
+        self.assertEqual(result[1]["name"], "kitB")
+        self.assertIsNone(result[2], "越界 worker 应为 None=白板")
+
+    # ---- sites 非空返回 dict[site][worker] ----
+
+    def test_sites_nonempty_returns_dict_of_lists(self):
+        """sites 非空 → 返回 dict[site_name, list[kit]]。"""
+        cfg = self._config(workers=2, use_proxy=False)
+        engine = self._engine(cfg)
+        from types import SimpleNamespace
+        sites = [
+            SimpleNamespace(name="1688", cookie_domain="1688.com"),
+            SimpleNamespace(name="yiwugo", cookie_domain="yiwugo.com"),
+        ]
+        result = engine._alloc_seed_kits(2, sites=sites)
+        self.assertIsInstance(result, dict,
+                              f"sites 非空应返回 dict，实际={type(result)}")
+        self.assertEqual(set(result.keys()), {"1688", "yiwugo"})
+        for site_name in ("1688", "yiwugo"):
+            self.assertIsInstance(result[site_name], list)
+            self.assertEqual(len(result[site_name]), 2)
+
+    def test_sites_nonempty_per_worker_per_site_independent(self):
+        """每 (worker, site) 独立分配，越界 None。
+
+        用 sites 参数传入两站点：1688（2 份种子）和 yiwugo（1 份种子），
+        验证 dict[site][worker] 各自独立映射。
+        """
+        import json
+        from types import SimpleNamespace
+
+        seeds_dir = Path(self._tmp.name) / "seeds"
+        seeds_dir.mkdir()
+        # 1688 域种子
+        for name, domain in (("kitA", ".1688.com"), ("kitB", ".1688.com")):
+            (seeds_dir / f"{name}.json").write_text(json.dumps([
+                {"name": "cna", "value": "v", "domain": domain},
+                {"name": "cookie2", "value": "v", "domain": domain},
+            ]), encoding="utf-8")
+        # yiwugo 域种子（只有 1 份）
+        (seeds_dir / "kitY.json").write_text(json.dumps([
+            {"name": "cna", "value": "v", "domain": ".yiwugo.com"},
+            {"name": "cookie2", "value": "v", "domain": ".yiwugo.com"},
+        ]), encoding="utf-8")
+
+        cfg = self._config(workers=3, seeds_dir=str(seeds_dir))
+        engine = Engine(
+            cfg, FakeTask(),
+            site=MagicMock(cookie_domain="1688.com"),
+            site_name="1688",
+            browser_manager_factory=lambda store: object(),
+            loop_factory=FakeLoop)
+
+        sites = [
+            SimpleNamespace(name="1688", cookie_domain="1688.com"),
+            SimpleNamespace(name="yiwugo", cookie_domain="yiwugo.com"),
+        ]
+        result = engine._alloc_seed_kits(3, sites=sites)
+
+        # 验证 dict 结构
+        self.assertIsInstance(result, dict)
+        self.assertEqual(set(result.keys()), {"1688", "yiwugo"})
+
+        # 1688: 2 份种子，3 workers → [kitA, kitB, None]
+        self.assertEqual(len(result["1688"]), 3)
+        self.assertEqual(result["1688"][0]["name"], "kitA")
+        self.assertEqual(result["1688"][1]["name"], "kitB")
+        self.assertIsNone(result["1688"][2])
+
+        # yiwugo: 1 份种子，3 workers → [kitY, None, None]
+        self.assertEqual(len(result["yiwugo"]), 3)
+        self.assertEqual(result["yiwugo"][0]["name"], "kitY")
+        self.assertIsNone(result["yiwugo"][1])
+        self.assertIsNone(result["yiwugo"][2])
+
+    def test_sites_nonempty_cookie_domain_filter(self):
+        """不同 site 不同 cookie_domain → 各自池按各自域加载。"""
+        import json
+        seeds_1688 = Path(self._tmp.name) / "seeds_1688"
+        seeds_1688.mkdir()
+        (seeds_1688 / "kit_1688.json").write_text(json.dumps([
+            {"name": "cna", "value": "v", "domain": ".1688.com"},
+            {"name": "cookie2", "value": "v", "domain": ".1688.com"},
+        ]), encoding="utf-8")
+
+        seeds_mic = Path(self._tmp.name) / "seeds_mic"
+        seeds_mic.mkdir()
+        (seeds_mic / "kit_mic.json").write_text(json.dumps([
+            {"name": "cna", "value": "v", "domain": ".made-in-china.com"},
+            {"name": "cookie2", "value": "v", "domain": ".made-in-china.com"},
+        ]), encoding="utf-8")
+
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        cfg = self._config(workers=1)
+        engine = self._engine(cfg)
+
+        # 用 mock 验证 load_seed_kits 被不同 domain 调用
+        with patch('fetcher.control.engine.load_seed_kits') as mock_load:
+            mock_load.return_value = []
+            sites = [
+                SimpleNamespace(name="1688", cookie_domain="1688.com"),
+                SimpleNamespace(name="madeinchina", cookie_domain="made-in-china.com"),
+            ]
+            engine._alloc_seed_kits(1, sites=sites)
+            # 每个 site 调用一次
+            self.assertEqual(mock_load.call_count, 2)
+            # 验证 domain 参数不同
+            calls = mock_load.call_args_list
+            domains = {c[1].get('domain') for c in calls}
+            self.assertEqual(domains, {"1688.com", "made-in-china.com"})
+
+    # ---- seed_x5sec 分支 ----
+
+    def test_sites_nonempty_seed_x5sec(self):
+        """seed_x5sec 实验在多站点路径下同样适用。"""
+        import json
+        seeds = Path(self._tmp.name) / "seeds"
+        seeds.mkdir()
+        for name, has_x5sec in (("kitA", True), ("kitB", False)):
+            cookies = [
+                {"name": "cna", "value": "v", "domain": ".1688.com"},
+                {"name": "cookie2", "value": "v", "domain": ".1688.com"},
+            ]
+            if has_x5sec:
+                cookies.append({"name": "x5sec", "value": "xv",
+                                "domain": ".1688.com",
+                                "expires": 9999999999})
+            (seeds / f"{name}.json").write_text(json.dumps(cookies),
+                                                encoding="utf-8")
+
+        cfg = self._config(workers=2, seeds_dir=str(seeds), seed_x5sec=True)
+        engine = Engine(
+            cfg, FakeTask(),
+            site=MagicMock(cookie_domain="1688.com"),
+            site_name="1688",
+            browser_manager_factory=lambda store: object(),
+            loop_factory=FakeLoop)
+        result = engine._alloc_seed_kits(2)
+        # worker 0 (偶数): x5sec 组（A 组）
+        self.assertTrue(result[0].get("x5sec"),
+                        f"偶数 worker 应为 A 组（含 x5sec），实际={result[0]}")
+        # worker 1 (奇数): 对照组（B 组）
+        self.assertFalse(result[1].get("x5sec"),
+                         f"奇数 worker 应为 B 组（不含 x5sec），实际={result[1]}")
+
+    def test_sites_none_seed_x5sec_unchanged(self):
+        """sites=None 时 seed_x5sec 行为与现状一致。"""
+        import json
+        seeds = Path(self._tmp.name) / "seeds"
+        seeds.mkdir()
+        for name, has_x5sec in (("kitA", True), ("kitB", False)):
+            cookies = [
+                {"name": "cna", "value": "v", "domain": ".1688.com"},
+                {"name": "cookie2", "value": "v", "domain": ".1688.com"},
+            ]
+            if has_x5sec:
+                cookies.append({"name": "x5sec", "value": "xv",
+                                "domain": ".1688.com",
+                                "expires": 9999999999})
+            (seeds / f"{name}.json").write_text(json.dumps(cookies),
+                                                encoding="utf-8")
+
+        cfg = self._config(workers=2, seeds_dir=str(seeds), seed_x5sec=True)
+        engine = Engine(
+            cfg, FakeTask(),
+            site=MagicMock(cookie_domain="1688.com"),
+            site_name="1688",
+            browser_manager_factory=lambda store: object(),
+            loop_factory=FakeLoop)
+        result = engine._alloc_seed_kits(2)  # sites=None default
+        self.assertIsInstance(result, list)
+        self.assertEqual(len(result), 2)
+        self.assertTrue(result[0].get("x5sec"))
+        self.assertFalse(result[1].get("x5sec"))
+
+
 if __name__ == "__main__":
     unittest.main()

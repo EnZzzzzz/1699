@@ -83,17 +83,43 @@ class Engine:
                       f"可能触发风控；建议 --proxy 走多通道")
         return workers, channels
 
-    def _alloc_seed_kits(self, workers: int) -> list:
-        """种子身份池：每 worker 独占认领一份（一对一，防 Cookie 重放）。
+    def _alloc_seed_kits(self, workers: int, sites: list = None):
+        """种子身份池分配。
+
+        sites=None（CLI 单站点路径）：返回现状 list[kit]（每 worker 一份，
+        行为逐字不变）。
+        sites 非空（daemon 多站点路径）：返回 dict[site_name, list[kit]]
+        ——每 (worker, site) 一份；load_seed_kits(domain=该站点 cookie_domain)
+        逐站点加载后按下标分配（越界 None=白板，日志同现状）。
 
         --seed-x5sec：A/B 实验，偶数 worker 用含 x5sec 的种子（A 组），
-        奇数 worker 用不含的（B 组对照）。
+        奇数 worker 用不含的（B 组对照）。多站点路径按 (worker,site) 同样适用。
         """
         cfg = self.config
         if not cfg.use_proxy:
-            return [None] * workers
+            if sites is None:
+                return [None] * workers
+            return {site.name: [None] * workers for site in sites}
+
         seeds_dir = cfg.resolved_seeds_dir()
-        domain = getattr(self.site, "cookie_domain", "1688.com")
+
+        if sites is None:
+            # CLI 单站点路径：现状行为逐字不变
+            return self._alloc_seed_kits_single(
+                workers, seeds_dir, cfg,
+                getattr(self.site, "cookie_domain", "1688.com"))
+        else:
+            # Daemon 多站点路径：每 (worker, site) 一份
+            result = {}
+            for site in sites:
+                domain = getattr(site, "cookie_domain", "1688.com")
+                result[site.name] = self._alloc_seed_kits_single(
+                    workers, seeds_dir, cfg, domain)
+            return result
+
+    def _alloc_seed_kits_single(self, workers: int, seeds_dir, cfg,
+                                domain: str) -> list:
+        """单站点的种子分配逻辑（CLI 与 daemon 共用核心）。"""
         kits = load_seed_kits(seeds_dir, domain=domain)
         kits_x5 = (load_seed_kits(seeds_dir, keep_x5sec=True, domain=domain)
                    if cfg.seed_x5sec else [])

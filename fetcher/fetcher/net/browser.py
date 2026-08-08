@@ -356,6 +356,23 @@ class BrowserManager:
         raise BrowserLaunchError(
             f"重试 {retries} 次仍无法获取新 IP: {last_err}")
 
+    # ---- needs_relaunch 状态位 ----
+
+    def mark_needs_relaunch(self, session: Session, site: str):
+        """置位 needs_relaunch 状态位（SPEC §5：SwapIP 两阶段第一步调用）。
+
+        SwapIP 第一阶段检测到出口 IP 已轮换后调用本方法：对该 site 标记
+        needs_relaunch=True。P3-3 Step 3.2 的 SwapIP 两阶段消费：第一阶段
+        置位 → 当前任务继续完成 → 第二阶段在下次认领时由 ensure_site 的
+        懒建路径消费（完整 relaunch）。
+
+        存储位置：session.extra["needs_relaunch"]（session.extra 是现成
+        状态暂存区；SPEC 写作 session.state，实现落 extra 并注释对应）。
+        """
+        if "needs_relaunch" not in session.extra:
+            session.extra["needs_relaunch"] = {}
+        session.extra["needs_relaunch"][site] = True
+
     # ---- view 管理 ----
 
     def ensure_site(self, session: Session, site_name: str,
@@ -367,9 +384,38 @@ class BrowserManager:
         装载 Cookie（库优先；直连无库时 JSON 种子兜底；代理新 IP 播种
         seed_kit——复用 launch 的 Cookie 装载段逻辑）→ new_page →
         warmup（该站首页现场签发 Cookie）。返回 view。
+
+        SPEC §3.5 步骤 4：入口处检查 needs_relaunch 状态位——若置位则
+        先走完整 relaunch（全部 view 回写关闭 → browser.close → 新进程 →
+        清除全部 site 标记），再继续正常懒建本站 view。
         """
         if site_name in session.views:
             return session.views[site_name]
+
+        # ---- needs_relaunch 懒建消费（SPEC §3.5 步骤 4）----
+        needs_relaunch = session.extra.get("needs_relaunch", {})
+        if needs_relaunch.get(site_name):
+            # 清除全部 site 标记（relaunch 是进程级，一次即可；
+            # 在 launch 前清除以避免 ensure_site → relaunch →
+            # launch → ensure_site 的递归触发）
+            session.extra["needs_relaunch"] = {}
+            # 复用现有 relaunch 逻辑：全 view 回写 + 新进程
+            new_session = self.relaunch(session, channel=session.channel,
+                                        seed_kit=session.seed_kit,
+                                        stop=stop)
+            # 将新 session 状态迁回旧 session 对象（调用方持有旧引用，
+            # 以此保证 session 对象身份不变但内部已刷新）
+            session.browser = new_session.browser
+            session.channel = new_session.channel
+            session.req_proxies = new_session.req_proxies
+            session.views = new_session.views
+            session.seed_kit = new_session.seed_kit
+            for k, v in new_session.extra.items():
+                if k != "needs_relaunch":
+                    session.extra[k] = v
+            if site_name in session.views:
+                return session.views[site_name]
+            # launch 未建该 site 的初始 view 时，走下面正常懒建路径
 
         cfg = self.config
         # 确定 identity
