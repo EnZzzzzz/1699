@@ -299,6 +299,9 @@ class QueueRouter:
             status = self._db(ctx).release_work_item(item_id, max_attempts=3)
             if status == "failed":
                 ctx.log(f"[!] 工作项 #{item_id} attempts exhausted，已置 failed")
+                item = ctx.state.get("item")
+                if item is not None:
+                    self._task_for(ctx).refill_item(ctx, item)
             return status
         except Exception as e:  # noqa: BLE001
             ctx.log(f"[!] 工作项 #{item_id} 释放失败: {e}")

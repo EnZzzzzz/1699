@@ -129,5 +129,12 @@ class Task:
         """
         return ""
 
+    def refill_item(self, ctx, item) -> None:
+        """工作项 attempts 耗尽后补插同 payload 新 item（默认空实现）。
+
+        CLI 单站点路径兼容；子类按需覆盖（如 MadeInChinaShopTask 对
+        category/discover 补插）。
+        """
+
     def after_item(self, ctx, item) -> None:
         """当前任务项处理完毕（含放弃）后的收尾（如释放类目占用）。"""

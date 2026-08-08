@@ -20,9 +20,7 @@ from fetcher.sites.madeinchina.contact import (
 )
 from fetcher.sites.madeinchina.features import HOMEPAGE, MARKET_DIR
 from fetcher.sites.madeinchina.shop import (
-    SEED_CATEGORIES,
     ZERO_NEW_LIMIT,
-    CategoryPool,
     MadeInChinaShopTask,
     PLATFORM_SUBDOMAINS,
     build_market_url,
@@ -407,19 +405,8 @@ class ShopTaskTest(unittest.TestCase):
         self.assertEqual(build_market_url("jgdbj", 2, fmt="plain"),
                          "https://cn.made-in-china.com/market/jgdbj-2.html")
 
-    def test_pool_remembers_fmt_per_slug(self):
-        pool = CategoryPool(exhausted=set())
-        pool.refresh([
-            {"slug": "bxgyxg", "name": "不锈钢异型管", "fmt": "x2"},
-            {"slug": "jgdbj", "name": "激光打标机", "fmt": "plain"},
-            {"slug": "huafangchuan", "name": "画舫船"},  # 无 fmt，缺省 x2
-        ])
-        self.assertEqual(pool.fmt["bxgyxg"], "x2")
-        self.assertEqual(pool.fmt["jgdbj"], "plain")
-        self.assertEqual(pool.fmt["huafangchuan"], "x2")
-
-    def test_fetch_uses_fmt_for_plain_slug(self):
-        # -N 体系的 slug：fetch 应拼 {slug}-{page}.html，而不是 _2-
+    def test_fetch_uses_fmt_from_payload(self):
+        # fmt="plain"：fetch 应拼 {slug}-{page}.html，而不是 _2-
         page = MICPage()
         page.url = "https://cn.made-in-china.com/market/jgdbj-1.html"
         page._shops = [
@@ -435,18 +422,16 @@ class ShopTaskTest(unittest.TestCase):
 
         page.evaluate = eval_dispatch
         ctx = make_ctx(page, db=self.db)
-        self.task.cat_pool = CategoryPool(exhausted=set())
-        self.task.cat_pool.refresh(
-            [{"slug": "jgdbj", "name": "激光打标机", "fmt": "plain"}])
-        item = ("jgdbj", "激光打标机", 1)
+        # fmt 从 payload 获取（不再查池）
+        item = {"kind": "category", "keyword": "jgdbj",
+                "name": "激光打标机", "fmt": "plain"}
         result = self.task.fetch(ctx, item)
         self.assertEqual(result.outcome, Outcome.OK)
         # 访问的是 -1.html 短链 URL（不是 _2-1.html）
         url, kw = page.goto_calls[0]
         self.assertEqual(url,
                          "https://cn.made-in-china.com/market/jgdbj-1.html")
-        self.assertEqual(kw.get("referer"),
-                         "https://cn.made-in-china.com/")
+        self.assertEqual(kw.get("referer"), HOMEPAGE)
 
     def test_is_platform_subdomain(self):
         self.assertTrue(is_platform_subdomain("caigou"))
@@ -473,49 +458,56 @@ class ShopTaskTest(unittest.TestCase):
 
         page.evaluate = eval_dispatch
         ctx = make_ctx(page, db=self.db)
-        item = ("wujingj", "五金工具", 1)
+        # page_no 从 category_progress 读（无记录→1）
+        item = {"kind": "category", "keyword": "wujingj",
+                "name": "五金工具", "fmt": "x2"}
         result = self.task.fetch(ctx, item)
         self.assertEqual(result.outcome, Outcome.OK)
         domains = [s["domain"] for s in result.data["shops"]]
         self.assertIn("dihewujin.cn.made-in-china.com", domains)
         self.assertNotIn("caigou.cn.made-in-china.com", domains)  # 已过滤
         self.assertEqual(result.data["has_more"], True)
+        # 确认访问了第 1 页（无 category_progress → 1）
+        url, kw = page.goto_calls[0]
+        self.assertEqual(url, build_market_url("wujingj", 1))
+        self.assertEqual(kw.get("referer"), HOMEPAGE)
 
     def test_on_success_empty_marks_exhausted(self):
-        ctx = make_ctx(MICPage(), db=self.db)
+        page = MICPage()
+        ctx = make_ctx(page, db=self.db)
         ctx.state["task"]["stats"] = self.task.make_stats()
-        self.task.cat_pool = None  # on_success 不依赖 cat_pool
         r = ok_result({"shops": [], "has_more": False})
-        n = self.task.on_success(ctx, ("wujingj", "五金工具", 1), r)
+        item = {"kind": "category", "keyword": "wujingj",
+                "name": "五金工具", "fmt": "x2"}
+        n = self.task.on_success(ctx, item, r)
         self.assertEqual(n, 0)
         self.assertIn("wujingj", self.db.get_exhausted_keywords())
 
     def test_on_success_zero_new_marks_exhausted_after_limit(self):
-        # 提取到店铺但全部是已入库重复（服务端分页夹取回第 1 页）：健康分页
-        # 每页必有新增，连续 ZERO_NEW_LIMIT 页零新增即标 exhausted，
-        # 防止「满页≥20」启发式骗到永不停止（实测 bxgyxg 单页类目烧到 176 页）
-        ctx = make_ctx(MICPage(), db=self.db)
+        page = MICPage()
+        ctx = make_ctx(page, db=self.db)
         ctx.state["task"]["stats"] = self.task.make_stats()
-        self.task.cat_pool = None
         self.db.upsert_shops([
             {"domain": "dup1.cn.made-in-china.com", "name": "重复店"}])
         r = ok_result({"shops": [
             {"domain": "dup1.cn.made-in-china.com", "name": "重复店"}],
             "has_more": True})
-        item = ("bxgyxg", "不锈钢异型管", 1)
         # 前 limit-1 页零新增：页码前进，不 exhausted
-        for i in range(1, ZERO_NEW_LIMIT):
-            self.task.on_success(ctx, (item[0], item[1], i), r)
+        for _ in range(1, ZERO_NEW_LIMIT):
+            item = {"kind": "category", "keyword": "bxgyxg",
+                    "name": "不锈钢异型管", "fmt": "x2"}
+            self.task.on_success(ctx, item, r)
             self.assertNotIn("bxgyxg", self.db.get_exhausted_keywords())
         # 第 limit 页零新增：标 exhausted
-        self.task.on_success(ctx, (item[0], item[1], ZERO_NEW_LIMIT), r)
+        item = {"kind": "category", "keyword": "bxgyxg",
+                "name": "不锈钢异型管", "fmt": "x2"}
+        self.task.on_success(ctx, item, r)
         self.assertIn("bxgyxg", self.db.get_exhausted_keywords())
 
     def test_on_success_zero_new_resets_after_fresh_page(self):
-        # 零新增后页面又出现新店：计数清零不误杀（同类目后续仍有新店）
-        ctx = make_ctx(MICPage(), db=self.db)
+        page = MICPage()
+        ctx = make_ctx(page, db=self.db)
         ctx.state["task"]["stats"] = self.task.make_stats()
-        self.task.cat_pool = None
         self.db.upsert_shops([
             {"domain": "dup1.cn.made-in-china.com", "name": "重复店"}])
         dup = ok_result({"shops": [
@@ -524,16 +516,17 @@ class ShopTaskTest(unittest.TestCase):
         fresh = ok_result({"shops": [
             {"domain": "fresh1.cn.made-in-china.com", "name": "新店"}],
             "has_more": True})
-        item = ("wujingj", "五金工具", 1)
         # 1 页零新增 → 1 页有新增（清计数）→ 再 1 页零新增：不应 exhausted
-        self.task.on_success(ctx, (item[0], item[1], 1), dup)
-        self.task.on_success(ctx, (item[0], item[1], 2), fresh)
-        self.task.on_success(ctx, (item[0], item[1], 3), dup)
+        item = {"kind": "category", "keyword": "wujingj",
+                "name": "五金工具", "fmt": "x2"}
+        self.task.on_success(ctx, item, dup)
+        self.task.on_success(ctx, item, fresh)
+        self.task.on_success(ctx, item, dup)
         self.assertNotIn("wujingj", self.db.get_exhausted_keywords())
 
-    # ---- 类目池 DB 播种（首页 market 链接极少，跨 run 续采） ----
+    # ---- 类目提取正则：兼容 _2-N 与 -N，排除 _1-N ----
 
-    def test_get_active_categories_pinyin_only(self):
+    def test_extract_categories_js_matches_both_url_forms(self):
         # 只有拼音类目才算 madeinchina market slug；中文关键词行（1688 等
         # 其他任务）与 company: 前缀不算，exhausted 的不算
         from fetcher.db import _is_pinyin_slug
@@ -543,9 +536,8 @@ class ShopTaskTest(unittest.TestCase):
         self.assertFalse(_is_pinyin_slug("company:快递袋"))
         self.assertFalse(_is_pinyin_slug("运动腰包、配件包"))
 
-    def test_prepare_seeds_pool_from_db(self):
-        # 首页提取可能失败/只给少量类目，prepare 要从 category_progress
-        # 把未采完的拼音类目播种进池，否则跨 run 搁浅
+    def test_prepare_seeds_from_db(self):
+        # prepare 从 category_progress 播种 category item + discover item
         self.db.conn.execute(
             "INSERT INTO category_progress (keyword, name, next_page) "
             "VALUES ('bxgyxg', '不锈钢异型管', 2)")
@@ -554,18 +546,33 @@ class ShopTaskTest(unittest.TestCase):
             "exhausted) VALUES ('xxylsb', '新型游乐设备', 1, 1)")
         self.db.conn.commit()
         db_path = self.db.conn.execute(
-            "PRAGMA database_list").fetchone()[2]  # self.db 的真实文件路径
-        self.db.close()  # prepare 会新开连接，先关掉避免文件锁
+            "PRAGMA database_list").fetchone()[2]
+        self.db.close()
         cfg = RunConfig()
         cfg.db_path = db_path
         task = MadeInChinaShopTask()
         self.assertTrue(task.prepare(cfg))
-        self.assertIn("bxgyxg", task.cat_pool.pool)      # 未采完拼音类目播种
-        self.assertNotIn("xxylsb", task.cat_pool.pool)   # exhausted 的不播
+        # 验证播种了 work_items
+        db_check = ShopDB(db_path)
+        import json
+        items = db_check.conn.execute(
+            "SELECT payload_json FROM work_items WHERE queue=? "
+            "AND status='pending' ORDER BY id",
+            ("crawl_mic_shop",)).fetchall()
+        payloads = [json.loads(r["payload_json"]) for r in items]
+        # bxgyxg 应播种为 category item
+        self.assertTrue(any(
+            p.get("kind") == "category" and p.get("keyword") == "bxgyxg"
+            for p in payloads))
+        # xxylsb 是 exhausted，不应播种
+        self.assertFalse(any(
+            p.get("keyword") == "xxylsb" for p in payloads))
+        # 至少一条 discover
+        self.assertTrue(any(
+            p.get("kind") == "discover" for p in payloads))
+        db_check.close()
 
-    # ---- 首页类目提取正则：兼容 _2-N 与 -N，排除 _1-N ----
-
-    def test_extract_categories_js_matches_both_url_forms(self):
+    def test_get_active_categories_pinyin_only(self):
         import re
         # 与 _JS_EXTRACT_CATEGORIES 里的正则镜像校验：JS 侧 regex 是
         # /\\/market\\/([a-zA-Z0-9]+?)(?:_2)?-\\d+\\.html/，这里用等价
@@ -589,73 +596,21 @@ class ShopTaskTest(unittest.TestCase):
                 fmt = "x2" if "_2-" in m.group(0) else "plain"
                 self.assertEqual(fmt, expect_fmt, href)
 
-    # ---- acquire 空转重试：被其他 worker 暂占时等待而非退出 ----
-
-    def test_pick_none_but_has_active_distinguishes_busy(self):
-        # 只剩一个类目且被另一个 worker 占着：pick 返回 None，但池里还有
-        # 活跃类目（has_active=True）→ acquire 应等待重试而非直接退出
-        pool = CategoryPool(exhausted=set())
-        pool.pool = {"bxgyxg": "不锈钢异型管"}
-        pool.in_progress = {"bxgyxg"}  # 被另一个 worker 占用
-        self.assertIsNone(pool.pick())
-        self.assertTrue(pool.has_active())
-
-    def test_pick_none_all_exhausted_no_active(self):
-        pool = CategoryPool(exhausted={"bxgyxg"})
-        pool.pool = {"bxgyxg": "不锈钢异型管"}
-        self.assertIsNone(pool.pick())
-        self.assertFalse(pool.has_active())
-
-    # ---- cold_start 类目播种：首页 + 市场导航页（/shichang/）----
+    # ---- cold_start 纯浏览软着陆 ----
 
     @patch("time.sleep")
     @patch("random.uniform", return_value=1.0)
-    def test_cold_start_seeds_pool_from_market_dir(self, _r, _s):
-        # 首页只暴露少量 market 链接（~129 个，2026-08-06 已全部采干），
-        # 类目主力入口是市场导航页 /shichang/（~947 个）；两页都提取合并进池
+    def test_cold_start_browses_home_and_market_dir(self, _r, _s):
+        """冷启动仅浏览首页+导航页（软着陆），不提取类目。"""
         page = MICPage()
-
-        def eval_dispatch(js):
-            if "querySelectorAll" in js and "/market/" in js:
-                if "shichang" in page.url:
-                    return [{"slug": "jgdbj", "name": "激光打标机",
-                             "fmt": "plain"},
-                            {"slug": "wujingj", "name": "五金工具",
-                             "fmt": "x2"}]
-                return [{"slug": "wujingj", "name": "五金工具", "fmt": "x2"}]
-            return ""
-
-        page.evaluate = eval_dispatch
         ctx = make_ctx(page)
-        self.task.cat_pool = CategoryPool(exhausted=set())
         self.task.cold_start(ctx, None)
-        self.assertIn("jgdbj", self.task.cat_pool.pool)     # 导航页类目进池
-        self.assertIn("wujingj", self.task.cat_pool.pool)   # 首页类目进池
-        # 首页与导航页重复的 slug 只占一个坑
-        self.assertEqual(list(self.task.cat_pool.pool).count("wujingj"), 1)
-        # 两个页面都逛了（留真实浏览轨迹）
         urls = [u for u, _ in page.goto_calls]
         self.assertIn(HOMEPAGE, urls)
         self.assertIn(MARKET_DIR, urls)
-
-    @patch("time.sleep")
-    @patch("random.uniform", return_value=1.0)
-    def test_cold_start_both_pages_fail_falls_back_to_seeds(self, _r, _s):
-        # 首页与导航页都提取失败：兜底内置种子类目并打出警告
-        page = MICPage()
-
-        def boom(url, **kw):
-            raise RuntimeError("net down")
-
-        page.goto = boom
-        ctx = make_ctx(page)
-        logs = []
-        ctx.log = logs.append
-        self.task.cat_pool = CategoryPool(exhausted=set())
-        self.task.cold_start(ctx, None)
-        self.assertEqual(sorted(self.task.cat_pool.pool),
-                         sorted(k for k, _ in SEED_CATEGORIES))
-        self.assertTrue(any("种子类目" in m for m in logs))
+        # 没有提取类目（cold_start 不再做这事）
+        # 验证 goto 正常完成即可
+        self.assertEqual(len(urls), 2)
 
 
 # ---------- 策略覆盖 ----------
