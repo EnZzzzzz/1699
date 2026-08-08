@@ -30,10 +30,6 @@ TASK_COMMANDS = {
     "yiwugo_search": ["yiwugo", "search"],
 }
 
-# 进程内任务类型（P4：清空——wa_check 迁入 daemon LocalExecutor；
-# wa_tasks.py 冻结不删，P5 移除）
-IN_PROCESS_TYPES: set[str] = set()
-
 # 批次任务类型 → 队列映射（P4：平台创建/停止/监控全流程走 dispatcher）。
 # 值：{"queue", "enqueue"}——enqueue 为平台侧批次入队函数。
 # contact 类带 domain_suffix（按来源过滤）；feeder/wa 无。
@@ -121,8 +117,6 @@ def build_command(task_type: str, params: dict) -> list:
     - 数值/时长参数值非 None 才输出（缺省=CLI 自带默认值，保持命令干净）；
     - 开关：use_proxy=true→--proxy；headless=false→--headed；
       auto_solve=false→--no-auto-solve；
-      retry_failed=true 且 1688_contact→--retry-failed；
-    - wa_check 等进程内类型不走这里。
     """
     sub = TASK_COMMANDS.get(task_type)
     if not sub:
@@ -139,8 +133,6 @@ def build_command(task_type: str, params: dict) -> list:
         cmd.append("--headed")
     if params.get("auto_solve") is False:
         cmd.append("--no-auto-solve")
-    if task_type == "1688_contact" and params.get("retry_failed") is True:
-        cmd.append("--retry-failed")
     return cmd
 
 
@@ -339,12 +331,10 @@ def _extract_worker(line: str):
 
 
 class _RunEntry:
-    __slots__ = ("proc", "thread", "stop_requested", "lines", "tail", "lock",
-                 "stop_event")
+    __slots__ = ("proc", "thread", "stop_requested", "lines", "tail", "lock")
 
-    def __init__(self, proc=None, stop_event=None):
-        self.proc = proc              # subprocess 任务非空；进程内任务为 None
-        self.stop_event = stop_event  # 进程内任务的停止信号
+    def __init__(self, proc=None):
+        self.proc = proc
         self.thread = None
         self.stop_requested = False
         self.lines = 0
@@ -430,8 +420,7 @@ class TaskRunner:
         self._start_sweeper()
 
     def shutdown(self) -> None:
-        """服务关闭：停 sweeper；取消待重启 Timer；终止仍在跑的子进程 /
-        通知进程内任务停止。"""
+        """服务关闭：停 sweeper；取消待重启 Timer；终止仍在跑的子进程。"""
         # P4：停批次 sweeper
         self._stop_sweeper()
         with self._lock:
@@ -441,9 +430,6 @@ class TaskRunner:
         for timer in timers:
             timer.cancel()
         for task_id, entry in entries:
-            if entry.stop_event is not None:
-                entry.stop_event.set()
-                continue
             proc = entry.proc
             if proc is not None and proc.poll() is None:
                 try:
@@ -454,10 +440,6 @@ class TaskRunner:
                         proc.kill()
                     except Exception:
                         pass
-        # 等进程内任务线程收尾（wa 原子会随 stop_event 终止 node 子进程）
-        for task_id, entry in entries:
-            if entry.stop_event is not None and entry.thread:
-                entry.thread.join(timeout=10)
 
     # ---------- 启动 / 停止 ----------
 
@@ -478,8 +460,6 @@ class TaskRunner:
                 f"{n} 个工作项",
                 {"queue": BATCH_TYPES[task_type]["queue"], "items": n})
             return None
-        if task_type in IN_PROCESS_TYPES:
-            return self._start_in_process(task_id, task_type, params)
         cmd = build_command(task_type, params)
         env = dict(os.environ, PYTHONUNBUFFERED="1")
         proc = subprocess.Popen(
@@ -506,65 +486,9 @@ class TaskRunner:
                       {"pid": proc.pid, "cmd": cmd})
         return proc.pid
 
-    def _start_in_process(self, task_id: int, task_type: str, params: dict):
-        """进程内任务：派生线程跑执行器（如 wa_tasks.run），stop_event 停止。"""
-        stop_event = threading.Event()
-        entry = _RunEntry(None, stop_event)
-        with self._lock:
-            self._runs[task_id] = entry
-        t = threading.Thread(
-            target=self._run_in_process,
-            args=(task_id, entry, task_type, params),
-            daemon=True, name=f"task-inproc-{task_id}",
-        )
-        entry.thread = t
-        t.start()
-        _insert_event(task_id, "info",
-                      f"进程内任务已启动 type={task_type}",
-                      {"type": task_type})
-        return None
-
-    def _run_in_process(self, task_id: int, entry: _RunEntry,
-                        task_type: str, params: dict) -> None:
-        try:
-            if task_type == "wa_check":
-                from app import wa_tasks  # 延迟导入，避免与 runner 循环依赖
-                wa_tasks.run(task_id, params, entry.stop_event)
-            else:
-                raise ValueError(f"未知进程内任务类型: {task_type}")
-        except Exception as e:
-            # 双保险：执行器自身已 try/finalize，这里兜底未捕获的异常
-            print(f"[runner] 进程内任务 {task_id} 异常: {e}")
-            try:
-                _insert_event(task_id, "error", f"进程内执行器异常: {e}")
-                _db_write(
-                    "UPDATE tasks SET status='failed', error=?, finished_at=? "
-                    "WHERE id=? AND status='running'",
-                    (f"进程内执行器异常: {e}"[:500], beijing_now(), task_id),
-                )
-            except Exception:
-                pass
-        finally:
-            with self._lock:
-                self._runs.pop(task_id, None)
-            # 进程内任务循环模式：执行器自身已回写终态，按 DB 状态决定是否重启
-            try:
-                conn = sqlite3.connect(DB_PATH, timeout=30)
-                try:
-                    conn.execute("PRAGMA busy_timeout = 30000")
-                    row = conn.execute(
-                        "SELECT status FROM tasks WHERE id=?",
-                        (task_id,)).fetchone()
-                finally:
-                    conn.close()
-                if row:
-                    self._maybe_schedule_restart(task_id, row[0])
-            except Exception as e:
-                print(f"[runner] 进程内任务 {task_id} 重启调度失败: {e}")
-
     def stop(self, task_id: int) -> bool:
         """先置 stop_requested=1；取消待重启 Timer；批次任务压 stopped
-        pending 项；进程内任务置 stop_event，子进程 terminate。"""
+        pending 项；子进程 terminate。"""
         _db_write("UPDATE tasks SET stop_requested=1 WHERE id=?", (task_id,))
         # P4 批次：pending 项压 stopped（claimed 跑完自然终态）
         try:
@@ -589,9 +513,6 @@ class TaskRunner:
                 return True
             return False
         entry.stop_requested = True
-        if entry.stop_event is not None:
-            entry.stop_event.set()
-            return True
         proc = entry.proc
         if proc is not None and proc.poll() is None:
             try:

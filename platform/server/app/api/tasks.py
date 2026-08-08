@@ -9,8 +9,8 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.db import DB_PATH, connect
-from app.runner import (BATCH_TYPE_NAMES, BATCH_TYPES, IN_PROCESS_TYPES,
-                        PYTHON_BIN, TASK_COMMANDS, beijing_now, build_command,
+from app.runner import (BATCH_TYPE_NAMES, BATCH_TYPES, PYTHON_BIN,
+                        TASK_COMMANDS, beijing_now, build_command,
                         enqueue_batch_for_task, runner, stop_batch_task,
                         _insert_event)
 
@@ -113,15 +113,11 @@ class TaskParams(BaseModel):
     use_proxy: bool | None = None           # true → --proxy
     headless: bool | None = None            # false → --headed
     auto_solve: bool | None = None          # false → --no-auto-solve
-    retry_failed: bool | None = None        # true 且 1688_contact → --retry-failed
-    # wa_check（进程内 WhatsApp 查号）专用：
-    interval: float | None = None           # 旧参数：固定调用间隔秒（等价
-                                            # sample_min == sample_max）
+    retry_failed: bool | None = None        # 前端 1688_contact 表单开关遗留，不映射 CLI
+    # wa_check 专用：
     accounts: list[str] | None = None       # 账号池，空 = 仅默认账号
-    batch_rest_min: float | None = None     # wa_check 批间休息下限（秒）
-    batch_rest_max: float | None = None     # wa_check 批间休息上限（秒）
-    # 注：wa_check 复用上方 batch_num（每批调用次数）、
-    # sample_min / sample_max（调用间隔范围）三个字段
+    # 注：batch_num/sample_min/sample_max 为 subprocess 类型（yiwugo）节奏参数；
+    # wa_check 走 daemon 批次，只消费 limit/accounts
     # 循环模式：本轮正常结束（done/failed）后 N 秒自动重启；None/<=0 = 不循环
     repeat_interval: int | None = None
 
@@ -168,23 +164,6 @@ def _get_task_row(task_id: int):
 # ---------------- 命令预览 / 参数修改 ----------------
 
 
-class CommandParse(BaseModel):
-    command: str = Field(..., min_length=1)
-
-
-@router.post("/tasks/parse")
-def parse_task_command(body: CommandParse):
-    """把 fetcher CLI 命令文本解析回 type + params（build_command 的反向）。
-
-    容忍 python -m fetcher / 直接 fetcher 前缀与 while/for + sleep N 循环包裹。
-    """
-    from app.cmdparse import CommandParseError, parse_command
-    try:
-        return parse_command(body.command)
-    except CommandParseError as e:
-        raise HTTPException(status_code=422, detail=str(e))
-
-
 @router.post("/tasks/preview")
 def preview_task(body: TaskCreate):
     """按 type + params 预览实际将执行的 fetcher CLI 命令（不落库）。"""
@@ -200,8 +179,6 @@ def preview_task(body: TaskCreate):
         if limit:
             desc += f"，{limit} 条"
         return {"cmd": None, "cmdline": desc}
-    if body.type in IN_PROCESS_TYPES:
-        return {"cmd": None, "cmdline": "进程内执行（CheckWhatsApp 原子）"}
     try:
         cmd = build_command(body.type, params)
     except ValueError as e:

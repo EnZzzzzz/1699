@@ -27,15 +27,13 @@ def _schema(conn):
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         type TEXT NOT NULL,
         params_json TEXT NOT NULL,
-        celery_id TEXT,
         status TEXT NOT NULL DEFAULT 'pending',
         progress_json TEXT,
         stop_requested INTEGER NOT NULL DEFAULT 0,
         error TEXT,
         created_at TEXT NOT NULL,
         started_at TEXT,
-        finished_at TEXT,
-        flow_id INTEGER
+        finished_at TEXT
     );
     CREATE TABLE IF NOT EXISTS task_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,

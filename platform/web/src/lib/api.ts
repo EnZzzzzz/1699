@@ -88,14 +88,13 @@ export type TaskType =
 // 批次类型（1688/madeinchina 采集 + wa_check）只读 limit / repeat_interval /
 // accounts，其余 daemon 级参数（workers/proxy/节奏等）已收敛到 daemon 启动，
 // 逐任务覆盖取消（SPEC §3.2 用户可见变化）；旧模板多余字段后端忽略。
-// wa_check 使用 limit / accounts / sample_min / sample_max / batch_num /
-// batch_rest_min / batch_rest_max（interval 为旧参数，向后兼容）。
+// wa_check 只使用 limit / accounts；旧模板多余字段后端忽略（加载时忽略未知键）。
 export interface TaskParams {
   batch_num?: number
   limit?: number
   max_batches?: number
   workers?: number
-  channels?: string
+  channels?: number
   batch_rest?: number
   sample_min?: number
   sample_max?: number
@@ -112,14 +111,11 @@ export interface TaskParams {
   use_proxy?: boolean
   headless?: boolean
   auto_solve?: boolean
-  retry_failed?: boolean // 仅 1688_contact
+  retry_failed?: boolean // 仅 1688_contact；已不映射 CLI（build_command 分支已删），表单开关遗留
   // 任务结束后自动重启的间隔（秒）；0 或不传 = 不循环
   repeat_interval?: number
   // wa_check 专用
-  interval?: number // 旧参数：固定调用间隔（等价 sample_min == sample_max）
   accounts?: string[]
-  batch_rest_min?: number // wa_check 批间休息下限（秒）
-  batch_rest_max?: number // wa_check 批间休息上限（秒）
 }
 
 export interface CreateTaskRequest {
@@ -128,15 +124,8 @@ export interface CreateTaskRequest {
 }
 
 export interface TaskPreview {
-  cmd: string[] | null // wa_check 为进程内任务，返回 null
-  cmdline: string // cmd 拼接的命令行，或 wa_check 的说明文案
-}
-
-// 命令解析结果：422 时 request() 抛出带后端 detail 的 ApiError
-export interface TaskParseResult {
-  type: TaskType
-  params: TaskParams
-  warnings: string[]
+  cmd: string[] | null // 批次类型（含 wa_check）返回 null
+  cmdline: string // cmd 拼接的命令行，或批次类型的说明文案
 }
 
 export interface TaskTemplate {
@@ -325,11 +314,6 @@ export const api = {
     normalizeTask(await request<unknown>('/tasks', { method: 'POST', body: JSON.stringify(body) })),
   previewTask: (body: CreateTaskRequest) =>
     request<TaskPreview>('/tasks/preview', { method: 'POST', body: JSON.stringify(body) }),
-  parseCommand: (command: string) =>
-    request<TaskParseResult>('/tasks/parse', {
-      method: 'POST',
-      body: JSON.stringify({ command }),
-    }),
   putTask: async (id: number, params: TaskParams) =>
     normalizeTask(
       await request<unknown>(`/tasks/${id}`, { method: 'PUT', body: JSON.stringify({ params }) })),

@@ -24,8 +24,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
-import { Textarea } from '@/components/ui/textarea'
-import { ChevronDown, Save, Terminal, Trash2, Wand2 } from 'lucide-react'
+import { ChevronDown, Save, Terminal, Trash2 } from 'lucide-react'
 import { TASK_TYPE_OPTIONS, taskTypeLabel } from './task-ui'
 
 interface NumField {
@@ -73,7 +72,7 @@ const ALL_NUM_KEYS = [...BASIC_FIELDS, ...RHYTHM_FIELDS, ...RETRY_FIELDS, ...MIS
   (f) => f.key,
 )
 
-// 高级区包含的数字键（命令导入 / 模板加载命中时自动展开高级区）
+// 高级区包含的数字键（模板加载命中时自动展开高级区）
 const ADVANCED_NUM_KEYS = [...RHYTHM_FIELDS, ...RETRY_FIELDS, ...MISC_NUM_FIELDS].map((f) => f.key)
 
 interface TaskFormDialogProps {
@@ -98,11 +97,6 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
 
   // wa_check 专用表单状态
   const [waLimit, setWaLimit] = useState('')
-  const [waSampleMin, setWaSampleMin] = useState('')
-  const [waSampleMax, setWaSampleMax] = useState('')
-  const [waBatchNum, setWaBatchNum] = useState('')
-  const [waRestMin, setWaRestMin] = useState('')
-  const [waRestMax, setWaRestMax] = useState('')
   const [waAccounts, setWaAccounts] = useState<WaAccount[]>([])
   const [selectedAccounts, setSelectedAccounts] = useState<string[]>([])
 
@@ -111,11 +105,6 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
 
   // 命令预览
   const [preview, setPreview] = useState<TaskPreview | null>(null)
-
-  // 从命令导入
-  const [importOpen, setImportOpen] = useState(false)
-  const [importText, setImportText] = useState('')
-  const [parsing, setParsing] = useState(false)
 
   // 任务模板
   const [templates, setTemplates] = useState<TaskTemplate[]>([])
@@ -135,27 +124,22 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
   const setValue = (key: string, v: string) =>
     setValues((prev) => ({ ...prev, [key]: v }))
 
-  // 用一组 params 回填整个表单（编辑初始化 / 命令导入 / 模板加载共用）
+  // 用一组 params 回填整个表单（编辑初始化 / 模板加载共用）
   const fillFromParams = (p: Record<string, unknown>) => {
     const next: Record<string, string> = {}
     for (const key of ALL_NUM_KEYS) {
       if (typeof p[key] === 'number') next[key] = String(p[key])
     }
     setValues(next)
-    setChannels(typeof p.channels === 'string' ? (p.channels as string) : '')
+    setChannels(typeof p.channels === 'number' ? String(p.channels) : '')
     setUseProxy(p.use_proxy !== false)
     setHeadless(p.headless !== false)
     setAutoSolve(p.auto_solve !== false)
     setRetryFailed(p.retry_failed === true)
     setWaLimit(typeof p.limit === 'number' ? String(p.limit) : '')
     setBatchLimit(typeof p.limit === 'number' ? String(p.limit) : '')
-    // 节奏参数：sample_min/max 缺省时用旧参数 interval 回填（向后兼容）
-    const legacyInterval = typeof p.interval === 'number' ? String(p.interval) : ''
-    setWaSampleMin(typeof p.sample_min === 'number' ? String(p.sample_min) : legacyInterval)
-    setWaSampleMax(typeof p.sample_max === 'number' ? String(p.sample_max) : legacyInterval)
-    setWaBatchNum(typeof p.batch_num === 'number' ? String(p.batch_num) : '')
-    setWaRestMin(typeof p.batch_rest_min === 'number' ? String(p.batch_rest_min) : '')
-    setWaRestMax(typeof p.batch_rest_max === 'number' ? String(p.batch_rest_max) : '')
+    // wa 表单只保留 limit + accounts：历史任务 params_json 中的旧字段
+    // （batch_num/sample_min/… 等）后端忽略，回填时跳过未知键（SPEC C3）
     setSelectedAccounts(
       Array.isArray(p.accounts)
         ? (p.accounts as unknown[]).filter((a): a is string => typeof a === 'string')
@@ -169,8 +153,6 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
     if (!open) return
     setPreview(null)
     setAdvancedOpen(false)
-    setImportOpen(false)
-    setImportText('')
     setTemplateSel('')
     if (task) {
       setType(task.type as TaskType)
@@ -185,11 +167,6 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
       setAutoSolve(true)
       setRetryFailed(false)
       setWaLimit('')
-      setWaSampleMin('')
-      setWaSampleMax('')
-      setWaBatchNum('')
-      setWaRestMin('')
-      setWaRestMax('')
       setSelectedAccounts([])
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -234,22 +211,7 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
       const params: TaskParams = { accounts: selectedAccounts }
       const limitN = Number(waLimit)
       if (waLimit.trim() !== '' && Number.isInteger(limitN) && limitN >= 0) params.limit = limitN
-      const numOrUndef = (raw: string): number | undefined => {
-        if (raw.trim() === '') return undefined
-        const n = Number(raw)
-        return Number.isFinite(n) && n >= 0 ? n : undefined
-      }
-      const sampleMin = numOrUndef(waSampleMin)
-      if (sampleMin !== undefined) params.sample_min = sampleMin
-      const sampleMax = numOrUndef(waSampleMax)
-      if (sampleMax !== undefined) params.sample_max = sampleMax
-      const batchNum = numOrUndef(waBatchNum)
-      if (batchNum !== undefined && Number.isInteger(batchNum)) params.batch_num = batchNum
-      const restMin = numOrUndef(waRestMin)
-      if (restMin !== undefined) params.batch_rest_min = restMin
-      const restMax = numOrUndef(waRestMax)
-      if (restMax !== undefined) params.batch_rest_max = restMax
-      // 循环间隔：由命令导入 / 模板回填时透传（wa 表单不展示该字段）
+      // 循环间隔：由模板回填时透传（wa 表单不展示该字段）
       const riRaw = (values.repeat_interval ?? '').trim()
       const riN = Number(riRaw)
       if (riRaw !== '' && Number.isInteger(riN) && riN > 0) params.repeat_interval = riN
@@ -264,7 +226,12 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
       if (key === 'repeat_interval' && n === 0) continue // 0 = 不循环，不传
       ;(params as Record<string, unknown>)[key] = n
     }
-    if (channels.trim() !== '') params.channels = channels.trim()
+    // 后端 channels 为 int（代理通道 id）：整数才提交（Number.isFinite 会放行 '1.5'，后端 int 会 422）
+    const channelsRaw = channels.trim()
+    if (channelsRaw !== '') {
+      const channelsN = Number(channelsRaw)
+      if (Number.isInteger(channelsN)) params.channels = channelsN
+    }
     if (retryFailed && type === '1688_contact') params.retry_failed = true
     return params
   }
@@ -274,12 +241,10 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
     () =>
       JSON.stringify({
         type, values, channels, useProxy, headless, autoSolve, retryFailed,
-        waLimit, waSampleMin, waSampleMax, waBatchNum, waRestMin, waRestMax,
-        selectedAccounts,
+        waLimit, selectedAccounts,
       }),
     [type, values, channels, useProxy, headless, autoSolve, retryFailed,
-      waLimit, waSampleMin, waSampleMax, waBatchNum, waRestMin, waRestMax,
-      selectedAccounts],
+      waLimit, selectedAccounts],
   )
 
   // 命令预览：防抖 500ms 调 preview 接口，失败静默不阻塞
@@ -311,31 +276,6 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
         const n = Number(waLimit)
         if (!Number.isInteger(n) || n < 0) {
           toast.error('查号上限需为不小于 0 的整数（0 = 全部未查）')
-          return false
-        }
-      }
-      const ranges: [string, string, string][] = [
-        ['查号间隔', waSampleMin, waSampleMax],
-        ['批间休息', waRestMin, waRestMax],
-      ]
-      for (const [label, loRaw, hiRaw] of ranges) {
-        for (const [side, raw] of [['下限', loRaw], ['上限', hiRaw]] as const) {
-          if (raw.trim() === '') continue
-          const n = Number(raw)
-          if (!Number.isFinite(n) || n < 0) {
-            toast.error(`${label}${side}需为不小于 0 的数字（秒）`)
-            return false
-          }
-        }
-        if (loRaw.trim() !== '' && hiRaw.trim() !== '' && Number(loRaw) > Number(hiRaw)) {
-          toast.error(`${label}下限不能大于上限`)
-          return false
-        }
-      }
-      if (waBatchNum.trim() !== '') {
-        const n = Number(waBatchNum)
-        if (!Number.isInteger(n) || n < 0) {
-          toast.error('每批查号数量需为不小于 0 的整数（0 = 不分批）')
           return false
         }
       }
@@ -384,7 +324,7 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
     }
   }
 
-  // 编辑模式类型只读：导入 / 模板类型与当前任务不同时忽略 type，仅回填参数
+  // 编辑模式类型只读：模板类型与当前任务不同时忽略 type，仅回填参数
   const applyImportedType = (incoming: TaskType): boolean => {
     if (!editing) {
       setType(incoming)
@@ -397,27 +337,6 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
       return false
     }
     return true
-  }
-
-  // 从命令导入：调 parse 接口，成功回填 type + 全部参数
-  const handleParse = async () => {
-    const command = importText.trim()
-    if (command === '') {
-      toast.warning('请先粘贴命令')
-      return
-    }
-    setParsing(true)
-    try {
-      const res = await api.parseCommand(command)
-      const applied = applyImportedType(res.type)
-      fillFromParams((res.params ?? {}) as Record<string, unknown>)
-      for (const w of res.warnings ?? []) toast.warning(w)
-      toast.success(applied ? '命令解析成功，已回填类型与参数' : '命令解析成功，已回填参数')
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : '命令解析失败')
-    } finally {
-      setParsing(false)
-    }
   }
 
   // 从模板加载：选中即回填
@@ -507,36 +426,6 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
         </DialogHeader>
 
         <div className="space-y-4">
-          {/* 从命令导入：折叠区 */}
-          <Collapsible open={importOpen} onOpenChange={setImportOpen}>
-            <CollapsibleTrigger asChild>
-              <Button variant="outline" size="sm" className="w-full justify-between">
-                <span className="flex items-center gap-1.5">
-                  <Wand2 className="h-3.5 w-3.5" />
-                  从命令导入
-                </span>
-                <ChevronDown
-                  className={`h-4 w-4 transition-transform ${importOpen ? 'rotate-180' : ''}`}
-                />
-              </Button>
-            </CollapsibleTrigger>
-            <CollapsibleContent className="space-y-2 pt-2">
-              <Textarea
-                value={importText}
-                onChange={(e) => setImportText(e.target.value)}
-                placeholder="python -m fetcher 1688 company --proxy --headed -n 50 --worker 1"
-                rows={3}
-                className="font-mono text-xs"
-              />
-              <p className="text-xs text-muted-foreground">
-                支持 while 循环 + sleep 写法（解析为循环间隔）
-              </p>
-              <Button size="sm" onClick={handleParse} disabled={parsing}>
-                {parsing ? '解析中…' : '解析'}
-              </Button>
-            </CollapsibleContent>
-          </Collapsible>
-
           {/* 从模板加载 */}
           <div className="space-y-2">
             <Label>从模板加载</Label>
@@ -628,90 +517,18 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
             </>
           ) : isWaCheck ? (
             <>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-2">
-                  <Label htmlFor="wa-limit">查号上限</Label>
-                  <Input
-                    id="wa-limit"
-                    type="number"
-                    min={0}
-                    value={waLimit}
-                    placeholder="0 = 全部未查"
-                    onChange={(e) => setWaLimit(e.target.value)}
-                  />
-                  <p className="text-xs text-muted-foreground">0 = 全部未查</p>
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="wa-batch-num">每批查号数量（个）</Label>
-                  <Input
-                    id="wa-batch-num"
-                    type="number"
-                    min={0}
-                    value={waBatchNum}
-                    placeholder="默认 500"
-                    onChange={(e) => setWaBatchNum(e.target.value)}
-                  />
-                  <p className="text-xs text-muted-foreground">默认 500 个号码/批，0 = 不分批</p>
-                </div>
+              <div className="max-w-xs space-y-2">
+                <Label htmlFor="wa-limit">查号上限</Label>
+                <Input
+                  id="wa-limit"
+                  type="number"
+                  min={0}
+                  value={waLimit}
+                  placeholder="0 = 全部未查"
+                  onChange={(e) => setWaLimit(e.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">0 = 全部未查</p>
               </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-2">
-                  <Label htmlFor="wa-sample-min">查号间隔下限（秒）</Label>
-                  <Input
-                    id="wa-sample-min"
-                    type="number"
-                    min={0}
-                    step={0.5}
-                    value={waSampleMin}
-                    placeholder="默认 1.5"
-                    onChange={(e) => setWaSampleMin(e.target.value)}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="wa-sample-max">查号间隔上限（秒）</Label>
-                  <Input
-                    id="wa-sample-max"
-                    type="number"
-                    min={0}
-                    step={0.5}
-                    value={waSampleMax}
-                    placeholder="默认 1.5"
-                    onChange={(e) => setWaSampleMax(e.target.value)}
-                  />
-                </div>
-              </div>
-              <p className="-mt-1.5 text-xs text-muted-foreground">
-                每个号码查询之间随机停顿，上下限相等 = 固定间隔
-              </p>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-2">
-                  <Label htmlFor="wa-rest-min">批间休息下限（秒）</Label>
-                  <Input
-                    id="wa-rest-min"
-                    type="number"
-                    min={0}
-                    value={waRestMin}
-                    placeholder="默认 60"
-                    onChange={(e) => setWaRestMin(e.target.value)}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="wa-rest-max">批间休息上限（秒）</Label>
-                  <Input
-                    id="wa-rest-max"
-                    type="number"
-                    min={0}
-                    value={waRestMax}
-                    placeholder="默认 180"
-                    onChange={(e) => setWaRestMax(e.target.value)}
-                  />
-                </div>
-              </div>
-              <p className="-mt-1.5 text-xs text-muted-foreground">
-                每采满一批后随机长休息（防风控），随后自动开始下一批
-              </p>
 
               <div className="space-y-2 rounded-md border border-border px-3 py-2">
                 <Label>查号账号</Label>
@@ -814,7 +631,7 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
             </>
           )}
 
-          {/* 命令预览：wa_check 返回 cmd=null + 说明文案 */}
+          {/* 命令预览：批次类型（含 wa_check）返回 cmd=null + 批次文案 */}
           <div className="space-y-1.5">
             <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
               <Terminal className="h-3.5 w-3.5" />
