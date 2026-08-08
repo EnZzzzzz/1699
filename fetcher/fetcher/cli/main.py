@@ -257,10 +257,9 @@ def _build_registry(selected_queues: list[str] | None = None) -> list:
 
 
 def reset_daemon_state(db, registry: list) -> tuple[int, int]:
-    """daemon 启动崩溃恢复：全量回收 claimed + 逐 site 重置 in_progress。
+    """daemon 启动崩溃恢复：全量回收 claimed + 逐有 topup 的队列重置
+    in_progress（feeder 队列跳过——不产生 in_progress shops）。
 
-    只对 topup 非 None 的队列做 reset_in_progress（feeder 队列跳过——
-    它不产生 in_progress shops）。
     返回 (n_claimed_reset, n_in_progress_reset)。
     提取为独立函数便于测试（I2）。
     """

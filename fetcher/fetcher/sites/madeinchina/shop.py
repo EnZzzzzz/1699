@@ -280,9 +280,11 @@ class MadeInChinaShopTask(Task):
         discover 从页面提取时带正确 fmt 后纠正。Step 4.2 若 category_progress
         加 fmt 列可根除。
         """
-        from fetcher.db import _is_pinyin_slug
+        # 本地拼音判断（与 db._is_pinyin_slug 同义，避免跨模块导私有函数）
+        import re
+        _pinyin_re = re.compile(r"^[a-zA-Z0-9_]+$")
         active = [cat for cat in db.iter_active_categories()
-                  if _is_pinyin_slug(cat["keyword"])]
+                  if _pinyin_re.match(cat["keyword"])]
         n = 0
         for cat in active:
             slug = cat["keyword"]

@@ -90,3 +90,48 @@ python -m fetcher daemon --db /tmp/smoke_p3_42.db --workers 1 --limit 8 -n 1 \
 - ✅ 全量 468 passed（基线 463 + 5 净增）
 - ✅ 冒烟取证完整（播种→discover→类目页消费→progress 推进）
 - ⚠️ 工作区有他人未提交改动，scoped add 仅按 brief 列出文件
+
+---
+
+## Fix Round 1（task-4.2-fix1.md）
+
+> Commit 待提交 | 修复条目: I1 / I2 / M3 / M4
+
+### I1（Important）— shop.py 跨模块导入 db 私有函数 _is_pinyin_slug
+
+**问题**：`from fetcher.db import _is_pinyin_slug` 破坏封装，扩大 db 公开 API 面。
+
+**修复**：在 shop.py 本地复制拼音判断逻辑（`re.compile(r"^[a-zA-Z0-9_]+$")`），与 db._is_pinyin_slug 同义，不跨模块导私有符号。
+
+### I2（Important）— 冒烟证据不充分：analysis.md 结论超出 log 可证范围
+
+**问题**：daemon-run.log 仅 13 行，未含 discover 类目数、category_progress 推进值等可验证数据；analysis.md 的数值为推理而非取证。
+
+**修复**：对 /tmp/smoke_p3_42.db 做 sqlite3 只读查询取证并补充到 analysis.md：
+- work_items kind 分组：category=1053 pending，done=2（discover + jgdbj 页1）
+- category_progress：jgdbj next_page=2 pages=1 shops_found=15 exhausted=0
+- shops 落库：15 条 pending
+- 链式续喂：jgdbj 页 2 item 已插入（status=pending）
+
+### M3（Minor）— reset_daemon_state docstring 与新行为不一致
+
+**修复**：docstring 改为「逐有 topup 的队列重置 in_progress（feeder 跳过）」。
+
+### M4（Minor）— test_iter_active_categories_returns_non_exhausted 缺结构断言
+
+**修复**：新增 `for r in result: assertIn("keyword"/"name", r)` 结构断言。
+
+### 测试
+
+- 聚焦：test_madeinchina.py (44) + test_cli.py (12) → **56 passed**
+- 全量：`cd fetcher && python -m pytest tests -q` → **468 passed, 2 subtests passed**
+
+### 改动文件
+
+| 文件 | 改动 |
+|---|---|
+| `fetcher/fetcher/sites/madeinchina/shop.py` | I1: 移除 `from fetcher.db import _is_pinyin_slug`，本地复制正则 |
+| `fetcher/fetcher/cli/main.py` | M3: docstring 精确化 |
+| `fetcher/tests/test_madeinchina.py` | M4: 新增结构断言 |
+| `docs/.../smoke-step4.2/analysis.md` | I2: 追加 sqlite3 只读 DB 取证 |
+| `docs/.../task-4.2-report.md` | 本修复记录追加 |

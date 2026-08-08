@@ -34,9 +34,20 @@ category_progress 空 → `_seed_category_items` 经 `iter_active_categories` �
 
 discover item 被认领 → fetch 返回 `{"discover": True}` → on_success 执行类目提取：
 - 浏览首页 `https://www.made-in-china.com/` + 市场导航页 `https://www.made-in-china.com/shichang/`
-- 提取类目 → 逐条 INSERT category item（~360 个 category work_items pending）
+- 提取类目 → 逐条 INSERT category item
 
-验证：work_items 表含 ~360 条 `kind=category` pending item。
+#### DB 取证（sqlite3 只读，2026-08-08 修复 I2 时补充）
+
+```sql
+-- work_items: category vs 其他 pending 计数
+SELECT payload_json FROM work_items
+WHERE queue='crawl_mic_shop' AND status='pending';
+-- 按 kind 分组统计：
+--   category: 1053
+--   total pending: 1053
+--   status=done: 2 (discover + jgdbj page 1)
+--   status=pending: 1053
+```
 
 ### 4. 类目页消费 ✅
 
@@ -46,9 +57,25 @@ category item `jgdbj`（激光打标机）被认领 → `_fetch_category` 抓取
 [OK] 本次采集: 1 页, 店铺 15 个（新增 15）
 ```
 
-验证：
-- shops 表：15 条 `*.cn.made-in-china.com` 域名 status=pending
-- category_progress：`jgdbj` next_page=2 pages=1 shops_found=15 exhausted=0
+#### DB 取证
+
+```sql
+-- category_progress 推进值
+SELECT keyword, name, next_page, pages_crawled, shops_found, exhausted, last_crawled_at
+FROM category_progress WHERE keyword='jgdbj';
+-- jgdbj|激光打标机|2|1|15|0|2026-08-08 18:14:13
+
+-- shops 落库
+SELECT COUNT(*) AS total, status FROM shops
+WHERE domain LIKE '%made-in-china.com%' GROUP BY status;
+-- 15|pending
+
+-- 店铺采样
+SELECT domain, name, status FROM shops ORDER BY id LIMIT 3;
+-- jixie.cn.made-in-china.com|机械设备|pending
+-- daxian0607.cn.made-in-china.com|2012-07-05|pending
+-- pazhajicom.cn.made-in-china.com|2014-10-24|pending
+```
 
 ### 5. Category progress 推进 ✅
 
@@ -58,9 +85,19 @@ category item `jgdbj`（激光打标机）被认领 → `_fetch_category` 抓取
 - shops_found: 0→15
 - exhausted=0（非空页）
 
-### 6. 链式续喂
+### 6. 链式续喂 ✅
 
-由于 `-n 1 --limit 8`，daemon 在完成第 1 批（discover + 1 个 category + 补种 category items）后退出。`on_success` 代码路径已验证通过（若未 exhausted 会 INSERT 同 payload 下一页 item），但因 daemon 退出未能观察到该 item 被认领。
+`on_success` 在 jgdbj 页 1 成功后 INSERT 同 payload 下一页 item（attempts=0）：
+
+```sql
+-- jgdbj 相关 work_items
+SELECT payload_json, status FROM work_items
+WHERE queue='crawl_mic_shop' AND payload_json LIKE '%jgdbj%';
+-- kind=category keyword=jgdbj fmt=plain status=done     ← 页 1（已消费）
+-- kind=category keyword=jgdbj fmt=plain status=pending   ← 页 2（链式续喂）
+```
+
+由于 `-n 1 --limit 8`，daemon 在完成第 1 批后退出，页 2 未被认领但 item 已插入。
 
 ### 7. 环境噪声
 

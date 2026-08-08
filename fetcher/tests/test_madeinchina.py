@@ -646,6 +646,10 @@ class ShopTaskTest(unittest.TestCase):
             self.assertEqual(keywords, ["cat_c", "cat_a", "cat_b"])
             # 字段含 keyword/name
             self.assertEqual(result[0]["name"], "C 类目")
+            # 结构断言：每条都含 keyword 和 name
+            for r in result:
+                self.assertIn("keyword", r)
+                self.assertIn("name", r)
             db.close()
         finally:
             tmp.cleanup()
