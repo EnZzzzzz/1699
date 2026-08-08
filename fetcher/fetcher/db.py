@@ -171,15 +171,18 @@ CREATE TABLE IF NOT EXISTS category_progress (
 );
 
 -- daemon 工作队列（fetcher daemon 模式）：shops 的 pending 店铺经
--- topup_contact_work_items 入队，消费者线程用 claim_work_item 认领执行
+-- topup_contact_work_items 入队，消费者线程用 claim_work_item 认领执行。
+-- batch_id 非空 = 平台批次（batch_id = tasks.id）：批次 item 由平台
+-- enqueue_*_batch 入队 / feeder 继承，进度归 sweeper 聚合；
+-- batch_id NULL = daemon 自喂（topup/feeder 播种），不进任何批次进度。
 CREATE TABLE IF NOT EXISTS work_items (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     queue       TEXT NOT NULL,             -- P0 固定 "crawl_1688_contact"
     site        TEXT,                      -- "1688"
-    batch_id    INTEGER,                   -- P0 恒 NULL（平台批次 P4 接入）
+    batch_id    INTEGER,                   -- 平台批次 id（tasks.id）；daemon 自喂为 NULL
     payload_json TEXT NOT NULL,            -- contact: {"domain","name","url"}
     requires    TEXT NOT NULL DEFAULT '["channel","browser"]',
-    status      TEXT NOT NULL DEFAULT 'pending',  -- pending/claimed/done/failed
+    status      TEXT NOT NULL DEFAULT 'pending',  -- pending/claimed/done/failed/stopped
     claimed_by  TEXT,                      -- "w0".."wN"
     claimed_at  TEXT,
     finished_at TEXT,
@@ -187,6 +190,8 @@ CREATE TABLE IF NOT EXISTS work_items (
     created_at  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_work_items_claim ON work_items(queue, status, id);
+-- 平台批次聚合/停止兜底用（sweeper GROUP BY + UPDATE WHERE batch_id）
+CREATE INDEX IF NOT EXISTS idx_work_items_batch ON work_items(batch_id, status);
 """
 
 # 依赖迁移后列（status）的索引，单独在 _migrate 之后创建
@@ -432,6 +437,90 @@ class ShopDB:
         self.conn.commit()
 
     # ---------- work_items ----------
+    def enqueue_contact_batch(self, queue: str, site: str,
+                              domain_suffix: str, batch_id: int,
+                              limit: int) -> int:
+        """平台 contact 批次入队：SELECT pending shops → INSERT items 带
+        batch_id → shops 置 in_progress（BEGIN IMMEDIATE 单事务）。
+
+        与 topup_contact_work_items 同事务语义（互斥不双喂），唯一差异：
+        INSERT 带 batch_id；limit>0 限量（<=0 不限）。返回入队行数。
+        """
+        try:
+            self.conn.execute("BEGIN IMMEDIATE")
+            sql = ("SELECT * FROM shops WHERE status='pending'"
+                   " AND substr(domain, -?, ?) = ?"
+                   " ORDER BY first_seen_at, id")
+            params: list = [len(domain_suffix), len(domain_suffix),
+                            domain_suffix]
+            if limit > 0:
+                sql += " LIMIT ?"
+                params.append(limit)
+            rows = self.conn.execute(sql, params).fetchall()
+            now = _now()
+            for r in rows:
+                payload = json.dumps(
+                    {"domain": r["domain"], "name": r["name"],
+                     "url": r["url"]},
+                    ensure_ascii=False)
+                self.conn.execute(
+                    "INSERT INTO work_items (queue, site, batch_id,"
+                    " payload_json, created_at) VALUES (?, ?, ?, ?, ?)",
+                    (queue, site, batch_id, payload, now))
+                self.conn.execute(
+                    "UPDATE shops SET status='in_progress' WHERE id=?",
+                    (r["id"],))
+            self.conn.commit()
+            return len(rows)
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def enqueue_feeder_batch(self, queue: str, site: str,
+                             batch_id: int, limit: int) -> tuple[int, int]:
+        """平台 feeder 批次入队：1 条 discover + 活跃类目 category 种子，
+        全部带 batch_id 与 payload.batch_limit（收束边界，0=不限）。
+
+        幂等：已有同 keyword pending category / pending discover 跳过。
+        返回 (n_category, n_discover)。
+        """
+        n_cat = 0
+        for cat in self.iter_active_categories():
+            kw = cat["keyword"]
+            name = cat.get("name", kw)
+            exists = self.conn.execute(
+                "SELECT COUNT(*) FROM work_items WHERE queue=?"
+                " AND status='pending'"
+                " AND json_extract(payload_json, '$.kind')='category'"
+                " AND json_extract(payload_json, '$.keyword')=?",
+                (queue, kw)).fetchone()[0]
+            if exists:
+                continue
+            payload = {"kind": "category", "keyword": kw, "name": name,
+                       "batch_limit": limit}
+            self.conn.execute(
+                "INSERT INTO work_items (queue, site, batch_id, payload_json,"
+                " created_at) VALUES (?, ?, ?, ?, ?)",
+                (queue, site, batch_id,
+                 json.dumps(payload, ensure_ascii=False), _now()))
+            n_cat += 1
+        n_disc = 0
+        exists_disc = self.conn.execute(
+            "SELECT COUNT(*) FROM work_items WHERE queue=?"
+            " AND status='pending'"
+            " AND json_extract(payload_json, '$.kind')='discover'",
+            (queue,)).fetchone()[0]
+        if not exists_disc:
+            payload = {"kind": "discover", "batch_limit": limit}
+            self.conn.execute(
+                "INSERT INTO work_items (queue, site, batch_id, payload_json,"
+                " created_at) VALUES (?, ?, ?, ?, ?)",
+                (queue, site, batch_id,
+                 json.dumps(payload, ensure_ascii=False), _now()))
+            n_disc = 1
+        self.conn.commit()
+        return n_cat, n_disc
+
     def topup_contact_work_items(self, queue: str, site: str,
                                  domain_suffix: str, limit: int) -> int:
         """从 shops 补货 work_items：最老的 pending 店铺入队并置 in_progress。
@@ -497,9 +586,10 @@ class ShopDB:
 
     def finish_work_item(self, item_id: int, status: str,
                          result: dict | None = None) -> None:
-        """工作项落终态（done/failed）+ finished_at + result_json。
+        """工作项落终态（done/failed/stopped）+ finished_at + result_json。
 
-        result 为 None 时 result_json 存 NULL。
+        result 为 None 时 result_json 存 NULL。stopped 由平台 stop 端点/
+        sweeper 兜底写入（不参与 claim：claim 只认 pending）。
         """
         self.conn.execute(
             "UPDATE work_items SET status=?, finished_at=?, result_json=?"
