@@ -271,7 +271,9 @@ class CrawlLoop:
         except UserInterrupted:
             pass
         except Exception as e:  # noqa: BLE001
-            self.log(f"[X] worker 异常退出: {e}")
+            import traceback
+            tb = traceback.format_exc()
+            self.log(f"[X] worker 异常退出: {e}\n{tb[-3000:]}")
         finally:
             self._cleanup()
         return self.stats

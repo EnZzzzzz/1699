@@ -196,7 +196,12 @@ class FakeInnerTask(Task):
         stats = ctx.state.get("task", {}).get("stats")
         if stats is not None:
             stats["done"] = stats.get("done", 0) + 1
+            # 兼容 contact 风格 stats（ok/empty/failed）
+            stats["ok"] = stats.get("ok", 0) + 1
         return 1
+
+    def rest_counter(self, stats: dict) -> int:
+        return sum(stats.values())
 
     def on_giveup(self, ctx, item, reason, kind):
         with self.lock:
@@ -204,7 +209,7 @@ class FakeInnerTask(Task):
         return "标记跳过"
 
     def make_stats(self):
-        return {"done": 0}
+        return dict(getattr(self, "_make_stats", {"done": 0}))
 
 
 class FakeBrowser:
@@ -902,10 +907,37 @@ class RouterAttributesTest(QueueRouterTestBase):
     def test_cold_start_before_acquire_false(self):
         self.assertFalse(self.router.cold_start_before_acquire)
 
-    def test_rest_counter(self):
-        stats = {"done": 5, "other": 3}
-        self.assertEqual(self.router.rest_counter(stats), 5)
-        self.assertEqual(self.router.rest_counter({"done": 0}), 0)
+    def test_make_stats_merges_all_registered_tasks(self):
+        """make_stats 合并所有注册队列 task 的统计键。"""
+        stats = self.router.make_stats()
+        # FakeInnerTask.make_stats 返回 {"done": 0}，双队列合并仍为 {"done": 0}
+        self.assertIn("done", stats)
+        self.assertEqual(stats["done"], 0)
+
+    def test_make_stats_covers_contact_keys(self):
+        """contact task 的 on_success/on_giveup 需要 ok/empty/failed 键。"""
+        inner_a = FakeInnerTask()
+        inner_a._make_stats = {"ok": 0, "empty": 0, "failed": 0}
+        inner_b = FakeInnerTask()
+        inner_b._make_stats = {"ok": 0, "empty": 0, "failed": 0}
+        registry = make_dual_registry(inner_a, inner_b)
+        router = QueueRouter(registry, db_factory=lambda: ShopDB(self.db_path))
+        stats = router.make_stats()
+        for key in ("ok", "empty", "failed"):
+            self.assertIn(key, stats)
+            self.assertEqual(stats[key], 0)
+
+    def test_rest_counter_delegates_to_first_task(self):
+        """rest_counter 委托给首个注册 task 的实现。"""
+        # contact task 的 rest_counter: sum(stats.values())
+        inner_a = FakeInnerTask()
+        inner_a._make_stats = {"ok": 0, "empty": 0, "failed": 0}
+        inner_b = FakeInnerTask()
+        registry = make_dual_registry(inner_a, inner_b)
+        router = QueueRouter(registry, db_factory=lambda: ShopDB(self.db_path))
+        stats = {"ok": 3, "empty": 1, "failed": 1}
+        self.assertEqual(router.rest_counter(stats), 5)
+        self.assertEqual(router.rest_counter({"ok": 0, "empty": 0, "failed": 0}), 0)
 
     def test_ip_request_budget_is_none(self):
         self.assertIsNone(self.router.ip_request_budget)

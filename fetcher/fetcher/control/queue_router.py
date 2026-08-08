@@ -109,8 +109,10 @@ class QueueRouter:
         return None
 
     def rest_counter(self, stats: dict) -> int:
-        """长休息计数基准：总完成数。"""
-        return stats.get("done", 0)
+        """长休息计数基准：委托给首个注册 task。"""
+        if self._specs:
+            return self._specs[0].task.rest_counter(stats)
+        return 0
 
     # ---- 执行侧路由：per-item 方法经 ctx.state["queue"] 路由 ----
 
@@ -160,7 +162,15 @@ class QueueRouter:
         return "没有待做的任务了"
 
     def make_stats(self):
-        return {"done": 0}
+        """合并所有注册队列 task 的统计键。
+
+        各 task 的 on_success/on_giveup 通过 ctx.state["task"]["stats"]
+        读写统计，键集合必须覆盖所有可能路由到的 task 的预期键。
+        """
+        merged = {}
+        for spec in self._specs:
+            merged.update(spec.task.make_stats())
+        return merged
 
     def compose(self, wid: int, f: dict) -> str:
         # 简单方案：委托首个注册 task（多队列下统计口径待后续细化）
