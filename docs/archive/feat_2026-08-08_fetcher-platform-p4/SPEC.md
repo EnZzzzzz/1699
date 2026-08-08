@@ -155,13 +155,13 @@ CREATE TABLE IF NOT EXISTS consumer_status (
 
 ## 7. 验收标准
 
-- [ ] 全链路：平台创建 1688_contact 批次 → daemon 认领执行 → 列表进度 done/total 增长 → 日志抽屉 SSE 事件流 → 全部终态后任务 done。停止链路：running 中 stop → pending 项 stopped、claimed 跑完 → 任务 stopped。
-- [ ] 跨站填充在平台视角可见：看板消费者表显示同 consumer 在不同站点队列间切换、冷却倒计时正确。
-- [ ] wa_check 全链路：平台建 wa_check 批次（小批量）→ LocalExecutor 执行 → contacts.wa_registered 写回正确。
-- [ ] start.sh/stop.sh 纳管 daemon：起停幂等、SIGTERM 优雅退出、无孤儿。
-- [ ] uvicorn 重启不影响运行中批次（孤儿清理跳过 + sweeper 重建状态）。
-- [ ] 前端 `npx tsc -b` 零错误；后端改动重启后冒烟；fetcher 全量测试绿。
-- [ ] daemon.log 无 ERROR 级异常（环境噪声滑块除外，如实记录）。
+- [x] 全链路：平台创建 1688_contact 批次 → daemon 认领执行 → 列表进度 done/total 增长 → 日志抽屉 SSE 事件流 → 全部终态后任务 done。停止链路：running 中 stop → pending 项 stopped、claimed 跑完 → 任务 stopped。**证据**：plan/ledger.md Step 4.1（批次 101 入队 3 items → daemon claim/finish → sweeper 派生 done + progress{failed:3} → SSE 合成事件 + 增量游标正确）+ plan/smoke-step4.1/daemon.log。
+- [x] 跨站填充在平台视角可见：看板消费者表显示同 consumer 在不同站点队列间切换、冷却倒计时正确。**证据**：plan/ledger.md Step 2.2（dispatcher API 聚合真实数据）+ Step 3.2（看板渲染走查，plan/smoke-step3.2）。
+- [x] wa_check 全链路：平台建 wa_check 批次（小批量）→ LocalExecutor 执行 → contacts.wa_registered 写回正确。**证据**：plan/ledger.md Step 1.3（专用查号号 xiaohao-4 真实查号，写回 `wa_registered=0 / wa_checked_at=2026-08-08 22:31:52`）+ plan/smoke-step1.3/。
+- [x] start.sh/stop.sh 纳管 daemon：起停幂等、SIGTERM 优雅退出、无孤儿。**证据**：plan/ledger.md Step 2.3（真起真停）+ plan/smoke-step2.3/。
+- [x] uvicorn 重启不影响运行中批次（孤儿清理跳过 + sweeper 重建状态）。**证据**：plan/ledger.md Step 2.1 单测 + 终审装配层冒烟（uvicorn 重启后 dispatcher API 可达）。
+- [x] 前端 `npx tsc -b` 零错误；后端改动重启后冒烟；fetcher 全量测试绿。**证据**：终审全量回归（fetcher 583 + 平台 62 + tsc 零错误）；合并后用户侧独立复跑复核一致。
+- [x] daemon.log 无 ERROR 级异常（环境噪声滑块除外，如实记录）。**证据**：plan/smoke-step4.1/daemon.log。
 
 ## 8. 风险与回滚
 
