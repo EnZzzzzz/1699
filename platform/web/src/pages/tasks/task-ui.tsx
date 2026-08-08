@@ -124,20 +124,14 @@ function humanizeSeconds(sec: number): string {
 }
 
 // 任务参数摘要：表格 params 列的小字展示
-// 采集类示例：n=10 批=4 代理 无头 循环30分钟；wa_check：上限=500 间隔=2~5s 批=10次
+// 采集类示例：n=10 批=4 代理 无头 循环30分钟；wa_check：上限=500 账号=xiaohao-1
+// 批次类型：上限=200 循环30分钟
 export function paramsSummary(task: { type: string; params: Record<string, unknown> }): string {
   const p = task.params ?? {}
   const num = (k: string): number | null =>
     typeof p[k] === 'number' && Number.isFinite(p[k] as number) ? (p[k] as number) : null
   const repeat = num('repeat_interval')
   const repeatPart = repeat !== null && repeat > 0 ? `循环${humanizeSeconds(repeat)}` : null
-  const range = (loK: string, hiK: string): string | null => {
-    const lo = num(loK)
-    const hi = num(hiK)
-    if (lo === null && hi === null) return null
-    if (lo !== null && hi !== null) return lo === hi ? `${lo}` : `${lo}~${hi}`
-    return `${lo ?? ''}~${hi ?? ''}`
-  }
 
   if (task.type === 'wa_check') {
     const parts: string[] = []
@@ -145,15 +139,6 @@ export function paramsSummary(task: { type: string; params: Record<string, unkno
     if (limit !== null) parts.push(limit > 0 ? `上限=${limit}` : '全部未查')
     const accs = Array.isArray(p.accounts) ? (p.accounts as unknown[]).filter((a) => typeof a === 'string') : []
     if (accs.length > 0) parts.push(`账号=${accs.join(',')}`)
-    const interval = num('interval') // 旧参数：固定间隔
-    const sample = range('sample_min', 'sample_max')
-    if (sample !== null) parts.push(`间隔=${sample}s`)
-    else if (interval !== null) parts.push(`间隔=${interval}s`)
-    const batchNum = num('batch_num')
-    const rest = range('batch_rest_min', 'batch_rest_max')
-    if (batchNum !== null && batchNum > 0) {
-      parts.push(`批=${batchNum}个` + (rest !== null ? `·休${rest}s` : ''))
-    }
     if (repeatPart) parts.push(repeatPart)
     return parts.length > 0 ? parts.join(' ') : '默认参数'
   }
@@ -182,7 +167,6 @@ export function paramsSummary(task: { type: string; params: Record<string, unkno
   if (p.use_proxy === true) parts.push('代理')
   if (p.headless === true) parts.push('无头')
   else if (p.headless === false) parts.push('有头')
-  if (p.retry_failed === true) parts.push('重试失败')
   if (repeatPart) parts.push(repeatPart)
   return parts.length > 0 ? parts.join(' ') : '默认参数'
 }
