@@ -270,17 +270,22 @@ class MadeInChinaShopTask(Task):
         return True
 
     def _seed_category_items(self, db) -> int:
-        """活跃拼音类目逐条插 category item（已有同 keyword pending 跳过）。"""
+        """活跃拼音类目逐条插 category item（已有同 keyword pending 跳过）。
+
+        ⚠️ 已知局限：get_active_categories 不含 fmt 字段，播种一律 "x2"；
+        plain 体系类目（如 jgdbj）首次 fetch 会拼错 URL 而失败；
+        discover 从页面提取时带正确 fmt 后纠正。Step 4.2 若 category_progress
+        加 fmt 列可根除。
+        """
         active = db.get_active_categories()
         n = 0
         for cat in active:
             slug = cat["slug"]
             name = cat.get("name", slug)
-            # 已有同 keyword pending category item 跳过
-            existing = self._count_pending_category(db, slug)
+            existing = self._count_pending_by_kind(db, "category", slug)
             if existing > 0:
                 continue
-            # fmt 从 category_progress 推断（默认 x2）
+            # fmt 默认 x2（局限见上），discover 提取时带正确 fmt 覆盖
             payload = {"kind": "category", "keyword": slug,
                        "name": name, "fmt": "x2"}
             self._insert_work_item(db, payload)
@@ -289,10 +294,7 @@ class MadeInChinaShopTask(Task):
 
     def _seed_discover_item(self, db) -> int:
         """插一条 discover item（已有 pending discover 跳过）。"""
-        existing = db.conn.execute(
-            "SELECT COUNT(*) FROM work_items WHERE queue=? AND status='pending'"
-            " AND json_extract(payload_json, '$.kind')='discover'",
-            (self.QUEUE,)).fetchone()[0]
+        existing = self._count_pending_by_kind(db, "discover")
         if existing > 0:
             return 0
         self._insert_work_item(db, {"kind": "discover"})
@@ -421,7 +423,9 @@ class MadeInChinaShopTask(Task):
                 f"页面加载失败（疑似风控拦截）: {reason}")
 
     def validate(self, ctx, item, result: ActionResult) -> bool:
-        """结构化校验：结果必须含 shops 列表（空列表 = 采到末页，合法）。"""
+        """结构化校验：discover → 检查 discover 标记；category → shops 列表。"""
+        if item.get("kind") == "discover":
+            return isinstance((result.data or {}).get("discover"), bool)
         return isinstance((result.data or {}).get("shops"), list)
 
     def on_success(self, ctx, item, result: ActionResult) -> int:
@@ -453,7 +457,7 @@ class MadeInChinaShopTask(Task):
             if prog and prog.get("exhausted"):
                 continue
             # 跳过已有同 keyword pending category item
-            if self._count_pending_category(db, slug) > 0:
+            if self._count_pending_by_kind(db, "category", slug) > 0:
                 continue
             payload = {"kind": "category", "keyword": slug,
                        "name": c.get("name", slug),
@@ -565,20 +569,35 @@ class MadeInChinaShopTask(Task):
     def _insert_work_item(db, payload: dict) -> int:
         """向 work_items 插 pending 行，返回 id。"""
         import json as _json
-        from fetcher.db import _now
         cur = db.conn.execute(
             "INSERT INTO work_items (queue, site, payload_json, created_at)"
-            " VALUES (?, ?, ?, ?)",
+            " VALUES (?, ?, ?, datetime('now','localtime'))",
             (MadeInChinaShopTask.QUEUE, MadeInChinaShopTask.SITE,
-             _json.dumps(payload, ensure_ascii=False), _now()))
+             _json.dumps(payload, ensure_ascii=False)))
         db.conn.commit()
         return cur.lastrowid
 
     @staticmethod
-    def _count_pending_category(db, keyword: str) -> int:
-        """统计同 keyword 的 pending category item 数量。"""
+    def _count_pending_by_kind(db, kind: str, keyword: str = None) -> int:
+        """统计同 kind（+可选 keyword）的 pending item 数量。"""
+        if keyword is not None:
+            return db.conn.execute(
+                "SELECT COUNT(*) FROM work_items WHERE queue=?"
+                " AND status='pending'"
+                " AND json_extract(payload_json, '$.kind')=?"
+                " AND json_extract(payload_json, '$.keyword')=?",
+                (MadeInChinaShopTask.QUEUE, kind, keyword)).fetchone()[0]
         return db.conn.execute(
-            "SELECT COUNT(*) FROM work_items WHERE queue=? AND status='pending'"
-            " AND json_extract(payload_json, '$.kind')='category'"
-            " AND json_extract(payload_json, '$.keyword')=?",
-            (MadeInChinaShopTask.QUEUE, keyword)).fetchone()[0]
+            "SELECT COUNT(*) FROM work_items WHERE queue=?"
+            " AND status='pending'"
+            " AND json_extract(payload_json, '$.kind')=?",
+            (MadeInChinaShopTask.QUEUE, kind)).fetchone()[0]
+
+    @staticmethod
+    def _count_pending_category(db, keyword: str) -> int:
+        """统计同 keyword 的 pending category item 数量。
+
+        委托 _count_pending_by_kind（保留为向后兼容别名）。
+        """
+        return MadeInChinaShopTask._count_pending_by_kind(
+            db, "category", keyword)

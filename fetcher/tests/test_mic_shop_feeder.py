@@ -386,6 +386,39 @@ class DiscoverOutputTest(unittest.TestCase):
         keywords = {p["keyword"] for _, p in items if p.get("keyword")}
         self.assertIn("wujingj", keywords)
 
+    @patch("fetcher.sites.madeinchina.shop.fetch_market_categories")
+    def test_discover_full_pipeline_fetch_validate_on_success(self, mock_fetch):
+        """discover 走完整三段式 fetch→validate→on_success，产出类目 item。
+
+        这是 C1 的回归测试：修复前 validate 拒绝 discover（检查 shops 键），
+        on_success 永远不会被调用，类目发现封死。
+        """
+        mock_fetch.side_effect = lambda page, url: {
+            HOMEPAGE: [{"slug": "bxgyxg", "name": "不锈钢异型管", "fmt": "x2"}],
+        }.get(url, [])
+
+        ctx = make_ctx(db=self.db)
+        ctx.state["task"]["stats"] = self.task.make_stats()
+
+        item = _discover_payload()
+        # 1. fetch → discover 标记
+        result = self.task.fetch(ctx, item)
+        self.assertEqual(result.outcome, Outcome.OK)
+        self.assertTrue(result.data.get("discover"))
+
+        # 2. validate → 放行（C1 修复：不再拒绝 discover）
+        self.assertTrue(self.task.validate(ctx, item, result))
+
+        # 3. on_success → 提取类目 → INSERT category item
+        count = self.task.on_success(ctx, item, result)
+        self.assertEqual(count, 0)  # discover 不计入页数
+
+        items = _pending_items(self.db)
+        self.assertGreaterEqual(len(items), 1)
+        self.assertTrue(any(
+            p.get("kind") == "category" and p.get("keyword") == "bxgyxg"
+            for _, p in items))
+
 
 # ---- 5. 幂等播种 ----
 

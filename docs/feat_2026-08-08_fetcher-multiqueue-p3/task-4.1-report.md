@@ -86,3 +86,64 @@
 - ✅ ZERO_NEW_LIMIT=2 保持不变；SEED_CATEGORIES 保持不变；_JS_EXTRACT_SHOWROOMS 保持不变
 - ✅ `make_stats` 保持 `{"shops","new","pages"}` 三键
 - ⚠️ 工作区有他人未提交改动，已确认不碰（scoped add 严格按 brief 列出文件）
+
+---
+
+## Fix Round 1（task-4.1-fix1.md）
+
+> Commit: `(待提交)` | 修复条目: C1 / I2 / M3 / M4 / M5
+
+### C1（Critical）— validate 拒绝 discover，生产路径封死
+
+**问题**：`validate` 检查 `isinstance(result.data.get("shops"), list)`，
+discover item 的 fetch 返回 `{"discover": True}`（无 shops 键）→ validate
+返回 False → CrawlLoop 判 EMPTY → on_giveup → _finish("failed")。
+`on_success` 永不执行，类目发现封死。
+
+**修复**：`validate` 对 discover item 放行：
+```python
+def validate(self, ctx, item, result):
+    if item.get("kind") == "discover":
+        return isinstance((result.data or {}).get("discover"), bool)
+    return isinstance((result.data or {}).get("shops"), list)
+```
+
+### I2（Important）— discover 测试绕过 validate
+
+**问题**：DiscoverOutputTest 全部 4 个测试直接调 `on_success`，未走
+fetch→validate→on_success 三段式，导致 C1 漏检。
+
+**修复**：新增 `test_discover_full_pipeline_fetch_validate_on_success`：
+fetch → 断言 validate True → on_success → 断言 category item 被产出。
+
+### M3（Minor）— _seed_category_items fmt 硬编码 "x2"
+
+**问题**：`get_active_categories` 不含 fmt 字段，播种一律 "x2"；plain 体系
+类目（如 jgdbj）首次 fetch 会拼错 URL → 失败 → refill 继续错。
+
+**修复**：在 `_seed_category_items` 与 report 中记录已知局限注释；discover
+从页面提取时带正确 fmt 可覆盖纠正；refill 补插时若连续失败可考虑放弃（本次
+未加防护，等生产观察后另议）。
+
+### M4（Minor）— _seed_discover_item 内联 SQL 与 _count_pending_category 风格不一致
+
+**修复**：抽取 `_count_pending_by_kind(db, kind, keyword=None)` 统一方法，
+`_seed_discover_item` 与 `_count_pending_category` 均委托之。
+
+### M5（Minor）— _insert_work_item 导入私有符号 _now
+
+**修复**：改为 SQLite 内联 `datetime('now','localtime')`，移除 `from fetcher.db import _now`。
+
+### 测试
+
+- 聚焦：`tests/test_mic_shop_feeder.py tests/test_madeinchina.py` → **60 passed**
+- 全量：`cd fetcher && python -m pytest tests -q` → **463 passed, 2 subtests passed**
+- 新增 I2 回归测试：`test_discover_full_pipeline_fetch_validate_on_success`
+
+### 改动文件
+
+| 文件 | 改动 |
+|---|---|
+| `fetcher/fetcher/sites/madeinchina/shop.py` | C1: validate discover 放行; M3: fmt 局限注释; M4: 抽取 _count_pending_by_kind; M5: 移除 _now 导入 |
+| `fetcher/tests/test_mic_shop_feeder.py` | I2: 新增 discover 完整三段式测试 |
+| `docs/.../task-4.1-report.md` | 本修复记录追加 |
