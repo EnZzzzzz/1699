@@ -57,11 +57,11 @@ class Alibaba1688Plugin:
             from fetcher.sites.alibaba1688.contact import ContactTask
             return ContactTask()
         if name == "shop":
-            from fetcher.sites.alibaba1688.shop import ShopTask
-            return ShopTask()
+            from fetcher.sites.alibaba1688.shop import Alibaba1688ShopTask
+            return Alibaba1688ShopTask()
         if name == "company":
-            from fetcher.sites.alibaba1688.company import CompanyTask
-            return CompanyTask()
+            from fetcher.sites.alibaba1688.company import Alibaba1688CompanyTask
+            return Alibaba1688CompanyTask()
         raise KeyError(f"未知任务: {name!r}（可选: "
                        f"{', '.join(self.task_names())}）")
 
