@@ -272,6 +272,15 @@ class ShopDB:
             self.conn.execute(
                 "ALTER TABLE work_items ADD COLUMN attempts"
                 " INTEGER NOT NULL DEFAULT 0")
+        # contacts 补 WhatsApp 查号结果列（P4-1：WaCheckTask 写回；
+        # 与平台 migrate 同语义，幂等——fetcher 侧建表路径也要有这两列）
+        c_cols = {r[1] for r in self.conn.execute("PRAGMA table_info(contacts)")}
+        if "wa_registered" not in c_cols:
+            self.conn.execute(
+                "ALTER TABLE contacts ADD COLUMN wa_registered INTEGER")
+        if "wa_checked_at" not in c_cols:
+            self.conn.execute(
+                "ALTER TABLE contacts ADD COLUMN wa_checked_at TEXT")
         # cookies 表裸键按 domain→site 映射加前缀（P2 identity 升级：
         # identity 键从裸 IP 升级为 site:ip）。部署窗口：旧进程裸键读不到
         # 新前缀 Cookie → 白板重启一次（SPEC §3.4 运维注意）。

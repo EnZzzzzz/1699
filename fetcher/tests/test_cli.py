@@ -2,6 +2,7 @@
 """CLI 解析层测试：daemon 子命令挂载 + 既有站点子命令防装配回归。"""
 
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock
 
 from fetcher import RunConfig
@@ -40,16 +41,25 @@ class CliParserTest(unittest.TestCase):
         self.assertEqual(args.limit, 5)
 
     def test_daemon_queues_dynamic_from_registry(self):
-        """I3：--queues 校验来自注册表动态派生，非硬编码（P3-5: 5 条队列）。"""
+        """I3：--queues 校验来自注册表动态派生，非硬编码。
+
+        P3 为 5 条浏览器队列；P4 加 wa_check（本地队列，守卫条件满足
+        时注册——本机 node/check.js 存在则 6 条）。
+        """
         from fetcher.cli.main import _build_registry
         full = _build_registry()
         all_names = [s.queue for s in full]
-        self.assertEqual(len(full), 5, "注册表应含 5 条队列")
+        self.assertGreaterEqual(len(full), 5, "注册表至少 5 条浏览器队列")
         self.assertIn("crawl_1688_contact", all_names)
         self.assertIn("crawl_mic_contact", all_names)
         self.assertIn("crawl_mic_shop", all_names)
         self.assertIn("crawl_1688_shop", all_names)
         self.assertIn("crawl_1688_company", all_names)
+        # wa_check 守卫满足时注册（node + check.js）
+        import shutil
+        wa_dir = Path(__file__).resolve().parents[2] / "vendor" / "wa-check"
+        if (wa_dir / "check.js").is_file() and shutil.which("node"):
+            self.assertIn("wa_check", all_names)
 
     def test_feeder_queues_topup_is_none(self):
         """P3-5: 全部 3 条 feeder 队列 topup=None, domain_suffix=""。"""

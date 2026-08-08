@@ -80,6 +80,29 @@
   冷却键泛化/LocalLoop 各 outcome 分支/Engine local 装配）。全量 568 passed。
 - **review**：自检通过。测试修正：假 task acquire 推进 index（防死循环）、
   on_success 写 ctx.state（与真实 task 一致）、FATAL 断言补 fetch 顺序。
+- **commits**：994a19b
+- **状态**：complete
+
+### P4-1 Step 1.2 — WaCheckTask + 入队 feeder
+
+- **实现**：
+  - 新模块 fetcher/wa_task.py：WaCheckTask（Task 协议，LocalLoop 驱动——
+    fetch 调 CheckWhatsApp 原子透传 numbers/account/default_cc；on_success
+    写回 contacts（移植 wa_tasks._apply_results：后 11 位 LIKE + normalize
+    严格校验 + 歧义跳过 + 北京时间））+ wa_check_topup（contacts 未查号码
+    → 50/块 → 账号轮换（WA_CHECK_ACCOUNTS，空默认 ["default"]）→
+    INSERT work_item requires=["local"]、site=NULL；有 pending/claimed
+    项整批跳过幂等）；
+  - db._migrate：contacts 补 wa_registered/wa_checked_at 列（fetcher 侧
+    建表路径也要有，与平台对齐）；
+  - cli._build_registry：wa_check spec（requires={"local"}，topup=
+    wa_check_topup），守卫 check.js 存在 + node 可用才注册；
+  - **修复（全量测试抓到）**：reset_daemon_state 误把 wa_check 的空
+    domain_suffix 当无过滤 reset 所有站点 in_progress——改为仅
+    topup 且有 domain_suffix 的 spec 参与；test_cli 注册表断言更新为
+    ≥5 + 守卫条件 wa_check。
+- **测试**：test_wa_task.py 13 用例（TDD 先失败后转绿：切块/幂等/账号轮换/
+  写回/歧义/原子透传/守卫）。全量 581 passed。
 - **commits**：待提交
 - **状态**：complete
 

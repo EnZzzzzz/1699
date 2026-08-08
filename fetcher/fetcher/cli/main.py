@@ -8,10 +8,13 @@ CLI 只做装配：参数 → RunConfig → 站点插件 → 策略表（可被�
 from __future__ import annotations
 
 import argparse
+import shutil
 import sys
+from pathlib import Path
 
 from fetcher.core.context import RunConfig
 from fetcher.sites import get_site, site_names
+from fetcher.wa_task import WaCheckTask, wa_check_topup
 
 # 任务默认批量（新站点未登记时用 DEFAULT_NUM）
 TASK_NUM_DEFAULTS = {"contact": 10, "shop": 200, "company": 200}
@@ -274,6 +277,23 @@ def _build_registry(selected_queues: list[str] | None = None) -> list:
         requires={"channel", "browser"},
     ))
 
+    # wa_check（本地队列：无 site、无浏览器，LocalExecutor 消费）。
+    # 条件守卫（SPEC §3.4）：vendor check.js 存在 + node 可用才注册，
+    # 否则跳过并告警（防御性——wa_check 不是所有部署都启用）。
+    wa_dir = Path(__file__).resolve().parents[2] / "vendor" / "wa-check"
+    if (wa_dir / "check.js").is_file() and shutil.which("node"):
+        specs.append(QueueSpec(
+            queue="wa_check",
+            site=None,
+            task=WaCheckTask(),
+            topup=wa_check_topup,
+            domain_suffix="",
+            requires={"local"},
+        ))
+    else:
+        print("[daemon] [!] wa_check 未注册：vendor wa-check/check.js 或"
+              " node 不可用（跳过本地队列）")
+
     if selected_queues:
         specs = [s for s in specs if s.queue in selected_queues]
     return specs
@@ -289,7 +309,10 @@ def reset_daemon_state(db, registry: list) -> tuple[int, int]:
     n_items = db.reset_claimed_work_items()
     total_shops = 0
     for spec in registry:
-        if spec.topup is not None:
+        # 只重置有 domain_suffix 的 contact 类队列（feeder/wa_check 的
+        # topup 不产生 in_progress shops；wa_check 无 domain_suffix，
+        # 若误用空后缀会重置所有站点 in_progress）
+        if spec.topup is not None and spec.domain_suffix:
             n = db.reset_in_progress(spec.domain_suffix)
             total_shops += n
     return n_items, total_shops
