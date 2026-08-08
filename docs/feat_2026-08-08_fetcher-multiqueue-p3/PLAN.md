@@ -33,7 +33,7 @@
 - [x] **Step 1.1** work_items 扩展（估 20min，依赖无，状态 pending）
   - `db.py`：migrate 幂等加 `attempts INTEGER NOT NULL DEFAULT 0`；新增 `release_work_item(item_id, max_attempts=3)`、`claim_next_eligible(queues, consumer_id)`。
   - 验收：TDD 单测覆盖——release 回 pending/attempts 耗尽置 failed/claim_next_eligible 按队列集合过滤+FIFO+并发不重复认领。
-- [ ] **Step 1.2** 冷却表改建 + eligible_queues（估 20min，依赖 1.1，状态 pending）
+- [x] **Step 1.2** 冷却表改建 + eligible_queues（估 20min，依赖 1.1，状态 pending）
   - `WorkerContext.cooldown_until` 键改 site；`ctx.state["active_site"]` 约定；新增 `eligible_queues(registry, ctx, now)`（纯函数，可单测）；claim 过滤 + condvar `timeout=min(最近冷却到期剩余, 30s)`。
   - 验收：单测——冷却中站点被过滤、到期恢复可见、timeout 计算正确。
 - [ ] **Step 1.3** `_cooldown` 让出型改造（估 30min，依赖 1.2，状态 pending）

@@ -31,3 +31,7 @@
   - fix round 1/5: review 2 Important（① claim_next_eligible json.loads 在 try 外/commit 后——非法 payload 时行已 claimed 拿不到返回，永久泄漏；② SELECT * 脆弱性）+ 2 Minor（rowcount=0 路径 commit 一致性、返回位置不对称）→ resume implementer 修复 commit d682282（解析移入事务内，非法 JSON → rollback 行保持 pending；显式列；rollback 统一；新泄漏测试 RED→GREEN）；re-review 全部 ADDRESSED 零新破坏
   - Step 1.1: minor (deferred): 无
   - 注：dispatch prompt 曾因反引号被 bash 命令替换破坏（子 Agent 仍正确理解修复目标）——后续 prompt 避免反引号
+- Step 1.2: complete (commit ebd16ba, review clean)
+  - 实现：context.py（cooldown_until 键改 site 语义 + resources 字段默认 {channel,browser}）；control/queue_router.py 新建（QueueSpec 三字段 + eligible_queues + condvar_timeout 两纯函数）；loop._cooldown 写 active_site 键（未设不登记）；daemon_task proxy claim 冷却过滤 + condvar timeout + active_site 写入（TDD 17 新用例，全量 319→336 passed）
+  - review 零 Critical/Important；2 Minor（eligible_queues 类型标注不一致→P3-3 补齐；test_cooldown_blocks_claim 时序 0.15s 缓冲无下界）→ 记 ledger，不进修复轮
+  - Step 1.2: minor (deferred): 同上 2 条 Minor
