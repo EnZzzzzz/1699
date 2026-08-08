@@ -300,6 +300,14 @@ sweeper 聚合结构 `{total,done,failed,stopped,claimed,pending}` 与前端
   site: 或价格离谱）→ 回退方案：发现层 Phase 暂缓，核心链路 Phase 1 +
   wa_check Phase 3 不受影响**（fb_posts 可手工/脚本灌种子）。
 
+> **执行记录（2026-08-09 二期落地）**：P1/P3 已按本 SPEC 落地并冒烟
+> 通过；P2（发现层）因 **APIFY_TOKEN 未提供**（环境变量/仓库/配置均无，
+> facebook-groups.md §12 明确 key 仅存于验证会话）暂缓——spike 无法
+> 在无 token 的情况下实调。待 token 就位后按 PLAN 2.1→2.6 推进：
+> 实调 spike（§7.5 四项确认）→ FetchApifySerp 原子 → FbDiscoverTask →
+> 平台/前端 fb_discover → 发现→抓取闭环冒烟。熔断期间 fb_posts 可
+> 手工/脚本灌种子（P1 冒烟已验证此路径）。
+
 ### 7.6 wa_check 双货源衔接
 
 - 假设：`fb_contacts` 的中国号（裸 11 位，口径与 contacts.mobile 一致）

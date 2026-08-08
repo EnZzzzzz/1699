@@ -111,3 +111,20 @@ Apify 是一个「Actor 市场 + 云运行平台」：
 - [Facebook Ad Library Scraper（curious_coder）](https://apify.com/curious_coder/facebook-ads-library-scraper)
 - [Facebook post scraper（curious_coder，第三方）](https://apify.com/curious_coder/facebook-post-scraper)
 - [Facebook Groups Search Scraper（easyapi，第三方）](https://apify.com/easyapi/facebook-groups-search-scraper)
+
+---
+
+## 附：Google Search Scraper 发现层 spike 状态（2026-08-09 二期落地记录）
+
+二期（docs/feat_2026-08-09_facebook-daemon-integration/）发现层选择
+**Apify Google Search Scraper**（`apify/google-search-scraper`）做
+`site:facebook.com/groups` 关键词发现。SPEC §7.5 要求动工前 spike 实调
+确认四项：① `site:` 运算符兼容 ② 分页参数与上限 ③ organic results 返回
+结构（URL 字段）④ 实际单价（facebook-summary.md 的 $1.8-4.5/1K 查询页
+数字在本档无出处，需实测）。
+
+**当前状态：暂缓（待 APIFY_TOKEN）**——执行期环境变量/仓库/配置均无
+token（facebook-groups.md §12 明确「key 仅存于验证会话」），spike 无法
+实调。待 token 就位后按 PLAN 2.1→2.6 推进（spike → FetchApifySerp 原子
+→ FbDiscoverTask → discover_fb 队列 → 平台/前端 fb_discover → 闭环冒烟），
+spike 结论回填本节。熔断期间 fb_posts 可手工/脚本灌种子（P1 冒烟已验证）。

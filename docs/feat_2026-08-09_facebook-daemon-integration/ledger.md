@@ -237,3 +237,16 @@
   + wa.me 双桶），seen 去重后只查一次，回写命中两行——符合设计
 - 清理：冒烟 daemon 已停、临时库已删、生产 daemon 与 165 旧 item 未动
 - **P3 wa_check 衔接完成**：完成标准逐项达成（真实查号回写 + 双表回归）
+
+### P2 熔断记录（2026-08-09）
+- **状态：暂缓（BLOCKED on APIFY_TOKEN，非 spike 失败）**
+- 原因：执行期环境变量/仓库/配置均无 APIFY_TOKEN（facebook-groups.md
+  §12 明确「key 仅存于验证会话」），spike 无法实调——这是前置条件缺失，
+  不是 spike 结论「不支持 site: 或价格离谱」
+- 处置：按 SPEC §7.5 熔断路径精神——发现层 Phase 暂缓，fb_posts 可
+  手工/脚本灌种子（P1 冒烟已验证此路径）；SPEC §7.5 与
+  third-party-apify.md 已回填执行记录；PLAN 2.1-2.6 checkbox 保持未勾
+- 恢复条件：提供 APIFY_TOKEN（export 到环境）→ 按 PLAN 2.1→2.6 推进
+  （spike 四项确认 → FetchApifySerp → FbDiscoverTask → discover_fb 队列
+  → 平台/前端 fb_discover → 发现→抓取闭环冒烟）
+- 不阻塞：P1/P3 已全部完成并冒烟；终审/文档同步/归档照常执行
