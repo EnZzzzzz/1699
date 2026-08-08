@@ -251,6 +251,26 @@ def _build_registry(selected_queues: list[str] | None = None) -> list:
         requires={"channel", "browser"},
     ))
 
+    # crawl_1688_shop（feeder 队列：topup=None，不参与 in_progress reset）
+    specs.append(QueueSpec(
+        queue="crawl_1688_shop",
+        site="1688",
+        task=site_1688.make_task("shop"),
+        topup=None,
+        domain_suffix="",
+        requires={"channel", "browser"},
+    ))
+
+    # crawl_1688_company（feeder 队列：topup=None，不参与 in_progress reset）
+    specs.append(QueueSpec(
+        queue="crawl_1688_company",
+        site="1688",
+        task=site_1688.make_task("company"),
+        topup=None,
+        domain_suffix="",
+        requires={"channel", "browser"},
+    ))
+
     if selected_queues:
         specs = [s for s in specs if s.queue in selected_queues]
     return specs

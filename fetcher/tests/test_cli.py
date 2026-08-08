@@ -40,13 +40,42 @@ class CliParserTest(unittest.TestCase):
         self.assertEqual(args.limit, 5)
 
     def test_daemon_queues_dynamic_from_registry(self):
-        """I3：--queues 校验来自注册表动态派生，非硬编码。"""
+        """I3：--queues 校验来自注册表动态派生，非硬编码（P3-5: 5 条队列）。"""
         from fetcher.cli.main import _build_registry
         full = _build_registry()
         all_names = [s.queue for s in full]
+        self.assertEqual(len(full), 5, "注册表应含 5 条队列")
         self.assertIn("crawl_1688_contact", all_names)
         self.assertIn("crawl_mic_contact", all_names)
         self.assertIn("crawl_mic_shop", all_names)
+        self.assertIn("crawl_1688_shop", all_names)
+        self.assertIn("crawl_1688_company", all_names)
+
+    def test_feeder_queues_topup_is_none(self):
+        """P3-5: 1688 shop/company feeder 队列 topup=None, domain_suffix=""。"""
+        from fetcher.cli.main import _build_registry
+        full = _build_registry()
+        feeder_names = {"crawl_1688_shop", "crawl_1688_company"}
+        feeders = [s for s in full if s.queue in feeder_names]
+        self.assertEqual(len(feeders), 2, "应有 2 条 feeder 队列")
+        for s in feeders:
+            self.assertIsNone(s.topup, f"{s.queue} topup 应为 None")
+            self.assertEqual(s.domain_suffix, "",
+                             f"{s.queue} domain_suffix 应为空字符串")
+            self.assertEqual(s.requires, {"channel", "browser"},
+                             f"{s.queue} requires 应为 {{channel, browser}}")
+
+    def test_registry_task_types_correct(self):
+        """P3-5: registry 中 1688 shop/company 的 task 对象类型正确。"""
+        from fetcher.cli.main import _build_registry
+        from fetcher.sites.alibaba1688.shop import Alibaba1688ShopTask
+        from fetcher.sites.alibaba1688.company import Alibaba1688CompanyTask
+        full = _build_registry()
+        by_queue = {s.queue: s for s in full}
+        self.assertIsInstance(by_queue["crawl_1688_shop"].task,
+                              Alibaba1688ShopTask)
+        self.assertIsInstance(by_queue["crawl_1688_company"].task,
+                              Alibaba1688CompanyTask)
 
     def test_daemon_config_from_args(self):
         # config_from_args 不读 args.task，daemon 命名空间可直接复用
@@ -199,6 +228,32 @@ class ResetDaemonStateTest(unittest.TestCase):
             self.db.conn.execute(
                 "SELECT status FROM shops WHERE domain=?",
                 ("s1.1688.com",)
+            ).fetchone()[0],
+            "in_progress")
+
+    def test_reset_skips_feeder_full_registry(self):
+        """P3-5: 含 feeder 的 5 队列 registry → reset 仍跳过 feeder。
+
+        关键回归：feeder 的 domain_suffix="" 若被误调用，会重置所有
+        in_progress（含 other.example.com）；跳过 feeder → 只 contact 的
+        domain_suffix 被重置。
+        """
+        from fetcher.cli.main import _build_registry, reset_daemon_state
+
+        self._seed_in_progress(["s1.1688.com", "s2.1688.com",
+                                "other.example.com"])
+        registry = _build_registry()
+
+        n_items, total_shops = reset_daemon_state(self.db, registry)
+        # crawl_1688_contact 的 domain_suffix=".1688.com" → 2 个被重置
+        # crawl_1688_shop/company 是 feeder（topup=None）→ 跳过
+        # other.example.com 不匹配任何 contact domain_suffix → 不动
+        self.assertEqual(n_items, 0)
+        self.assertEqual(total_shops, 2)
+        self.assertEqual(
+            self.db.conn.execute(
+                "SELECT status FROM shops WHERE domain=?",
+                ("other.example.com",)
             ).fetchone()[0],
             "in_progress")
 
