@@ -40,3 +40,11 @@
   - fix round 1/5: review 需修复——F1 (Important) 冒烟未触达让出型节奏冷却（直连滑块墙 abort）→ B 方案补成功路径集成测试（CrawlLoop+DaemonTaskProxy 假基建，断言等待发生在 acquire condvar、loop 内无 ctx.wait，report 如实声明）；F2 注释检查未记录→已核实 context.py 无残留 + strategies.py 同步；F3 缺 negative 断言→补 launch_backoff/策略冷却 yield_=False 断言；F4/F5/F6 文档/注释 minor；全部 ADDRESSED，零新破坏
   - **Phase 1（P3-1）完成**：冷却表 site 键 + eligible_queues/condvar_timeout + 让出型 chokepoint + work_items attempts/release/claim_next_eligible；342 passed；单队列 daemon 冒烟结构证据（smoke-step1.3/）
   - Step 1.3: minor (deferred): 无
+
+### P3-2（浏览器层多 context，准入：C1 已验证）
+
+- Step 2.1: complete (commits 274842b..82683a9, fix round 1/5 clean)
+  - 实现：Session 重构（views dict + SiteView + _active_site 路由 + set_active_site + close_site/close 两层）；BrowserManager.ensure_site 懒建（Cookie 装载段与 launch 逐字一致）+ launch 建初始 view + warmup per-view（签名向后兼容旧形态）+ save_cookies 遍历全部 views + relaunch 全 view 回写；IdentityStore.save_from_context 加 domain 参数；TDD 37 新用例（全量 342→379 passed）
+  - fix round 1/5: review 需修复——F1 (阻断) 冒烟证据不实（人工注释非 raw 输出）→ 重新真实冒烟 smoke-fix1-raw.txt（60 行 raw：launch→创建初始 view→Cookie 装载→滑块求解全链路）；F2 (阻断) warmup 签名破坏性变更→旧形态可调用兼容；F3 ensure_site 重复查 IP + req_proxies None 静默回退→IP 缓存 + 防御；F4 域过滤重复→_write_view_cookies 提取；F5 report 修正；全部 ADDRESSED 零新破坏
+  - Step 2.1: minor (deferred): _write_view_cookies 签名 log 参数未使用（Trivial）
+  - 注：本 Step 冒烟显示直连 1688 滑块墙在 solve 阶段连续失败（环境噪声，已如实记录）

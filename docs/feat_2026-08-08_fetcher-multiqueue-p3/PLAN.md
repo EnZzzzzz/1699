@@ -46,7 +46,7 @@
 
 **准入**：P3-0 结论回填 SPEC §4 C1 = 已验证。**完成标准**：单站点路径行为等价（1688 contact 旧 CLI 冒烟）；多 context 隔离单测通过。
 
-- [ ] **Step 2.1** Session/SiteView 重构（估 40min，依赖 P3-0，状态 pending）
+- [x] **Step 2.1** Session/SiteView 重构（估 40min，依赖 P3-0，状态 pending）
   - `Session.views[site]` + `ensure_site` 懒建 + `close_site`/全量 `close` 两层语义；`ctx.page` 路由活动 view；`session.ctx` property 同步。
   - 验收：SPEC §6.1 清单中 session/browser 两侧消费方全部迁移；C2 隔离单测（同 browser 两 context Cookie 互不可见）。
 - [ ] **Step 2.2** relaunch/warmup/种子池适配（估 30min，依赖 2.1，状态 pending）
