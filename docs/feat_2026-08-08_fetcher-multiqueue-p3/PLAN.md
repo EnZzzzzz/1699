@@ -86,7 +86,7 @@
 
 **准入**：P3-4 完成（feeder 模式已跑通）。**完成标准**：两条 1688 内容队列接入，冒烟验证播种与链式续喂。
 
-- [ ] **Step 5.1** 1688 shop/company 任务拆分（估 40min，依赖 4.2，状态 pending）
+- [x] **Step 5.1** 1688 shop/company 任务拆分（估 40min，依赖 4.2，状态 pending）
   - 同 §4.1 模式拆 offer_search/company_search 单页处理；company 进度键 `company:` 前缀沿用；discover = 首页类目提取 + mtop 握手。
   - 验收：TDD 单测（前缀隔离、续喂、补插）。
 - [ ] **Step 5.2** 注册表装配 + 冒烟（估 30min，依赖 5.1，状态 pending）

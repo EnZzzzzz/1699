@@ -85,3 +85,10 @@
   - **冒烟取证（smoke-step4.2/）**：空库启动→播种 discover→提取 ~360 类目→jgdbj 类目页真实抓取 15 家店铺→category_progress 推进→链式续喂页 2 item；feeder 队列不触发 in_progress reset
   - **Phase 4（P3-4）完成**：crawl_mic_contact（Step 3.1 已入）+ crawl_mic_shop feeder 链路（播种→discover→类目页→链式续喂）；468 passed
   - Step 4.2: minor (deferred): 无
+
+### P3-5（1688 shop/company feeder 接入）
+
+- Step 5.1: complete (commit 3fedf72, review clean)
+  - 实现：Alibaba1688ShopTask/Alibaba1688CompanyTask 重构为 work_items 驱动 feeder（payload kind=category/discover 统一；company: 前缀 keyword 区分；page_no 运行时读；链式续喂；discover 走 on_success 含 mtop 握手；refill 补插；CLI acquire 走 claim_next_eligible；prepare 幂等播种 iter_active_categories（company 用 prefix="company:"））；ShopTask/CompanyTask 别名保留；TDD 41 新用例（全量 468→509 passed）
+  - review 零 Critical/Important；4 Minor（① shop.py 死变量 name ② company prepare exhausted 残留计算 ③ _insert_work_item/_count_pending_by_kind 两文件重复→后续可提 _feeder_helpers ④ company discover mtop 未断言）→ 记 ledger，终审分诊
+  - Step 5.1: minor (deferred): 同上 4 条
