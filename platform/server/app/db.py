@@ -189,6 +189,56 @@ def enqueue_contact_batch(queue: str, site: str, domain_suffix: str,
         conn.close()
 
 
+def enqueue_fb_post_batch(queue: str, site: str, batch_id: int,
+                           limit: int) -> int:
+    """fb_post 批次入队：SELECT pending fb_posts → INSERT items 带
+    batch_id → fb_posts 置 in_progress（BEGIN IMMEDIATE 单事务，与 daemon
+    topup_fb_post_work_items 互斥不双喂，SPEC §7.4）。
+
+    payload 键 {url,domain,name}（SPEC §3.2：domain=群 URL，由 group_id
+    拼接）；fb_posts 表不存在（fetcher 侧未建表）→ 返回 0（防御性探测，
+    参照 work_items 索引探测模式）。limit>0 限量（<=0 不限）。返回入队行数。
+    """
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout = 30000")
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        if "fb_posts" not in tables:
+            return 0
+        conn.execute("BEGIN IMMEDIATE")
+        sql = ("SELECT * FROM fb_posts WHERE status='pending'"
+               " ORDER BY first_seen_at, id")
+        params: list = []
+        if limit > 0:
+            sql += " LIMIT ?"
+            params.append(limit)
+        rows = conn.execute(sql, params).fetchall()
+        now = _bj_now()
+        for r in rows:
+            domain = (f"https://www.facebook.com/groups/{r['group_id']}"
+                      if r["group_id"] else "")
+            payload = json.dumps(
+                {"url": r["url"], "domain": domain,
+                 "name": r["group_name"] or ""},
+                ensure_ascii=False)
+            conn.execute(
+                "INSERT INTO work_items (queue, site, batch_id, payload_json,"
+                " created_at) VALUES (?, ?, ?, ?, ?)",
+                (queue, site, batch_id, payload, now))
+            conn.execute(
+                "UPDATE fb_posts SET status='in_progress' WHERE id=?",
+                (r["id"],))
+        conn.commit()
+        return len(rows)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def enqueue_feeder_batch(queue: str, site: str, batch_id: int,
                          limit: int) -> tuple[int, int]:
     """feeder 批次入队：1 条 discover + 活跃类目 category 种子，全部带

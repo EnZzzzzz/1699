@@ -136,3 +136,19 @@
 - 偏差记录：计划 3 条种子，实际 2 条（§9 PoC 基线 URL 不可恢复，冲突
   扫描 #3 已裁定用 §12 URL；仅 2 条验证过存在）
 - **Step 1.4 完成**（commits 920520f..），review clean
+
+### Step 1.5 — 平台 fb_post 批次类型
+- commit 范围：`platform/server/app/db.py`（enqueue_fb_post_batch +
+  sqlite_master 防御性探测）、`platform/server/app/runner.py`（BATCH_TYPES
+  fb_post + enqueue_batch_for_task 分支）、`platform/server/tests/
+  test_fb_batch.py`（8 例）、brief/ledger/PLAN
+- TDD：8 failed → 8 passed；平台全量 70 passed 零回归
+- **API 冒烟**（uvicorn 重启后 curl 验证）：
+  - preview fb_post → {"cmd":null,"cmdline":"批次提交：crawl_fb_post，3 条"}
+  - create task 80 → start → 入队 1 item（batch_id=80）→ 任务 running
+    进度 {total:1,pending:1} → stop → 任务 stopped、item stopped
+  - **dispatcher 看板自动出现 crawl_fb_post**（SPEC §6.3 未核实项 ✅ 已
+    核实：queue_depth 按队列自动聚合）
+- review：spec 合规 ✅（§6.1 四处同步铁律的 runner 侧 + §7.4 并发互斥
+  测试）代码质量 ✅
+- minor (deferred)：无

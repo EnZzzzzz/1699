@@ -58,6 +58,10 @@ BATCH_TYPES = {
         "queue": "wa_check", "site": None,
         "domain_suffix": "", "kind": "wa",
     },
+    "fb_post": {
+        "queue": "crawl_fb_post", "site": "facebook",
+        "domain_suffix": "", "kind": "fb_post",
+    },
 }
 
 # 批次任务类型集合（TASK_TYPES = TASK_COMMANDS ∪ BATCH_TYPES）
@@ -287,11 +291,14 @@ def enqueue_batch_for_task(task_id: int, task_type: str,
         raise ValueError(f"非批次任务类型: {task_type}")
     params = params or {}
     limit = int(params.get("limit") or 0)
-    from app.db import (enqueue_contact_batch, enqueue_feeder_batch,
-                        enqueue_wa_batch)
+    from app.db import (enqueue_contact_batch, enqueue_fb_post_batch,
+                        enqueue_feeder_batch, enqueue_wa_batch)
     if spec["kind"] == "contact":
         return enqueue_contact_batch(spec["queue"], spec["site"],
                                      spec["domain_suffix"], task_id, limit)
+    if spec["kind"] == "fb_post":
+        return enqueue_fb_post_batch(spec["queue"], spec["site"],
+                                     task_id, limit)
     if spec["kind"] == "feeder":
         n_cat, n_disc = enqueue_feeder_batch(
             spec["queue"], spec["site"], task_id, limit)

@@ -66,7 +66,7 @@ P2 与 P3 互不依赖，P1 完成后可并行推进。
     crawl_fb_post` 真实跑通：fb_posts 转 done、fb_contacts 有分桶号码、
     work_items 终态正确、identity 键为 `facebook:<ip>`。冒烟证据记
     ledger。
-- [ ] **1.5 平台 fb_post 批次类型**（预估 30min，依赖：1.1）
+- [x] **1.5 平台 fb_post 批次类型**（预估 30min，依赖：1.1）
   - `platform/server/app/db.py`：`enqueue_fb_post_batch(queue, site,
     batch_id, limit)`（复刻 `enqueue_contact_batch` 事务模式，平台侧
     SQL 重写不 import fetcher）+ `sqlite_master` 防御性探测；
