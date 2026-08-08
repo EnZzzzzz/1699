@@ -63,7 +63,7 @@
 - [x] **Step 3.1** QueueRouter + 注册表装配（估 40min，依赖 1.3、2.3，状态 pending）
   - `control/queue_router.py`：QueueSpec 注册表、acquire 三段式（claim_next_eligible→topup→condvar）、on_success/on_giveup 路由 + finish/release 回写、active_site 绑定、每 site Policy 装配；替换 DaemonTaskProxy；`cli/main.py` daemon 分支 `--queues`（choices+默认全量，删 `--queue`）；启动 reset 逐 site domain 过滤修复。
   - 验收：TDD；`test_daemon_task.py` 重写为 router 语义；双队列（1688 contact + mic contact）装配单测。
-- [ ] **Step 3.2** SwapIP 两阶段（估 30min，依赖 3.1，状态 pending）
+- [x] **Step 3.2** SwapIP 两阶段（估 30min，依赖 3.1，状态 pending）
   - 无头：未轮换→回写关本站 context→置 needs_relaunch→让出冷却→release item；有头 WaitHumanLogin 保留原地例外（注释更新）；懒建路径消费 needs_relaunch。
   - 验收：单测覆盖两阶段状态流转（mock relaunch rotated=False）；策略冷却后 release→重领→attempts 熔断链路单测。
 - [ ] **Step 3.3** 双队列跨站冒烟（估 30min，依赖 3.2，状态 pending）

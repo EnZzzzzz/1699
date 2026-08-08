@@ -60,3 +60,8 @@
   - 实现：QueueRouter 取代 DaemonTaskProxy（git rm daemon_task.py）；QueueSpec 补全（task/topup/domain_suffix）；acquire 三段式（claim_next_eligible→逐队列 topup（冷却到期才补）→condvar）；on_success/on_giveup 路由 + finish；budget_for 协议（Task 基类默认 ip_request_budget）；loop _bind_item_site（sites/policies 注入，per-item 切 inspector/policy）；Engine sites/policies 透传；CLI --queues（删 --queue）+ reset 逐 site domain 过滤（提取 reset_daemon_state）；TDD 29 新用例（全量 395→404 passed）
   - fix round 1/5: review 需修复——I1 Step 1.2 纯函数单测被整段删除→从 git 找回恢复（12 边界用例）；I2 reset 逐 site 无测试→补两 domain 各自重置测试；I3 --queues 硬编码→_build_registry 动态派生 + choices 动态；M4/M5/M6（注释/payload id 确认无依赖移除/condvar_timeout 删除）；全部 ADDRESSED（全量 404→420 passed）
   - Step 3.1: minor (deferred): 无
+- Step 3.2: complete (commits 5c1afe8..6ff09e1, fix round 1/5 clean)
+  - 实现：SwapIP 无头两阶段（relaunch 未轮换→回写+close_site+mark_needs_relaunch+让出冷却；有头例外保留原地+注释）；loop 策略冷却改「让出 + release」（kind=release，不计数，QueueRouter.release_item → release_work_item attempts 熔断）；Task 基类 release_item 默认空实现；TDD 18 新用例（全量 420→438 passed）
+  - 注：implementer 超时未写 report/commit，主 Agent 已代 commit 5c1afe8 并核实范围（未碰用户文件）；reviewer 以 diff 为准
+  - fix round 1/5（新 implementer，原 implementer 失联）：I1 (防御性) step.cooldown 无条件优先 solved→加 not step.solved 守护+注释；M1 site=None 静默耗尽→WARNING+不输出 cooldown；M2 ctx.wait 断言；M3 result_json 断言去耦合；全量 438→440 passed，全部 ADDRESSED 零新破坏
+  - Step 3.2: minor (deferred): 无
