@@ -172,7 +172,7 @@ P2 与 P3 互不依赖，P1 完成后可并行推进。
     或等效）；抽样结果同样回写 wa_source='checked'，供一致率统计。
   - 验收：TDD——抽样比例边界（空桶/小样本/比例计算）、不重复抽样
     （wa_checked_at 排除已查）；全绿。
-- [ ] **3.3 平台 enqueue_wa_batch 双源扩展**（预估 25min，依赖：3.1）
+- [x] **3.3 平台 enqueue_wa_batch 双源扩展**（预估 25min，依赖：3.1）
   - `app/db.py` 的 wa 批次挑号 SQL 同步扩展（与 fetcher 侧同口径：双源
     UNION + 抽样），平台侧重写 SQL 不 import fetcher。
   - 验收：平台测试（双源入队数量、去重、账号轮换不回归）。

@@ -39,6 +39,20 @@ def _schema(conn):
         status TEXT NOT NULL DEFAULT 'pending', has_contact INTEGER,
         first_seen_at TEXT NOT NULL, fetched_at TEXT
     );
+    CREATE TABLE IF NOT EXISTS fb_contacts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        number TEXT NOT NULL UNIQUE, bucket TEXT NOT NULL,
+        wa_source TEXT, wa_registered INTEGER, wa_checked_at TEXT,
+        post_url TEXT NOT NULL, group_id TEXT, first_seen_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS contacts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        shop_id INTEGER NOT NULL UNIQUE,
+        contact_person TEXT, gender TEXT, phone TEXT, mobile TEXT,
+        fax TEXT, address TEXT, source_url TEXT,
+        scraped_at TEXT NOT NULL, raw_text TEXT,
+        wa_registered INTEGER, wa_checked_at TEXT
+    );
     CREATE TABLE IF NOT EXISTS work_items (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         queue TEXT NOT NULL, site TEXT, batch_id INTEGER,
@@ -244,6 +258,87 @@ class FbBatchRunnerTest(FbBatchTestBase):
         # 直接调 preview 内部逻辑需要 TestClient；这里验证 BATCH_TYPE_NAMES
         # 已含 fb_post（preview 分支按它走）
         self.assertIn("fb_post", app_runner.BATCH_TYPE_NAMES)
+
+
+class EnqueueWaBatchDualSourceTest(FbBatchTestBase):
+    """Step 3.3: 平台 enqueue_wa_batch 双源扩展（与 fetcher 同口径）。"""
+
+    def _seed(self, contacts=(), fb=()):
+        conn = self._conn()
+        for i, (mobile, checked) in enumerate(contacts):
+            conn.execute(
+                "INSERT INTO contacts (shop_id, mobile, scraped_at,"
+                " wa_checked_at) VALUES (?, ?, '2026-08-08 10:00:00', ?)",
+                (i + 1, mobile, checked))
+        for number, bucket, checked in fb:
+            conn.execute(
+                "INSERT INTO fb_contacts (number, bucket, wa_source,"
+                " post_url, group_id, wa_checked_at, first_seen_at)"
+                " VALUES (?, ?, ?, 'u', 'g1', ?, '2026-08-08 10:00:00')",
+                (number, bucket,
+                 "declared" if bucket == "declared_wa" else None, checked))
+        conn.commit()
+        conn.close()
+
+    def _payload_numbers(self, batch_id):
+        conn = self._conn()
+        rows = conn.execute(
+            "SELECT payload_json FROM work_items WHERE batch_id=?"
+            " ORDER BY id", (batch_id,)).fetchall()
+        conn.close()
+        out = []
+        for r in rows:
+            out.extend(json.loads(r[0])["numbers"])
+        return out
+
+    def test_dual_source_union(self):
+        """contacts 未查 + fb cn_uncertain 未查 → 双源都入队。"""
+        self._seed(contacts=[("13800000001", None)],
+                   fb=[("18588244213", "cn_uncertain", None)])
+        from app.db import enqueue_wa_batch
+        n = enqueue_wa_batch(9, ["a1"], limit=0)
+        self.assertEqual(n, 1)
+        nums = self._payload_numbers(9)
+        self.assertEqual(sorted(nums),
+                         ["8613800000001", "8618588244213"])
+
+    def test_cross_source_dedup(self):
+        """同号双源 → 只入队一次。"""
+        self._seed(contacts=[("13800000001", None)],
+                   fb=[("13800000001", "cn_uncertain", None)])
+        from app.db import enqueue_wa_batch
+        enqueue_wa_batch(9, ["a1"], limit=0)
+        nums = self._payload_numbers(9)
+        self.assertEqual(nums, ["8613800000001"])
+
+    def test_declared_sampling_mixed(self):
+        """cn_uncertain 10 个 → 配 1 个 declared 抽样。"""
+        self._seed(
+            fb=[(f"1380000000{i}", "cn_uncertain", None) for i in range(10)]
+               + [("8618588244213", "declared_wa", None)])
+        from app.db import enqueue_wa_batch
+        enqueue_wa_batch(9, ["a1"], limit=0)
+        nums = self._payload_numbers(9)
+        uncertain = [x for x in nums if x.startswith("861380000000")]
+        declared = [x for x in nums if x == "8618588244213"]
+        self.assertEqual(len(uncertain), 10)
+        self.assertEqual(len(declared), 1)
+
+    def test_1688_only_no_regression(self):
+        """无 fb_contacts 时账号轮换/切块与既有一致。"""
+        self._seed(contacts=[(f"138{i:08d}", None) for i in range(120)])
+        from app.db import enqueue_wa_batch
+        n = enqueue_wa_batch(9, ["a1", "a2"], limit=0)
+        self.assertEqual(n, 3)  # 120 → 50/50/20
+        conn = self._conn()
+        rows = conn.execute(
+            "SELECT payload_json FROM work_items WHERE batch_id=9"
+            " ORDER BY id").fetchall()
+        conn.close()
+        accounts = [json.loads(r[0])["account"] for r in rows]
+        self.assertEqual(accounts, ["a1", "a2", "a1"])
+        sizes = [len(json.loads(r[0])["numbers"]) for r in rows]
+        self.assertEqual(sizes, [50, 50, 20])
 
 
 if __name__ == "__main__":

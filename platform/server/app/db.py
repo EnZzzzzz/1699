@@ -315,10 +315,16 @@ def _normalize_numbers(raw, default_cc="86"):
 
 def enqueue_wa_batch(batch_id: int, accounts: list[str],
                      limit: int = 0) -> int:
-    """wa_check 批次入队：contacts 未查号码 → 50/块 → 账号按块轮换。
+    """wa_check 批次入队：contacts ∪ fb_contacts 未查号码 → 50/块 →
+    账号按块轮换（双源口径与 fetcher wa_check_topup 一致，SPEC §7.6）。
 
-    accounts 为空拒绝（防空跑 default 主号）。
-    requires=["local"]、site=NULL。返回入队 item 数。
+    - contacts：未查 mobile；fb_contacts：仅 bucket='cn_uncertain' 未查号
+      （declared_wa/overseas 桶不进）；UNION 天然 DISTINCT 去重；
+    - declared_wa 抽样校准（Step 3.2）：按 max(1, N×10%) 抽未查 declared
+      号混入同批（ORDER BY RANDOM()），供一致率统计；
+    - limit>0 时作用于 UNION（不确定号上限），抽样在其上追加；
+    accounts 为空拒绝（防空跑 default 主号）。requires=["local"]、
+    site=NULL。返回入队 item 数。
     """
     accounts = [str(a).strip() for a in (accounts or []) if str(a).strip()]
     if not accounts:
@@ -326,18 +332,46 @@ def enqueue_wa_batch(batch_id: int, accounts: list[str],
     conn = sqlite3.connect(DB_PATH, timeout=30)
     try:
         conn.execute("PRAGMA busy_timeout = 30000")
-        sql = ("SELECT mobile FROM contacts WHERE wa_checked_at IS NULL"
-               " AND mobile IS NOT NULL AND TRIM(mobile) <> ''"
-               " ORDER BY id ASC")
+        # 防御性探测（SPEC §4.3）：fb_contacts 表不存在（fetcher 侧未建表/旧库）
+        # 时回退 contacts-only 挑号，与历史行为一致
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        if "fb_contacts" in tables:
+            sql = ("SELECT mobile AS number FROM contacts"
+                   " WHERE wa_checked_at IS NULL AND mobile IS NOT NULL"
+                   "   AND TRIM(mobile) <> ''"
+                   " UNION"
+                   " SELECT number FROM fb_contacts"
+                   " WHERE bucket='cn_uncertain' AND wa_checked_at IS NULL"
+                   " ORDER BY number")
+        else:
+            sql = ("SELECT mobile AS number FROM contacts"
+                   " WHERE wa_checked_at IS NULL AND mobile IS NOT NULL"
+                   "   AND TRIM(mobile) <> '' ORDER BY id")
         if limit > 0:
             sql += " LIMIT ?"
             rows = conn.execute(sql, (limit,)).fetchall()
         else:
             rows = conn.execute(sql).fetchall()
         numbers: list[str] = []
-        for (mobile,) in rows:
-            for n in _normalize_numbers([mobile], "86"):
-                numbers.append(n)
+        seen: set[str] = set()
+        for (number,) in rows:
+            for n in _normalize_numbers([number], "86"):
+                if n not in seen:
+                    seen.add(n)
+                    numbers.append(n)
+        # declared_wa 抽样（已查不重抽；fb_contacts 缺失时跳过）
+        if "fb_contacts" in tables:
+            n_sample = max(1, int(len(numbers) * 0.10))
+            declared = conn.execute(
+                "SELECT number FROM fb_contacts WHERE bucket='declared_wa'"
+                " AND wa_checked_at IS NULL ORDER BY RANDOM() LIMIT ?",
+                (n_sample,)).fetchall()
+            for (number,) in declared:
+                for n in _normalize_numbers([number], "86"):
+                    if n not in seen:
+                        seen.add(n)
+                        numbers.append(n)
         batches = [numbers[i:i + 50]
                    for i in range(0, len(numbers), 50)]
         n = 0

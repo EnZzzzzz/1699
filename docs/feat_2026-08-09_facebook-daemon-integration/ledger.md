@@ -205,3 +205,14 @@
   原断言「declared 不入队」被 Step 3.2 抽样机制合法推翻 → declared 标记
   已查（抽样排除），保留原意图（UNION 桶过滤 + 已查不重抽）
 - review：spec 合规 ✅（§7.6 declared 抽样 + 比例边界测试）代码质量 ✅
+
+### Step 3.3 — 平台 enqueue_wa_batch 双源扩展
+- commit 范围：`platform/server/app/db.py`（enqueue_wa_batch 双源 UNION
+  + declared 抽样 + 防御性探测）、`platform/server/tests/test_fb_batch.py`
+  （+4 例）、brief/ledger/PLAN
+- TDD：2 failed → 4 例新增全过；平台全量 74 passed 零回归
+- 防御性探测（SPEC §4.3）：fb_contacts 表缺失（旧库/测试 schema）→ 回退
+  contacts-only 挑号，历史行为不变——既有 test_enqueue_wa_batch 依赖此
+  回退（其 schema 无 fb_contacts）
+- review：spec 合规 ✅（与 fetcher 侧同口径双源 + 抽样）代码质量 ✅
+- minor (deferred)：无
