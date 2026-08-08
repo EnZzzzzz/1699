@@ -18,8 +18,8 @@ class CliParserTest(unittest.TestCase):
     def test_daemon_defaults(self):
         args = self.ap.parse_args(["daemon"])
         self.assertEqual(args.site, "daemon")
-        # --queue 默认值（P0 不开放其他选择）
-        self.assertEqual(args.queue, "crawl_1688_contact")
+        # --queues 默认 None（全量）
+        self.assertIsNone(args.queues)
         # daemon 不套 task 二级 subparser
         self.assertIsNone(getattr(args, "task", None))
         # add_common_args 全套已挂载（抽查代表项）
@@ -31,10 +31,11 @@ class CliParserTest(unittest.TestCase):
         self.assertEqual(args.num, 10)
         self.assertEqual(args.limit, 0)
 
-    def test_daemon_queue_and_common_override(self):
+    def test_daemon_queues_and_common_override(self):
         args = self.ap.parse_args(
-            ["daemon", "--queue", "q2", "--workers", "3", "--limit", "5"])
-        self.assertEqual(args.queue, "q2")
+            ["daemon", "--queues", "crawl_1688_contact", "crawl_mic_contact",
+             "--workers", "3", "--limit", "5"])
+        self.assertEqual(args.queues, ["crawl_1688_contact", "crawl_mic_contact"])
         self.assertEqual(args.workers, 3)
         self.assertEqual(args.limit, 5)
 

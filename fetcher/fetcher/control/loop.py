@@ -73,12 +73,23 @@ class CrawlLoop:
 
     def __init__(self, ctx, task: Task, policy: Policy | None = None,
                  inspector: SceneInspector | None = None, board=None,
-                 seed_kit: dict | None = None):
+                 seed_kit: dict | None = None,
+                 sites: dict[str, object] | None = None,
+                 policies: dict[str, Policy] | None = None):
         self.ctx = ctx
         self.task = task
         self.policy = policy or Policy(
             max_consecutive_fail=ctx.config.max_consecutive_fail)
-        self.inspector = inspector or SceneInspector.for_site(ctx.site)
+        self.sites = sites
+        self.policies = policies
+        if sites is not None:
+            # daemon 多站点路径：inspector 延迟建，首个 item 绑定后建立
+            self._bound_site = None
+            self.inspector = inspector  # daemon 传 None
+        else:
+            # CLI 单站点路径：inspector 按 ctx.site 立即装配
+            self._bound_site = getattr(ctx.site, 'name', None) if ctx.site else None
+            self.inspector = inspector or SceneInspector.for_site(ctx.site)
         self.board = board
         self.seed_tracker = SeedBurnTracker(seed_kit)
         self.circuit = CircuitBreaker(ctx.config.max_consecutive_fail)
@@ -186,6 +197,7 @@ class CrawlLoop:
                     self.log(self.task.empty_message())
                     self.ctx.set_status(state="无待做任务，退出")
                     break
+                self._bind_item_site()
                 self.ctx.state["item"] = item
                 self.ctx.set_status(shop=self.task.label(item),
                                     state="检查出口 IP…")
@@ -332,7 +344,7 @@ class CrawlLoop:
     def _check_budget(self) -> bool:
         """每 IP 请求预算：采满主动换 IP；IP 未轮换则放行（budget_stuck）。"""
         cfg = self.ctx.config
-        budget = self.task.ip_request_budget
+        budget = self.task.budget_for(self.ctx)
         identity = self.ctx.identity
         if not (budget and cfg.use_proxy
                 and self.ip_req.get(identity, {}).get("n", 0) >= budget
@@ -358,6 +370,7 @@ class CrawlLoop:
         ctx = self.ctx
         # 熔断按店计非按次：同一店铺的重试链无论多长只计一次，单个慢/卡
         # 店铺不会烧穿熔断中止整个任务（旧引擎同店铺最多 3 段升级后放弃）
+        self._bind_item_site()
         counted = False
         while not ctx.stopped():
             ctx.set_status(state="采集中")
@@ -438,6 +451,22 @@ class CrawlLoop:
                     step.cooldown, f"strategy:{decision.strategy}"):
                 return "stop", 0
         return "stop", 0
+
+    def _bind_item_site(self):
+        """daemon 多站点路径：按 ctx.state["active_site"] 切换
+        ctx.site / inspector / policy。CLI 路径（sites=None）无操作。"""
+        if self.sites is None:
+            return
+        site_name = self.ctx.state.get("active_site")
+        if site_name is None or site_name == self._bound_site:
+            return
+        self.ctx.site = self.sites.get(site_name)
+        if self.ctx.site is not None:
+            self.inspector = SceneInspector.for_site(self.ctx.site)
+        new_policy = self.policies.get(site_name) if self.policies else None
+        if new_policy is not None:
+            self.policy = new_policy
+        self._bound_site = site_name
 
     # ---- 簿记 ----
 

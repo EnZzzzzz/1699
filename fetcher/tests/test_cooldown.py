@@ -14,7 +14,7 @@
    launch_backoff）均经 chokepoint 触发，reason 正确且时长落在公式区间。
 
 真实 threading.Event + 临时 sqlite + spy（不 mock 被测的 _cooldown
-本身）；假基建模式参照 test_control_loop.py / test_daemon_task.py。
+本身）；假基建模式参照 test_control_loop.py / test_queue_router.py。
 """
 
 import tempfile
@@ -410,10 +410,10 @@ class YieldCooldownTest(CooldownTestBase):
                 self.assertFalse(y, f"{r} 应保持 yield_=False（原地型）")
 
 
-# ---------- 用例 4：让出型 × DaemonTaskProxy 集成验证（F1） ----------
+# ---------- 用例 4：让出型 × QueueRouter 集成验证（F1） ----------
 
 class YieldIntegrationWithProxyTest(unittest.TestCase):
-    """F1 集成测试：DaemonTaskProxy + CrawlLoop 跑 2 个成功 item，
+    """F1 集成测试：QueueRouter + CrawlLoop 跑 2 个成功 item，
     验证让出型冷却登记 site 键 + condvar 等待发生在 acquire 而非 loop 内。
 
     假基建模式（FakePage / MockBrowserManager / fake fetch OK），
@@ -430,9 +430,9 @@ class YieldIntegrationWithProxyTest(unittest.TestCase):
         self._tmp.cleanup()
 
     def _make_proxy_ctx(self, sample_min, sample_max, items=2):
-        """创建 DaemonTaskProxy + WorkerContext，seed 好 work_items。"""
+        """创建 QueueRouter + WorkerContext，seed 好 work_items。"""
         import json as _json
-        from fetcher.control.daemon_task import DaemonTaskProxy
+        from fetcher.control.queue_router import QueueRouter, QueueSpec
 
         config = make_config(self.tmp,
                              sample_min=sample_min, sample_max=sample_max,
@@ -456,9 +456,13 @@ class YieldIntegrationWithProxyTest(unittest.TestCase):
             db.conn.commit()
 
         inner = ScriptedTask([("ok", {"v": i}) for i in range(1, items + 1)])
-        proxy = DaemonTaskProxy(inner=inner, queue="crawl_1688_contact",
-                                site="1688", domain_suffix=".1688.com")
-        return proxy, ctx
+        registry = [QueueSpec(
+            queue="crawl_1688_contact", site="1688", task=inner,
+            topup=lambda db, limit: db.topup_contact_work_items(
+                "crawl_1688_contact", "1688", ".1688.com", limit),
+            domain_suffix=".1688.com")]
+        router = QueueRouter(registry)
+        return router, ctx
 
     def test_yield_cooldown_waits_in_acquire_not_loop(self):
         """2 个成功 item：item1 完成后让出型 sample_interval 登记 site 键，
@@ -494,7 +498,7 @@ class YieldIntegrationWithProxyTest(unittest.TestCase):
         elapsed = time.monotonic() - t0
 
         # 两个 item 都成功
-        inner = proxy._inner
+        inner = proxy._registry["crawl_1688_contact"].task
         self.assertEqual(len(inner.succeeded), 2,
                          f"期望两个 item 成功，got {len(inner.succeeded)}")
         # succeeded 记录的是 work_item dict（含 domain/name/url）

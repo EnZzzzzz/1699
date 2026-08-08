@@ -32,6 +32,14 @@ class Task:
     cold_start_before_acquire = False
     ip_request_budget: int | None = None
 
+    def budget_for(self, ctx) -> int | None:
+        """当前上下文的 IP 请求预算（per-site 路由点）。
+
+        基类默认返回 ip_request_budget（CLI 单站点不变）；
+        QueueRouter 覆盖为按 item 所属 site 的 task 返回。
+        """
+        return self.ip_request_budget
+
     # ---- main 阶段 ----
 
     def prepare(self, config) -> bool:

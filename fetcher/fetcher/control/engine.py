@@ -37,7 +37,9 @@ class Engine:
                  policy: Policy | None = None, board=None,
                  store_factory=None, browser_manager_factory=None,
                  loop_factory=None,
-                 site_name: str | None = None):
+                 site_name: str | None = None,
+                 sites: dict | None = None,
+                 policies: dict | None = None):
         if site is not None and site_name is None:
             raise RuntimeError(
                 "site_name 必传（CLI/daemon 传入注册名），"
@@ -49,6 +51,8 @@ class Engine:
         self.policy = policy
         self.board = board
         self.site_name = site_name
+        self.sites = sites
+        self.policies = policies
         # 可注入工厂（测试用；默认每 worker 独立 ShopDB / BrowserManager /
         # CrawlLoop）
         self.store_factory = store_factory or (
@@ -186,8 +190,13 @@ class Engine:
                             stop=self.stop, log=log, wid=wid, tag=tag)
         if board is not None:
             ctx.set_status = lambda **kw: board.set(wid, **kw)
+        loop_kw = {}
+        if self.sites is not None:
+            loop_kw["sites"] = self.sites
+        if self.policies is not None:
+            loop_kw["policies"] = self.policies
         loop = self.loop_factory(ctx, self.task, policy=self.policy,
-                                 board=board, seed_kit=seed_kit)
+                                 board=board, seed_kit=seed_kit, **loop_kw)
         stats = loop.run()
         with self.lock:
             self.state["stats"][wid] = stats
