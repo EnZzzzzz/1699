@@ -28,9 +28,118 @@ from fetcher.control.queue_router import (
     QueueRouter,
     QueueSpec,
     _WAIT_TIMEOUT,
+    condvar_timeout_multi,
+    eligible_queues,
 )
 from fetcher.core.types import ActionResult, Outcome
 from fetcher.strategy.policy import Policy
+
+
+# =====================================================================
+# Step 1.2 纯函数测试（I1 恢复）
+# =====================================================================
+
+class QueueSpecTest(unittest.TestCase):
+    """QueueSpec 数据类基本构造与字段访问。"""
+
+    def test_construction_and_fields(self):
+        qs = QueueSpec(queue="crawl_1688_contact", site="1688",
+                       requires={"channel", "browser"})
+        self.assertEqual(qs.queue, "crawl_1688_contact")
+        self.assertEqual(qs.site, "1688")
+        self.assertEqual(qs.requires, {"channel", "browser"})
+
+
+class EligibleQueuesTest(unittest.TestCase):
+    """eligible_queues 过滤逻辑：资源满足 + 冷却到期。"""
+
+    def _registry(self):
+        return [
+            QueueSpec(queue="crawl_1688_contact", site="1688",
+                      requires={"channel", "browser"}),
+            QueueSpec(queue="crawl_madeinchina", site="madeinchina",
+                      requires={"channel", "browser"}),
+            QueueSpec(queue="crawl_1688_search", site="1688",
+                      requires={"channel"}),
+        ]
+
+    def _ctx(self, resources=None, cooldown_until=None):
+        return type("FakeCtx", (), {
+            "resources": resources or {"channel", "browser"},
+            "cooldown_until": cooldown_until or {},
+        })()
+
+    def test_all_eligible_with_no_cooldown(self):
+        result = eligible_queues(self._registry(), self._ctx(), 100.0)
+        self.assertEqual(result, ["crawl_1688_contact", "crawl_madeinchina",
+                                  "crawl_1688_search"])
+
+    def test_cooldown_filters_site_queues(self):
+        ctx = self._ctx(cooldown_until={"1688": 200.0})
+        result = eligible_queues(self._registry(), ctx, 100.0)
+        self.assertEqual(result, ["crawl_madeinchina"])
+
+    def test_resource_filtering(self):
+        ctx = self._ctx(resources={"channel"})
+        result = eligible_queues(self._registry(), ctx, 100.0)
+        self.assertEqual(result, ["crawl_1688_search"])
+
+    def test_expiry_recovery(self):
+        ctx = self._ctx(cooldown_until={"1688": 100.0, "madeinchina": 200.0})
+        result = eligible_queues(self._registry(), ctx, 100.0)
+        self.assertEqual(result, ["crawl_1688_contact", "crawl_1688_search"])
+        result2 = eligible_queues(self._registry(), ctx, 200.0)
+        self.assertEqual(result2, ["crawl_1688_contact", "crawl_madeinchina",
+                                   "crawl_1688_search"])
+
+    def test_empty_registry(self):
+        self.assertEqual(eligible_queues([], self._ctx(), 100.0), [])
+
+    def test_empty_resources_still_matches_empty_requires(self):
+        registry = [QueueSpec(queue="no_resources", site="x", requires=set())]
+        ctx = self._ctx(resources=set())
+        result = eligible_queues(registry, ctx, 100.0)
+        self.assertEqual(result, ["no_resources"])
+
+
+class CondvarTimeoutPureTest(unittest.TestCase):
+    """condvar_timeout_multi 纯函数计算（含边界）。"""
+
+    def test_not_in_cooldown_returns_cap(self):
+        self.assertEqual(condvar_timeout_multi({}, ["a"], 100.0), 30.0)
+
+    def test_in_cooldown_returns_min_of_remaining_and_cap(self):
+        cooldown_until = {"a": 120.0}
+        self.assertAlmostEqual(
+            condvar_timeout_multi(cooldown_until, ["a"], 100.0), 20.0, delta=1e-9)
+        self.assertAlmostEqual(
+            condvar_timeout_multi(cooldown_until, ["a"], 60.0), 30.0, delta=1e-9)
+
+    def test_custom_cap(self):
+        cooldown_until = {"a": 110.0}
+        self.assertAlmostEqual(
+            condvar_timeout_multi(cooldown_until, ["a"], 100.0, cap=5.0), 5.0)
+
+    def test_very_small_remaining_returns_positive(self):
+        cooldown_until = {"a": 100.01}
+        result = condvar_timeout_multi(cooldown_until, ["a"], 100.0)
+        self.assertGreater(result, 0.0)
+        self.assertAlmostEqual(result, 0.01, delta=1e-6)
+
+    def test_exactly_at_deadline_returns_cap(self):
+        cooldown_until = {"a": 100.0}
+        self.assertEqual(condvar_timeout_multi(cooldown_until, ["a"], 100.0), 30.0)
+
+    def test_multi_site_returns_minimum(self):
+        """多队列取最小冷却剩余。"""
+        cooldown_until = {"1688": 115.0, "madeinchina": 105.0}  # 15s vs 5s
+        self.assertAlmostEqual(
+            condvar_timeout_multi(cooldown_until, ["1688", "madeinchina"], 100.0),
+            5.0, delta=1e-9)
+
+
+# =====================================================================
+# QueueRouter 集成测试
 
 
 QUEUE_A = "crawl_1688_contact"
@@ -369,7 +478,7 @@ class TopupPerQueueTest(QueueRouterTestBase):
 
 # ---------- 用例 4：condvar timeout ----------
 
-class CondvarTimeoutTest(QueueRouterTestBase):
+class RouterCondvarTimeoutTest(QueueRouterTestBase):
     def test_timeout_with_cooldown(self):
         """冷却中 wait 剩余时间（取各 site 最小值）。"""
         # seed shops for madeinchina so when cooldown expires, claim succeeds

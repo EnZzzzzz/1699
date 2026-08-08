@@ -65,3 +65,56 @@
 5. **condvar_timeout_multi cap 参数**：需显式传入 `_WAIT_TIMEOUT` 模块级常量（支持测试注入小超时值）
 6. **payload 含 id**：为兼容旧 DaemonTaskProxy 返回格式，acquire_item 返回 payload + `"id"` 键
 7. **mic 队列无种子约束**：daemon 直连时 mic 无种子会报错——冒烟只喂 1688 店，mic 队列无货不认领则不触 ensure_site(mic)，记录此约束
+
+
+## Fix Round 1（task-3.1-fix1.md）
+
+### I1 — Step 1.2 纯函数单测恢复 ✅
+
+从 ebd16ba 找回 eligible_queues / condvar_timeout 纯函数单测 12 项，并入 test_queue_router.py：
+- QueueSpecTest（1）：构造与字段
+- EligibleQueuesTest（6）：无冷却全可见、冷却过滤、资源过滤、到期恢复、空注册表、空 resources 匹配空 requires
+- CondvarTimeoutPureTest（6）：不在冷却返回 cap、冷却中 min(剩余,cap)、自定义 cap、极小剩余>0、到期边缘返回 cap、多 site 取最小值
+
+原 CondvarTimeoutTest（QueueRouter 集成版）重命名为 RouterCondvarTimeoutTest 避免命名冲突。
+
+### I2 — reset 逐 site 测试 ✅
+
+- 从 `_run_daemon` 提取 `reset_daemon_state(db, registry) -> (int, int)` 为独立可测函数
+- 新增 `ResetDaemonStateTest`：
+  - `test_reset_only_targeted_domain_suffixes`：seed 两组不同 domain_suffix 的 in_progress + 一个无关站点，断言仅匹配的域名被重置、无关站点保持 in_progress
+  - `test_reset_with_empty_registry`：空 registry 只做 claimed 回收，不重置任何 in_progress
+- 测试使用 `upsert_shops`（非 raw INSERT，避免缺少 first_seen_at 等必需列导致静默失败）
+
+### I3 — --queues 动态校验 ✅
+
+- `all_queue_names` 改为从 `_build_registry()`（全量无过滤）动态派生：`[s.queue for s in full_registry]`
+- `test_daemon_queues_dynamic_from_registry` 验证注册表动态派生
+
+### M4 — compose/summary 注释 ✅
+
+两方法各加一行注释：`# 简单方案：委托首个注册 task（多队列下统计口径待后续细化）`
+
+### M5 — payload["id"] 注释 ✅
+
+- grep 确认 site 插件只依赖 domain/name/url（无 item["id"] 引用）
+- 保留 `payload["id"]`（测试/DB 验证用），更新注释为：`# 保留 id 键：测试/DB 验证用（site 插件只依赖 domain/name/url）`
+
+### M6 — condvar_timeout（单 queue 版）删除 ✅
+
+全仓库无调用；已删除。多队列版 `condvar_timeout_multi` 保留。
+
+### 副作用修复
+
+- QueueSpec.task 默认值改为 None（纯函数测试不需要 task）
+- QueueSpec.topup 类型从 `Callable[[ShopDB, int], int] | None` 改为 `object | None`（Python 3.13 dataclass 兼容性）
+- 删除重复 `@dataclass` 装饰器（编辑遗留）
+- 删除未使用的 `Callable` import
+
+### 测试验证
+
+```
+cd fetcher && python -m pytest tests -q
+420 passed, 2 subtests passed
+```
+

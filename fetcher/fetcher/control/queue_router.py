@@ -10,7 +10,6 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Callable
 
 from fetcher.db import ShopDB
 
@@ -26,8 +25,8 @@ class QueueSpec:
     """队列注册表条目。"""
     queue: str                    # "crawl_1688_contact" / ...
     site: str                     # 站点注册名 "1688" / "madeinchina"
-    task: object                  # 该队列工作项的执行流水线（Task 协议）
-    topup: Callable[[ShopDB, int], int] | None = None   # 补货函数；feeder 类队列为 None
+    task: object = None             # 该队列工作项的执行流水线（Task 协议）
+    topup: object | None = None   # Callable[[ShopDB, int], int] | None；补货函数
     domain_suffix: str = ""       # contact 类 topup 用；启动 reset 用
     requires: set[str] = field(default_factory=lambda: {"channel", "browser"})
 
@@ -45,21 +44,6 @@ def eligible_queues(registry, ctx, now: float) -> list[str]:
                 and now >= ctx.cooldown_until.get(q.site, 0):
             result.append(q.queue)
     return result
-
-
-def condvar_timeout(cooldown_until: dict[str, float], site: str,
-                    now: float, cap: float = 30.0) -> float:
-    """计算 Condition.wait 的超时值（秒）。
-
-    - site 在冷却中（now < 到期） → min(到期 - now, cap)
-    - site 不在冷却 → cap
-    - 返回值总是 > 0。
-    """
-    deadline = cooldown_until.get(site, 0)
-    if now < deadline:
-        remaining = deadline - now
-        return remaining if remaining < cap else cap
-    return cap
 
 
 def condvar_timeout_multi(cooldown_until: dict[str, float],
@@ -179,11 +163,13 @@ class QueueRouter:
         return {"done": 0}
 
     def compose(self, wid: int, f: dict) -> str:
+        # 简单方案：委托首个注册 task（多队列下统计口径待后续细化）
         if self._specs:
             return self._specs[0].task.compose(wid, f)
         return str(f.get("line", ""))
 
     def summary(self, all_stats: dict, db_path=None) -> str:
+        # 简单方案：委托首个注册 task（多队列下统计口径待后续细化）
         if self._specs:
             return self._specs[0].task.summary(all_stats, db_path=db_path)
         return str(all_stats)
@@ -254,7 +240,8 @@ class QueueRouter:
                         # 缓存队列名到线程本地（label/giveup_cost 无 ctx 参数时用）
                         self._tls.last_queue = item["queue"]
                         payload = dict(item["payload"])
-                        payload["id"] = item["id"]  # 兼容旧 DaemonTaskProxy 返回格式
+                        # 保留 id 键：测试/DB 验证用（site 插件只依赖 domain/name/url）
+                        payload["id"] = item["id"]
                         return payload
 
                 # topup：只对冷却到期的 contact 队列补货

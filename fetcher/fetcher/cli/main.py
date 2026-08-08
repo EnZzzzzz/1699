@@ -210,9 +210,10 @@ def _build_engine(cfg, task, site, provider, policy, site_name):
 
 
 def _build_registry(selected_queues: list[str] | None = None) -> list:
-    """构建 daemon 队列注册表（本 Step 2 条队列，P3-4/P3-5 加 shop/company）。
+    """构建 daemon 全量队列注册表（本 Step 2 条队列，P3-4/P3-5 加 shop/company）。
 
     selected_queues 非空时只保留指定队列；None=全量。
+    返回值即 spec.queue 的全量列表，可作为 argparse choices 的来源。
     """
     from fetcher.control.queue_router import QueueSpec
 
@@ -245,6 +246,20 @@ def _build_registry(selected_queues: list[str] | None = None) -> list:
     return specs
 
 
+def reset_daemon_state(db, registry: list) -> tuple[int, int]:
+    """daemon 启动崩溃恢复：全量回收 claimed + 逐 site 重置 in_progress。
+
+    返回 (n_claimed_reset, n_in_progress_reset)。
+    提取为独立函数便于测试（I2）。
+    """
+    n_items = db.reset_claimed_work_items()
+    total_shops = 0
+    for spec in registry:
+        n = db.reset_in_progress(spec.domain_suffix)
+        total_shops += n
+    return n_items, total_shops
+
+
 def _run_daemon(args) -> int:
     """daemon 常驻模式装配：QueueRouter 跨队列认领 + Engine 跑。"""
     from fetcher.control.engine import Engine
@@ -253,8 +268,9 @@ def _run_daemon(args) -> int:
 
     cfg = config_from_args(args)
 
-    # 校验 --queues（如果传入）
-    all_queue_names = ["crawl_1688_contact", "crawl_mic_contact"]
+    # 先建全量 registry（供校验用）
+    full_registry = _build_registry()
+    all_queue_names = [s.queue for s in full_registry]
     if args.queues:
         for q in args.queues:
             if q not in all_queue_names:
@@ -299,11 +315,7 @@ def _run_daemon(args) -> int:
     # 再逐 site 重置 shops 的 in_progress（按 domain_suffix 过滤）
     db = ShopDB(cfg.resolved_db_path())
     try:
-        n_items = db.reset_claimed_work_items()
-        total_shops = 0
-        for spec in registry:
-            n = db.reset_in_progress(spec.domain_suffix)
-            total_shops += n
+        n_items, total_shops = reset_daemon_state(db, registry)
     finally:
         db.close()
     print(f"[daemon] 启动重置：{n_items} 个 claimed 工作项 → pending，"
