@@ -360,6 +360,10 @@ def enqueue_wa_batch(batch_id: int, accounts: list[str],
                 if n not in seen:
                     seen.add(n)
                     numbers.append(n)
+        if not numbers:
+            # 无不确定号可查 → 不产生批次（与 fetcher wa_check_topup 一致，
+            # 抽样以不确定号数为基准，N=0 不抽）
+            return 0
         # declared_wa 抽样（已查不重抽；fb_contacts 缺失时跳过）
         if "fb_contacts" in tables:
             n_sample = max(1, int(len(numbers) * 0.10))

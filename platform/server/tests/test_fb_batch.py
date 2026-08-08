@@ -340,6 +340,18 @@ class EnqueueWaBatchDualSourceTest(FbBatchTestBase):
         sizes = [len(json.loads(r[0])["numbers"]) for r in rows]
         self.assertEqual(sizes, [50, 50, 20])
 
+    def test_no_unchecked_numbers_returns_zero(self):
+        """无不确定号可查（仅 declared 未查）→ 不产生批次（与 fetcher 一致）。"""
+        self._seed(fb=[("8618588244213", "declared_wa", None)])
+        from app.db import enqueue_wa_batch
+        n = enqueue_wa_batch(9, ["a1"], limit=0)
+        self.assertEqual(n, 0)
+        conn = self._conn()
+        cnt = conn.execute(
+            "SELECT COUNT(*) FROM work_items WHERE batch_id=9").fetchone()[0]
+        conn.close()
+        self.assertEqual(cnt, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

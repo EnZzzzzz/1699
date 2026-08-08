@@ -250,3 +250,18 @@
   （spike 四项确认 → FetchApifySerp → FbDiscoverTask → discover_fb 队列
   → 平台/前端 fb_discover → 发现→抓取闭环冒烟）
 - 不阻塞：P1/P3 已全部完成并冒烟；终审/文档同步/归档照常执行
+
+## 终审（2026-08-09）
+- 审查包：MERGE_BASE 0e17b24..HEAD，12 commits / 27 文件 / +2886 -36
+- 逐文件复查生产代码 diff（db.py/post_task/wa_task/browser/queue_router/
+  cli/plugin/平台 db+runner/前端四处）干净
+- 全量回归：fetcher 638 passed、platform 75 passed、npx tsc -b 通过
+- 运行时冒烟证据核实：1.4（daemon 日志+DB 验证）、1.7（任务 82 全流程
+  +SSE+看板）、3.4（真实 Baileys 查号+双表回写）均有真实输出记录
+- 装配层冒烟：uvicorn 重启验证新代码（fb_post preview 正常）、vite 服务
+  新类型、生产 daemon 三队列运行中
+- **终审发现 1 项（已修）**：平台 enqueue_wa_batch 在无不确定号可查时仍
+  会抽 1 个 declared 号产生批次（fetcher 侧 N=0 早退）→ 补
+  `if not numbers: return 0` + 测试（75 passed）
+- 结论：**终审通过，MERGE READY**（P2 熔断待 token 是唯一未完成项，
+  不影响合并）
