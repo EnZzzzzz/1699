@@ -1,0 +1,60 @@
+<frozen runpy>:128: RuntimeWarning: 'fetcher.cli.main' found in sys.modules after import of package 'fetcher.cli', but prior to execution of 'fetcher.cli.main'; this may result in unpredictable behaviour
+[0] 已把 3 个中断残留的 in_progress 店铺重置回 pending
+[1] 待抓取 2593 个，每个 worker 每批 1 个（不限批数，抓完 pending 为止），批间强制休息 15 分钟
+[2] 启动 1 个 worker（直连）
+    [launch] 检查 CloakBrowser 会话席位…
+    [launch] 启动 CloakBrowser 二进制（含 GeoIP 探测）…
+    [launch] 浏览器进程已启动，创建初始 view…
+    [cookie] identity=1688:direct，可用 151 个（库内共 177，已过期剔除 26，最近过期: 2026-08-31 02:46:57）
+[solve] 第 1/8 次尝试：回放 30 点轨迹，距离 258px（剩余未用轨迹 8 条）
+[judge] 检测到滑块报错文案: 
+验证失败，点击框体重试(error:JQSqD8)  
+    验证失败，
+[solve] 第 1 次失败
+[solve] 检测到'验证失败，点击重试'状态，已点击错误框，等待滑块重渲……
+[solve] 滑块已重新渲染
+[solve] 第 2/8 次尝试：回放 35 点轨迹，距离 258px（剩余未用轨迹 7 条）
+[judge] 检测到滑块报错文案: 
+验证失败，点击框体重试(error:JQSqD8)  
+    验证失败，
+[solve] 第 2 次失败
+[solve] 已连续失败 2 次，刷新页面重新等滑块……
+[solve] 第 3/8 次尝试：回放 42 点轨迹，距离 258px（剩余未用轨迹 6 条）
+[judge] 检测到滑块报错文案: 
+验证失败，点击框体重试(error:EahGB8)  
+    验证失败，
+[solve] 第 3 次失败
+[solve] 检测到'验证失败，点击重试'状态，已点击错误框，等待滑块重渲……
+[solve] 滑块已重新渲染
+[solve] 第 4/8 次尝试：回放 38 点轨迹，距离 258px（剩余未用轨迹 5 条）
+[judge] 检测到滑块报错文案: 
+验证失败，点击框体重试(error:EahGB8)  
+    验证失败，
+[solve] 第 4 次失败
+[solve] 已连续失败 4 次，刷新页面重新等滑块……
+[solve] 第 5/8 次尝试：回放 83 点轨迹，距离 258px（剩余未用轨迹 4 条）
+[judge] 检测到滑块报错文案: 
+验证失败，点击框体重试(error:5kprC8)  
+    验证失败，
+[solve] 第 5 次失败
+[solve] 检测到'验证失败，点击重试'状态，已点击错误框，等待滑块重渲……
+[solve] 滑块已重新渲染
+[solve] 第 6/8 次尝试：回放 19 点轨迹，距离 258px（剩余未用轨迹 3 条）
+[judge] 检测到滑块报错文案: 
+验证失败，点击框体重试(error:5kprC8)  
+    验证失败，
+[solve] 第 6 次失败
+[solve] 已连续失败 6 次，刷新页面重新等滑块……
+[solve] 第 7/8 次尝试：回放 50 点轨迹，距离 258px（剩余未用轨迹 2 条）
+[judge] 检测到滑块报错文案: 
+验证失败，点击框体重试(error:9Fh8i8)  
+    验证失败，
+[solve] 第 7 次失败
+[solve] 检测到'验证失败，点击重试'状态，已点击错误框，等待滑块重渲……
+[solve] 滑块已重新渲染
+[solve] 第 8/8 次尝试：回放 59 点轨迹，距离 258px（剩余未用轨迹 1 条）
+[judge] 检测到滑块报错文案: 
+验证失败，点击框体重试(error:9Fh8i8)  
+    验证失败，
+[solve] 第 8 次失败
+[solve] ✗ 第 1 层滑块 8 次尝试均未通过

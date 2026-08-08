@@ -284,6 +284,9 @@ class BrowserManager:
         session = Session(browser=browser,
                           channel=channel, req_proxies=req_proxies,
                           seed_kit=seed_kit)
+        # F3: 缓存进程级出口 IP（同进程同出口，多 view 复用）
+        if cfg.use_proxy:
+            session.extra["_exit_ip"] = exit_ip
         # 懒建初始 view（含 Cookie 装载 + 上下文创建 + warmup）
         site_domain = getattr(self.store, "domain", "")
         self.ensure_site(session, self.site_name, site_domain,
@@ -370,11 +373,20 @@ class BrowserManager:
 
         cfg = self.config
         # 确定 identity
-        if cfg.use_proxy and session.req_proxies is not None:
-            exit_ip = self._query_exit_ip_with_retry(session.req_proxies)
+        if cfg.use_proxy:
+            # F3: 边界防御——use_proxy=True 但 req_proxies 未注入不应静默直连
+            if session.req_proxies is None:
+                raise ExitIPError(
+                    f"use_proxy=True 但 session.req_proxies 为 None，"
+                    f"无法为 site={site_name} 确定出口 IP identity")
+            # F3: 进程级出口 IP 缓存（同进程同出口，C3 语义）
+            exit_ip = session.extra.get("_exit_ip")
             if exit_ip is None:
-                raise ExitIPError(f"经通道查询出口 IP 失败，"
-                                  f"隧道疑似不可用，无法绑定 Cookie identity")
+                exit_ip = self._query_exit_ip_with_retry(session.req_proxies)
+                if exit_ip is None:
+                    raise ExitIPError(f"经通道查询出口 IP 失败，"
+                                      f"隧道疑似不可用，无法绑定 Cookie identity")
+                session.extra["_exit_ip"] = exit_ip
             identity = f"{site_name}:{exit_ip}"
         else:
             identity = f"{site_name}:direct"
@@ -429,13 +441,18 @@ class BrowserManager:
 
     # ---- 预热 ----
 
-    def warmup(self, session: Session, site_name: str,
+    def warmup(self, session: Session, site_name: str | None = None,
                homepage: str = "https://www.1688.com/",
                stop: threading.Event | None = None,
                block_check=None, max_wait: float = 600.0) -> bool:
         """新 IP 的 Cookie 自动更新：访问首页触发站点现场签发并回写。
 
-        site_name: 要预热的 view 的站点注册名（session.views[site_name]）。
+        两种调用形态（F2 向后兼容）：
+        - 新形态：warmup(session, site_name, homepage=..., stop=...,
+          block_check=...) 操作 session.views[site_name]。
+        - 旧形态：warmup(session, homepage=..., stop=...,
+          block_check=...) site_name=None → 路由到活动/唯一 view。
+
         block_check: fn(page) -> str | None 的风控检测回调（站点插件提供，
         如 sites.alibaba1688.page_block_reason）；None 时跳过检测。
         返回 True 表示预热顺利（含过证后）；未过证/失败返回 False
@@ -443,6 +460,20 @@ class BrowserManager:
         homepage: 落地页；None 归一到默认 1688 首页（兼容旧调用不传参）。
         """
         homepage = homepage or "https://www.1688.com/"
+        # F2: site_name=None → 路由到活动/唯一 view（向后兼容旧调用）
+        if site_name is None:
+            resolved = session._active_view()
+            if resolved is None:
+                self.log("    [warmup] 无活动 view，跳过预热")
+                return False
+            # 反查 site_name（遍历 views 找对应 view）
+            for sn, v in session.views.items():
+                if v is resolved:
+                    site_name = sn
+                    break
+            else:
+                self.log("    [warmup] 无法确定 site_name，跳过预热")
+                return False
         view = session.views[site_name]
         page, ctx, identity = view.page, view.context, view.identity
         headed = not self.config.headless

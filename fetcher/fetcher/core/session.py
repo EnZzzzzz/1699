@@ -131,26 +131,38 @@ class Session:
     def use_proxy(self) -> bool:
         return self.channel is not None and self.channel.server is not None
 
+    # ---- Cookie 回写辅助（F4：DRY 共用逻辑）----
+
+    @staticmethod
+    def _write_view_cookies(view: SiteView, store, log) -> None:
+        """按 view.domain 过滤后回写该 view 的 Cookie 到 store。
+
+        domain 过滤逻辑：优先 view.domain，否则回落 store.domain，
+        确保多站共存时各站 Cookie 入各桶（与 save_from_context 同语义）。
+        """
+        if store is None or view.context is None:
+            return
+        domain_filter = view.domain or getattr(store, "domain", "")
+        cookies = [c for c in view.context.cookies()
+                   if domain_filter in c.get("domain", "")]
+        if cookies:
+            store.save(view.identity, cookies)
+
     # ---- 两层关闭 ----
 
     def close_site(self, site: str, store=None, log=None):
         """关闭单个站点的 view：回写该 view Cookie（按 view.domain 过滤）→
-        关 context → 从 views 移除。
+        关 context → 从 views 移除。供 P3-3 SwapIP 两阶段用。
         """
         view = self.views.get(site)
         if view is None:
             return
         # 回写 Cookie（按 view.domain 过滤）
-        if store is not None and view.context is not None:
-            try:
-                domain_filter = view.domain or getattr(store, "domain", "")
-                cookies = [c for c in view.context.cookies()
-                           if domain_filter in c.get("domain", "")]
-                if cookies:
-                    store.save(view.identity, cookies)
-            except Exception as e:  # noqa: BLE001 - 回写失败不阻断关闭
-                if log:
-                    log(f"[!] close_site({site}) Cookie 回写失败: {e}")
+        try:
+            self._write_view_cookies(view, store, log)
+        except Exception as e:  # noqa: BLE001 - 回写失败不阻断关闭
+            if log:
+                log(f"[!] close_site({site}) Cookie 回写失败: {e}")
         # 关 context
         if view.context is not None:
             try:
@@ -169,19 +181,18 @@ class Session:
         任何退出路径都应走这里，保证服务端会话租约及时释放、
         Cookie 信任链不丢。Session 字段（views/identity 等）保留
         不变，供调用方事后检查（与旧版 close 语义一致）。
+
+        注意：close() 不清除 views——view 中的 page/context 等
+        Playwright 对象在 browser.close() 后已失效，但 views 字典
+        本身保留供 _cleanup 等调用方读取 identity 等管理字段。
         """
         # 遍历 views 回写 Cookie（不通过 close_site，保留 views 供事后检查）
         for _site, view in self.views.items():
-            if store is not None and view.context is not None:
-                try:
-                    domain_filter = view.domain or getattr(store, "domain", "")
-                    cookies = [c for c in view.context.cookies()
-                               if domain_filter in c.get("domain", "")]
-                    if cookies:
-                        store.save(view.identity, cookies)
-                except Exception as e:  # noqa: BLE001 - 回写失败不阻断关闭
-                    if log:
-                        log(f"[!] close() Cookie 回写失败(view={_site}): {e}")
+            try:
+                self._write_view_cookies(view, store, log)
+            except Exception as e:  # noqa: BLE001 - 回写失败不阻断关闭
+                if log:
+                    log(f"[!] close() Cookie 回写失败(view={_site}): {e}")
         if self.browser is not None:
             try:
                 self.browser.close()
