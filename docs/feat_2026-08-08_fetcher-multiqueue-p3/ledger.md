@@ -53,3 +53,10 @@
   - fix round 1/5: review 需修复——C1 (Critical) seed_x5sec 多站点路径 0 覆盖→补两站点+sites 非空 A/B 断言；I2 Session 状态迁移字段逐一拷贝脆弱→copy_state_from 集中迁移；I3 缺 clear_needs_relaunch(site)→加 API 成对 + 单测；M4 无效测试→改 API；M5 类型注解；全部 ADDRESSED 零新破坏
   - **Phase 2（P3-2）完成**：Session views 多 context + ensure_site 懒建 + needs_relaunch + 种子池 (worker,site)；395 passed；单站点等价（smoke-step2.1/smoke-fix1-raw.txt）
   - Step 2.2: minor (deferred): 无
+
+### P3-3（QueueRouter + SwapIP）
+
+- Step 3.1: complete (commits 6312302..f86b80b, fix round 1/5 clean)
+  - 实现：QueueRouter 取代 DaemonTaskProxy（git rm daemon_task.py）；QueueSpec 补全（task/topup/domain_suffix）；acquire 三段式（claim_next_eligible→逐队列 topup（冷却到期才补）→condvar）；on_success/on_giveup 路由 + finish；budget_for 协议（Task 基类默认 ip_request_budget）；loop _bind_item_site（sites/policies 注入，per-item 切 inspector/policy）；Engine sites/policies 透传；CLI --queues（删 --queue）+ reset 逐 site domain 过滤（提取 reset_daemon_state）；TDD 29 新用例（全量 395→404 passed）
+  - fix round 1/5: review 需修复——I1 Step 1.2 纯函数单测被整段删除→从 git 找回恢复（12 边界用例）；I2 reset 逐 site 无测试→补两 domain 各自重置测试；I3 --queues 硬编码→_build_registry 动态派生 + choices 动态；M4/M5/M6（注释/payload id 确认无依赖移除/condvar_timeout 删除）；全部 ADDRESSED（全量 404→420 passed）
+  - Step 3.1: minor (deferred): 无

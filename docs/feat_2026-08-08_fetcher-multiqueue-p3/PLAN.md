@@ -60,7 +60,7 @@
 
 **准入**：P3-1、P3-2 完成。**完成标准**：`daemon --queues` 多队列装配跑通（先 1688 contact + mic contact 两条同构队列）；SwapIP 无头两阶段单测。
 
-- [ ] **Step 3.1** QueueRouter + 注册表装配（估 40min，依赖 1.3、2.3，状态 pending）
+- [x] **Step 3.1** QueueRouter + 注册表装配（估 40min，依赖 1.3、2.3，状态 pending）
   - `control/queue_router.py`：QueueSpec 注册表、acquire 三段式（claim_next_eligible→topup→condvar）、on_success/on_giveup 路由 + finish/release 回写、active_site 绑定、每 site Policy 装配；替换 DaemonTaskProxy；`cli/main.py` daemon 分支 `--queues`（choices+默认全量，删 `--queue`）；启动 reset 逐 site domain 过滤修复。
   - 验收：TDD；`test_daemon_task.py` 重写为 router 语义；双队列（1688 contact + mic contact）装配单测。
 - [ ] **Step 3.2** SwapIP 两阶段（估 30min，依赖 3.1，状态 pending）
