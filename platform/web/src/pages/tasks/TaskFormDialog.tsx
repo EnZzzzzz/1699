@@ -24,6 +24,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
+import { Textarea } from '@/components/ui/textarea'
 import { ChevronDown, Save, Terminal, Trash2 } from 'lucide-react'
 import { TASK_TYPE_OPTIONS, taskTypeLabel } from './task-ui'
 
@@ -75,6 +76,13 @@ const ALL_NUM_KEYS = [...BASIC_FIELDS, ...RHYTHM_FIELDS, ...RETRY_FIELDS, ...MIS
 // 高级区包含的数字键（模板加载命中时自动展开高级区）
 const ADVANCED_NUM_KEYS = [...RHYTHM_FIELDS, ...RETRY_FIELDS, ...MISC_NUM_FIELDS].map((f) => f.key)
 
+// fb_discover 新建时预填的默认关键词矩阵（SPEC §7.4）
+const FB_DISCOVER_DEFAULT_KEYWORDS = `site:facebook.com/groups 外贸 whatsapp
+site:facebook.com/groups 跨境电商 whatsapp
+site:facebook.com/groups china sourcing whatsapp
+site:facebook.com/groups 货代 微信
+site:facebook.com/groups 亚马逊卖家 微信`
+
 interface TaskFormDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -103,6 +111,13 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
   // P4 批次采集专用：limit（contact=条数、shop/company=页数）
   const [batchLimit, setBatchLimit] = useState('')
 
+  // P4 fb_discover 专用
+  const [fbDiscoverKeywords, setFbDiscoverKeywords] = useState('')
+  const [fbDiscoverPages, setFbDiscoverPages] = useState('')
+  // P4 fb_group 专用
+  const [fbGroupProvider, setFbGroupProvider] = useState<'brightdata' | 'apify'>('brightdata')
+  const [fbGroupPostsPerGroup, setFbGroupPostsPerGroup] = useState('')
+
   // 命令预览
   const [preview, setPreview] = useState<TaskPreview | null>(null)
 
@@ -121,6 +136,8 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
   const isBatch = ['1688_shop', '1688_company', '1688_contact',
                    'madeinchina_shop', 'madeinchina_contact',
                    'fb_post'].includes(type)
+  const isFbDiscover = type === 'fb_discover'
+  const isFbGroup = type === 'fb_group'
 
   const setValue = (key: string, v: string) =>
     setValues((prev) => ({ ...prev, [key]: v }))
@@ -147,6 +164,11 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
         : [],
     )
     if (ADVANCED_NUM_KEYS.some((k) => typeof p[k] === 'number')) setAdvancedOpen(true)
+    // fb_discover / fb_group 回填
+    setFbDiscoverKeywords(typeof p.keywords === 'string' ? p.keywords : '')
+    setFbDiscoverPages(typeof p.pages === 'number' ? String(p.pages) : '')
+    setFbGroupProvider(p.provider === 'apify' ? 'apify' : 'brightdata')
+    setFbGroupPostsPerGroup(typeof p.posts_per_group === 'number' ? String(p.posts_per_group) : '')
   }
 
   // 打开时初始化：编辑模式回填 task.params，新建模式重置为空白默认
@@ -169,6 +191,11 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
       setRetryFailed(false)
       setWaLimit('')
       setSelectedAccounts([])
+      setFbDiscoverKeywords(FB_DISCOVER_DEFAULT_KEYWORDS)
+      setFbDiscoverPages('1')
+      setFbGroupProvider('brightdata')
+      setFbGroupPostsPerGroup('50')
+      setBatchLimit('')
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, task])
@@ -218,6 +245,34 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
       if (riRaw !== '' && Number.isInteger(riN) && riN > 0) params.repeat_interval = riN
       return params
     }
+    if (isFbDiscover) {
+      const params: TaskParams = {}
+      const kw = fbDiscoverKeywords.trim()
+      if (kw !== '') params.keywords = kw
+      const pagesN = Number(fbDiscoverPages)
+      if (fbDiscoverPages.trim() !== '' && Number.isInteger(pagesN) && pagesN >= 1 && pagesN <= 10) {
+        params.pages = pagesN
+      }
+      const riRaw = (values.repeat_interval ?? '').trim()
+      const riN = Number(riRaw)
+      if (riRaw !== '' && Number.isInteger(riN) && riN > 0) params.repeat_interval = riN
+      return params
+    }
+    if (isFbGroup) {
+      const params: TaskParams = { provider: fbGroupProvider }
+      const ppgN = Number(fbGroupPostsPerGroup)
+      if (fbGroupPostsPerGroup.trim() !== '' && Number.isInteger(ppgN) && ppgN >= 1) {
+        params.posts_per_group = ppgN
+      }
+      const limitN = Number(batchLimit)
+      if (batchLimit.trim() !== '' && Number.isInteger(limitN) && limitN >= 0) {
+        params.limit = limitN
+      }
+      const riRaw = (values.repeat_interval ?? '').trim()
+      const riN = Number(riRaw)
+      if (riRaw !== '' && Number.isInteger(riN) && riN > 0) params.repeat_interval = riN
+      return params
+    }
     const params: TaskParams = { use_proxy: useProxy, headless, auto_solve: autoSolve }
     for (const key of ALL_NUM_KEYS) {
       const raw = (values[key] ?? '').trim()
@@ -243,9 +298,11 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
       JSON.stringify({
         type, values, channels, useProxy, headless, autoSolve, retryFailed,
         waLimit, selectedAccounts,
+        fbDiscoverKeywords, fbDiscoverPages, fbGroupProvider, fbGroupPostsPerGroup,
       }),
     [type, values, channels, useProxy, headless, autoSolve, retryFailed,
-      waLimit, selectedAccounts],
+      waLimit, selectedAccounts,
+      fbDiscoverKeywords, fbDiscoverPages, fbGroupProvider, fbGroupPostsPerGroup],
   )
 
   // 命令预览：防抖 500ms 调 preview 接口，失败静默不阻塞
@@ -277,6 +334,33 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
         const n = Number(waLimit)
         if (!Number.isInteger(n) || n < 0) {
           toast.error('查号上限需为不小于 0 的整数（0 = 全部未查）')
+          return false
+        }
+      }
+      return true
+    }
+    if (isFbDiscover) {
+      if (fbDiscoverPages.trim() !== '') {
+        const n = Number(fbDiscoverPages)
+        if (!Number.isInteger(n) || n < 1 || n > 10) {
+          toast.error('每词页数需为 1-10 的整数')
+          return false
+        }
+      }
+      return true
+    }
+    if (isFbGroup) {
+      if (fbGroupPostsPerGroup.trim() !== '') {
+        const n = Number(fbGroupPostsPerGroup)
+        if (!Number.isInteger(n) || n < 1) {
+          toast.error('每群帖数上限需为不小于 1 的整数')
+          return false
+        }
+      }
+      if (batchLimit.trim() !== '') {
+        const n = Number(batchLimit)
+        if (!Number.isInteger(n) || n < 0) {
+          toast.error('群数上限需为不小于 0 的整数（0 = 不限）')
           return false
         }
       }
@@ -558,6 +642,100 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
                 )}
                 <p className="text-xs text-muted-foreground">全不选 = 仅默认账号；多选按批轮换</p>
               </div>
+            </>
+          ) : isFbDiscover ? (
+            <>
+              <div className="space-y-2">
+                <Label htmlFor="fb-discover-kw">搜索关键词</Label>
+                <Textarea
+                  id="fb-discover-kw"
+                  className="min-h-24 font-mono text-xs"
+                  value={fbDiscoverKeywords}
+                  placeholder="每行一个查询词"
+                  onChange={(e) => setFbDiscoverKeywords(e.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  DDG SERP 单 IP 限流（实测约 2 连查即封、约 4 分钟恢复），查询间有节奏冷却，整批约 8-15 分钟跑完
+                </p>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-2">
+                  <Label htmlFor="fb-discover-pages">每词页数</Label>
+                  <Input
+                    id="fb-discover-pages"
+                    type="number"
+                    min={1}
+                    max={10}
+                    value={fbDiscoverPages}
+                    placeholder="1"
+                    onChange={(e) => setFbDiscoverPages(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="fb-discover-repeat">循环间隔（秒）</Label>
+                  <Input
+                    id="fb-discover-repeat"
+                    type="number"
+                    min={0}
+                    value={values.repeat_interval ?? ''}
+                    placeholder="0 = 不循环"
+                    onChange={(e) => setValue('repeat_interval', e.target.value)}
+                  />
+                </div>
+              </div>
+            </>
+          ) : isFbGroup ? (
+            <>
+              <div className="space-y-2">
+                <Label>数据来源</Label>
+                <Select value={fbGroupProvider} onValueChange={(v) => setFbGroupProvider(v as 'brightdata' | 'apify')}>
+                  <SelectTrigger className="h-8 font-medium">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="brightdata">Bright Data（默认）</SelectItem>
+                    <SelectItem value="apify">Apify</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-2">
+                  <Label htmlFor="fb-group-ppg">每群帖数上限</Label>
+                  <Input
+                    id="fb-group-ppg"
+                    type="number"
+                    min={1}
+                    value={fbGroupPostsPerGroup}
+                    placeholder="50"
+                    onChange={(e) => setFbGroupPostsPerGroup(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="fb-group-limit">群数上限</Label>
+                  <Input
+                    id="fb-group-limit"
+                    type="number"
+                    min={0}
+                    value={batchLimit}
+                    placeholder="留空 = 不限"
+                    onChange={(e) => setBatchLimit(e.target.value)}
+                  />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="fb-group-repeat">循环间隔（秒）</Label>
+                <Input
+                  id="fb-group-repeat"
+                  type="number"
+                  min={0}
+                  value={values.repeat_interval ?? ''}
+                  placeholder="0 = 不循环"
+                  onChange={(e) => setValue('repeat_interval', e.target.value)}
+                />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Bright Data 免费层 5K 条/月额度；provider key 走环境变量 BRIGHTDATA_API_KEY / APIFY_TOKEN（缺失时该群采集失败）
+              </p>
             </>
           ) : (
             <>
