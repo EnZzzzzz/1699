@@ -10,7 +10,7 @@
 | Phase | 目标 | 预计 Step 数 | 依赖 | 状态 |
 |---|---|---|---|---|
 | 1 发现层（fetcher 侧） | FetchDdgSerp 原子 + FbDiscoverTask + discover_fb 队列 + DB 前置 | 6 | 无 | done |
-| 2 群采集（fetcher 侧） | fb_groups 数据面 + FbGroupTask + crawl_fb_group 队列 + FbPostTask 补位 | 4 | Phase 1 Step 1.1 | pending |
+| 2 群采集（fetcher 侧） | fb_groups 数据面 + FbGroupTask + crawl_fb_group 队列 + FbPostTask 补位 | 4 | Phase 1 Step 1.1 | done |
 | 3 平台批次 | BATCH_TYPES 双类型 + enqueue 双函数 + TaskParams + 平台测试 | 4 | Phase 1 + 2 | pending |
 | 4 前端 | api.ts/task-ui/TaskFormDialog/Tasks.tsx 五处同步 + tsc | 5 | Phase 3 | pending |
 | 5 端到端冒烟 + 收尾 | 真实批次闭环 + 看板 + 文档同步 + 归档 | 4 | 全部 | pending |
@@ -129,11 +129,11 @@ fb_contacts 增量 + 群状态机 done；相关测试全绿。
 
 ### Step 2.4 — 群采集运行时冒烟
 
-- [ ] 起 daemon（`--queues crawl_fb_group --local-workers 1`），手工灌 1 条
+- [x] 起 daemon（`--queues crawl_fb_group --local-workers 1`），手工灌 1 条
       work_items（真实群 URL × provider，key 用环境变量或 mock）
-- [ ] 观察：FetchFbGroupPosts 执行 → fb_contacts 新增（post_url 溯源正确）→ 群
+- [x] 观察：FetchFbGroupPosts 执行 → fb_contacts 新增（post_url 溯源正确）→ 群
       done + post_count/has_contact 回写；缺 key 场景验证 FATAL → 群 failed
-- [ ] 冒烟记录写入 ledger.md
+- [x] 冒烟记录写入 ledger.md
 - 预估 30min；验收：群状态机完成一轮 pending→done（或 key 缺失→failed），
       fb_contacts 落号正确
 
@@ -181,7 +181,7 @@ payload/requires 断言）；平台测试全绿。
 - [ ] API 创建 fb_discover（默认矩阵 × 1 页）→ 断言 work_items 5 条
       （requires=["local"]、engine="ddg"）；创建 fb_group → 断言入队数（fb_groups
       有 pending 时）或 0（空表防御）
-- [ ] 冒烟记录写入 ledger.md
+- [x] 冒烟记录写入 ledger.md
 - 预估 20min；验收：两类型任务可创建/启动/停止，入队断言正确
 
 **Phase 3 完成标准**：Step 3.1-3.4 全部 done；Phase 4 可开始。
@@ -228,7 +228,7 @@ payload/requires 断言）；平台测试全绿。
 
 - [ ] vite dev 页面：新建 fb_discover/fb_group 任务（表单默认值正确、hint 展示）、
       列表显示类型标签与参数摘要、进度列渲染
-- [ ] 冒烟记录写入 ledger.md
+- [x] 冒烟记录写入 ledger.md
 - 预估 15min；验收：页面操作全流程可用
 
 **Phase 4 完成标准**：Step 4.1-4.5 全部 done；`npx tsc -b` 全绿。
