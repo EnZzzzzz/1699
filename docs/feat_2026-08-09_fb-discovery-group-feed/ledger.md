@@ -85,3 +85,18 @@
 - Step 1.1 fix round 1/5（3 addressed, 0 open — source 语义收窄 + schema 契约测试 +
   source 不变断言; commits b401560..96129f8），re-review 干净
 - Step 1.1: complete (commits dbab0da..96129f8, review clean)
+
+## Step 1.2 执行记录
+
+- implementer commit `274a409`（DONE_WITH_CONCERNS：① OK results 保留 kind=None 非 FB
+  条目不过滤——与 SPEC「返回全部有机结果」一致，reviewer 确认合规；② sample_max<60 抬到
+  地板——防 uniform ValueError，合理；③ sample_max 缺省 sample_min'+20——SPEC 未定义，
+  可接受）
+- reviewer：spec ✅，1 Important（or 反模式）+ 4 Minor
+- Minor 记 deferred：① 5xx 测试未断言节奏 wait ② RESULT_A_RE 用 re.S 的注释 ③
+  _http_get timeout 类型标注 int|float ④ 双 max 冗余
+- 修复循环 round 1：Important「or 吞显式 0」派发
+- Step 1.2 fix round 1/5（1 addressed, 0 open — or 吞显式 0 反模式三处修正; commits
+  274a409..83c75e2），re-review 干净；re-review 补 Minor（非数值输入 ValueError 边缘路径，
+  记 deferred 留终审）
+- Step 1.2: complete (commits 4600ca1..83c75e2, review clean)

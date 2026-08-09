@@ -42,16 +42,16 @@ work_items 后真实抓取 1-2 词 → fb_posts/fb_groups 出现增量；相关�
 
 ### Step 1.2 — FetchDdgSerp 原子 + 纯函数（TDD）
 
-- [ ] `fetcher/fetcher/atoms/facebook_discover.py`：
+- [x] `fetcher/fetcher/atoms/facebook_discover.py`：
       `_http_get(url, timeout) -> (status, html)`（urllib + UA + gzip 解压，模块级
       便于 mock）
-- [ ] `parse_serp_results(html) -> list[{"url","title"}]`（抽 result__a → uddg 解码
+- [x] `parse_serp_results(html) -> list[{"url","title"}]`（抽 result__a → uddg 解码
       → 标题净化；真实样本 spike/ddg_sample_1.html 截取 fixture）
-- [ ] `classify_fb_url(url) -> ("post"|"group", group_id, group_url) | None`
+- [x] `classify_fb_url(url) -> ("post"|"group", group_id, group_url) | None`
       （POST_RE / GROUP_RE 双正则，SPEC §5.1）
-- [ ] `FetchDdgSerp` 原子 run：params 校验、节奏（sample floor 60 + 202 退避
+- [x] `FetchDdgSerp` 原子 run：params 校验、节奏（sample floor 60 + 202 退避
       uniform(180,240)）、Outcome 映射（OK/EMPTY/BLOCKED/NET_ERROR/SKIPPED/FATAL）
-- [ ] 测试（`fetcher/tests/test_facebook_discover.py`）：parse 样本结构/标题实体、
+- [x] 测试（`fetcher/tests/test_facebook_discover.py`）：parse 样本结构/标题实体、
       classify 各形态（帖/群主页/slug 群/视频/非 FB）、mock HTTP 全 outcome 路径、
       202→BLOCKED、停止→SKIPPED、节奏 wait 次数
 - 预估 60min；验收：新测试全绿 + `test_facebook.py`/`test_facebook_group.py` 回归
