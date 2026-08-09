@@ -274,3 +274,11 @@
 - implementer commit `a8edfe3`（DONE，tsc 全绿）
 - reviewer：spec ✅，0 问题
 - Step 4.1: complete (commits 95fd521..a8edfe3, review clean)
+
+## Step 4.2 执行记录
+
+- implementer commit `9c20140`（DONE，tsc 全绿 + esbuild 冒烟 7 组用例）
+- reviewer：spec ✅，0 Critical/Important，2 Minor
+- Minor 记 deferred：① task-ui.tsx:150 注释「空视为 1」与代码「默认矩阵」行为不一
+  ② 空 keywords + 显式 pages>1 显示「默认矩阵 × M 页」vs 裁定示例 × 1 页（实际场景罕见）
+- Step 4.2: complete (commits 15a0d90..9c20140, review clean)

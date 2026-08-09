@@ -295,8 +295,8 @@ payload/requires 断言）；平台测试全绿。
 
 ### Step 4.2 — task-ui.tsx
 
-- [ ] TASK_TYPE_OPTIONS 追加两项（label「Facebook 帖子发现」/「Facebook 群帖采集」）
-- [ ] paramsSummary 追加两分支（N 词 × M 页；provider=… 每群≤N帖 群数上限=M）
+- [x] TASK_TYPE_OPTIONS 追加两项（label「Facebook 帖子发现」/「Facebook 群帖采集」）
+- [x] paramsSummary 追加两分支（N 词 × M 页；provider=… 每群≤N帖 群数上限=M）
 - 预估 15min；验收：tsc 通过 + 类型标签渲染
 
 ### Step 4.3 — TaskFormDialog.tsx 两独立表单分支（主要改动面）
