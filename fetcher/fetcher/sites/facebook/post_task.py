@@ -131,6 +131,15 @@ class FbPostTask(Task):
         n_new = db.save_fb_contacts(item["url"], group_id, phones)
         has_contact = bool(data.get("has_contact"))
         db.mark_fb_post_done(item["url"], has_contact)
+        # 每抓到一帖 = 发现一个群（种子路径②，SPEC §5.5）：INSERT OR IGNORE
+        # 幂等，不触碰既有群状态机；source 显式传 fb_post（缺省 ddg）
+        if group_id:
+            db.upsert_fb_groups([{
+                "url": f"https://www.facebook.com/groups/{group_id}",
+                "group_id": group_id,
+                "name": item.get("name") or "",
+                "source": "fb_post",
+            }])
         # 侧车副产物（微信/TG/邀请链接）：非空才设，QueueRouter._finish
         # 经 ctx.state["result_json"] 落 work_items.result_json（SPEC §8）
         sidecar = {}

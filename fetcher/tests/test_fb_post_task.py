@@ -167,6 +167,58 @@ class FbPostTaskTest(unittest.TestCase):
                              _result())
         self.assertNotIn("result_json", ctx.state)
 
+    def test_on_success_upserts_group_row(self):
+        """抓帖后 fb_groups 出现派生群行（SPEC §5.5：每帖=发现一群）。"""
+        _seed_post(self.db)
+        ctx = self._ctx()
+        self.task.on_success(ctx, {"url": POST_URL, "domain": GROUP_URL,
+                                   "name": "Shenzhen Expats 2026"}, _result())
+        rows = self.db.conn.execute(
+            "SELECT * FROM fb_groups").fetchall()
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["url"], GROUP_URL)
+        self.assertEqual(row["group_id"], "185879310028412")
+        self.assertEqual(row["name"], "Shenzhen Expats 2026")
+        self.assertEqual(row["source"], "fb_post")
+        self.assertEqual(row["status"], "pending")
+
+    def test_on_success_group_name_defaults_to_empty(self):
+        """payload 无 name 时群名缺省空串（name 溯源 or ""）。"""
+        _seed_post(self.db)
+        ctx = self._ctx()
+        self.task.on_success(ctx, {"url": POST_URL, "domain": GROUP_URL},
+                             _result())
+        row = self.db.conn.execute(
+            "SELECT name, source FROM fb_groups").fetchone()
+        self.assertEqual(row[0], "")
+        self.assertEqual(row[1], "fb_post")
+
+    def test_on_success_no_group_id_zero_writes(self):
+        """item 无 domain/group_id 时 fb_groups 零写入（幂等边界）。"""
+        _seed_post(self.db)
+        ctx = self._ctx()
+        self.task.on_success(ctx, {"url": POST_URL}, _result())
+        n = self.db.conn.execute(
+            "SELECT COUNT(*) FROM fb_groups").fetchone()[0]
+        self.assertEqual(n, 0)
+
+    def test_on_success_repeat_fetch_is_idempotent(self):
+        """重复抓同群帖：INSERT OR IGNORE 不新增行、不动既有状态。"""
+        _seed_post(self.db)
+        ctx = self._ctx()
+        item = {"url": POST_URL, "domain": GROUP_URL, "name": "G"}
+        self.task.on_success(ctx, item, _result())
+        # 二次抓帖：已有行不动（status/name 保持采集进度）
+        self.task.on_success(ctx, item, _result())
+        rows = self.db.conn.execute(
+            "SELECT COUNT(*) FROM fb_groups").fetchone()[0]
+        self.assertEqual(rows, 1)
+        row = self.db.conn.execute(
+            "SELECT name, status FROM fb_groups").fetchone()
+        self.assertEqual(row[0], "G")
+        self.assertEqual(row[1], "pending")
+
     def test_queue_router_finish_writes_sidecar_to_result_json(self):
         """侧车经 QueueRouter._finish 真正落 work_items.result_json
         （SPEC §8 观测副产物机制，触达 router 钩子代码）。"""
