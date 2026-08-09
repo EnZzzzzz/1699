@@ -12,7 +12,7 @@
 | 1 发现层（fetcher 侧） | FetchDdgSerp 原子 + FbDiscoverTask + discover_fb 队列 + DB 前置 | 6 | 无 | done |
 | 2 群采集（fetcher 侧） | fb_groups 数据面 + FbGroupTask + crawl_fb_group 队列 + FbPostTask 补位 | 4 | Phase 1 Step 1.1 | done |
 | 3 平台批次 | BATCH_TYPES 双类型 + enqueue 双函数 + TaskParams + 平台测试 | 4 | Phase 1 + 2 | done |
-| 4 前端 | api.ts/task-ui/TaskFormDialog/Tasks.tsx 五处同步 + tsc | 5 | Phase 3 | pending |
+| 4 前端 | api.ts/task-ui/TaskFormDialog/Tasks.tsx 五处同步 + tsc | 5 | Phase 3 | done |
 | 5 端到端冒烟 + 收尾 | 真实批次闭环 + 看板 + 文档同步 + 归档 | 4 | 全部 | pending |
 
 依赖关系：P1 → P2（DB 共享）→ P3 → P4 → P5；P1/P2 其余部分可并行。
@@ -320,7 +320,7 @@ payload/requires 断言）；平台测试全绿。
 
 ### Step 4.5 — 前端运行时冒烟
 
-- [ ] vite dev 页面：新建 fb_discover/fb_group 任务（表单默认值正确、hint 展示）、
+- [x] vite dev 页面：新建 fb_discover/fb_group 任务（表单默认值正确、hint 展示）、
       列表显示类型标签与参数摘要、进度列渲染
 - [x] 冒烟记录写入 ledger.md
 - 预估 15min；验收：页面操作全流程可用

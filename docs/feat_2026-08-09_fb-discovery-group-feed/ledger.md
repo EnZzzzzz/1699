@@ -318,3 +318,9 @@
 - 验收判定：满足（PLAN checkbox 两项均达成）
 - 观测：打开 Dialog 时出现 React 19 既存 ref 警告（shadcn Slot 组件，非本 Step 引入，改动前
   文件即存在）
+
+## Phase 4 完成（Step 4.1-4.5 全 done）
+
+- 冒烟非阻塞发现（终审分诊）：React 19 + shadcn Slot 的既存 ref 警告（dialog/select
+  改动在旧提交 a1e5c8a，非本 feature 引入）
+- Phase 4 完成标准满足：npx tsc -b 全绿、表单可创建两类型任务、既有类型零回归。
