@@ -146,16 +146,22 @@ class FetchDdgSerp:
             return ActionResult.fatal(f"page 参数无效: {raw_page!r}")
         if page < 1:
             return ActionResult.fatal(f"page 必须 ≥ 1（收到 {page}）")
-        timeout = int(params.get("timeout") or 30)
+        raw_timeout = params.get("timeout")
+        timeout = int(raw_timeout) if raw_timeout is not None else 30
         # 查询间节奏：task 从 ctx.config 透传 sample_min/max（缺省 13-20s），
         # 原子强制下限 MIN_SAMPLE_FLOOR；上限低于地板时同样抬到地板，避免
-        # uniform(a>b) ValueError（对齐 §8.1 设计数字）。
-        sample_min = max(
-            float(params.get("sample_min") or MIN_SAMPLE_FLOOR),
-            MIN_SAMPLE_FLOOR)
-        sample_max = max(
-            float(params.get("sample_max") or (sample_min + 20.0)),
-            sample_min)
+        # uniform(a>b) ValueError（对齐 §8.1 设计数字）。用显式 None 判断而非
+        # `or` 缺省（or 会吞掉显式 0）：sample_min=0 由地板抬到 60、
+        # sample_max=0 由 max(sample_max, sample_min) 抬到 60；timeout=0 原样
+        # 传给 _http_get（合法显式值，不转缺省 30）。
+        raw_min = params.get("sample_min")
+        sample_min = (float(raw_min) if raw_min is not None
+                      else MIN_SAMPLE_FLOOR)
+        sample_min = max(sample_min, MIN_SAMPLE_FLOOR)
+        raw_max = params.get("sample_max")
+        sample_max = (float(raw_max) if raw_max is not None
+                      else (sample_min + 20.0))
+        sample_max = max(sample_max, sample_min)
 
         url = f"{DDG_HTML}?q={urllib.parse.quote(query)}&s={(page - 1) * 10}"
         ctx.log(f"    ...DDG 查询「{query}」第 {page} 页")

@@ -315,6 +315,35 @@ class TestAtomHttpOutcomes(unittest.TestCase):
         self.assertGreaterEqual(ctx.waits[0], 90)
         self.assertLessEqual(ctx.waits[0], 120)
 
+    def test_timeout_zero_passed_through(self):
+        """显式 timeout=0 不被 or 缺省吞掉（0 or 30 → 30 是反模式）。
+
+        None 判断语义：显式 0 是合法输入，原样传给 _http_get。
+        """
+        with mock.patch.object(fd, "_http_get",
+                               return_value=(200, _sample_html())) as m:
+            ctx = _Ctx()
+            r = _run({"query": "x", "timeout": 0}, ctx=ctx)
+        self.assertIs(r.outcome, Outcome.OK)
+        self.assertEqual(m.call_args[1]["timeout"], 0)
+
+    def test_sample_zero_not_swallowed_by_or_default(self):
+        """显式 sample_min=0/sample_max=0 不被 or 缺省吞掉。
+
+        直接断言传给 random.uniform 的区间（参数解析层，确定性）：
+        None 判断语义下 sample_min=0 被 floor 抬到 60、sample_max=0 被
+        max(sample_max, sample_min) 抬到 60 → uniform(60.0, 60.0)；
+        or 反模式下 sample_max 走 `0 or (60+20)` → uniform(60.0, 80.0)。
+        """
+        with mock.patch.object(fd, "_http_get",
+                               return_value=(200, _sample_html())):
+            with mock.patch.object(fd.random, "uniform") as uni:
+                uni.return_value = 61.0
+                ctx = _Ctx()
+                _run({"query": "x", "sample_min": 0, "sample_max": 0},
+                     ctx=ctx)
+        self.assertEqual(uni.call_args[0], (60.0, 60.0))
+
 
 class _FakeResp:
     """最小 urllib 响应替身：可带 gzip 头。"""
