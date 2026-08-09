@@ -352,3 +352,42 @@
   SPEC §10-5 ✅ dispatcher 看板两条队列出现
 - 状态：**BLOCKED**（daemon 本地消费者停滞，验收 2/4 未完整）
 - 详报：task-5.1-report.md
+
+## Step 5.1 收尾恢复 + 验收 4 补验（2026-08-10 00:00-00:05，第 2 阶段）
+
+- **根因（协调者已定位，非 feature 代码 bug）**：fetcher/control/local_loop.py 的
+  FATAL 分支 on_giveup(fatal)→set_status→break 结束 _local_worker 线程；engine.run 主循环
+  只 join 不重启（wa_check 注释「FATAL→停止」= 不可自愈环境错误停消费者）。fb_group 缺
+  BRIGHTDATA_API_KEY 的 FATAL 连坐停掉 discover_fb（不需要 key）。不改代码。
+- **恢复 daemon（运维，无代码改动）**：stop.sh 停旧（SIGTERM 父 30019 + 兜底 pkill；子
+  30020 需 kill -9 补刀）→ `nohup bash platform/start.sh > /tmp/fb_recover_start.log 2>&1 &`
+  起新（bash 工具直接调用 start.sh 会挂超时并连带杀新进程）。新 daemon 00:00 启动：
+  9 条 `[daemon] 队列` 注册（crawl_1688_contact / crawl_fb_post / crawl_mic_contact /
+  crawl_mic_shop / crawl_1688_shop / crawl_1688_company / wa_check / discover_fb /
+  crawl_fb_group）+ `[2] 启动 1 个 worker（直连）` + `[2] 另启动 2 个 local 消费者`；
+  consumer_status local0/local1（kind=local）心跳持续更新，00:00:03 即认领 wa_check
+  items 26166/26167（停滞解除的直接证据）。
+- **验收 4 补验（wa_check 观察，零改动链路）**：
+  - 手工 INSERT：fb_posts id=390（url `https://www.facebook.com/groups/999/posts/888`，
+    source='manual'，status=pending）+ fb_contacts id=216（number=13800138000，
+    bucket='cn_uncertain'，wa_checked_at=NULL，post_url=同上）——模拟「新落的 fb_contacts 号码」
+    （假 URL 页无法真提取号码，号码直接落 fb_contacts 即被测链路的起点，与 SPEC §10-4
+    「既有双源链路」一致）。
+  - fb_post 任务 #96（limit=1）→ start → crawl_fb_post work_item 26300 入队 → w0（浏览器
+    消费者）00:02:26 认领 → 00:03:01 failed（假 URL 页不存在，预期）→ fb_posts 390 置
+    failed：fb_post 批次入队 + 浏览器消费路径在新 daemon 上验证通过。
+  - wa_check 入队观察：存量 127 条 stale pending wa_check items（batch_id NULL，topup
+    生成、无归属任务，且 topup 有在途整批跳过守卫）堵塞 topup——按 Step 5.1 冒烟同款
+    运维手段 bulk-stop（SQL 置 stopped，stopped 505→629）→ 在途归零 → topup 30s 唤醒
+    于 00:03:03 重建批次 → **work_item 29746 出现 13800138000（规范化 8613800138000，
+    fb 源优先排 batch 首位）** → local0 00:03:03 认领 → 00:03:41 failed（result：
+    「无法连接 WhatsApp（多次重连失败）」，既有账号 403 问题，链路已涵盖=入队+消费）。
+    全库该号仅出现在 1 个 wa_check item（分桶无重复）。
+  - **验收 4 判定：满足**——新落 fb_contacts 号码自动进 wa_check 队列（topup→work_items→
+    local 认领全链观测到）；实际查号失败是既有账号 403 问题，非本 feature 缺陷。
+  - 清理：DELETE 任务 #96（API）、DELETE fb_posts 390 + fb_contacts 216（手工行，避免
+    假号 13800138000 被后续 topup 反复挑中）；work_items 26300/29746 留 failed 历史记录；
+    重建的 wa_check 在途量（129）与补测前（129）一致，无残留污染。
+- **Step 5.1 终判（覆盖首轮 BLOCKED）**：验收 1/2/3/5 首轮已证满足；验收 4 本阶段补验
+  满足 → **Step 5.1 全部 5 项验收满足，状态 DONE**。
+- 详报：task-5.1b-report.md（补充报告，追加于 task-5.1-report.md 侧）
