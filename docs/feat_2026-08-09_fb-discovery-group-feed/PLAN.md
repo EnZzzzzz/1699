@@ -289,7 +289,7 @@ payload/requires 断言）；平台测试全绿。
 
 ### Step 4.1 — lib/api.ts 类型
 
-- [ ] TaskType 追加 'fb_discover' | 'fb_group'；TaskParams 追加 keywords/pages/
+- [x] TaskType 追加 'fb_discover' | 'fb_group'；TaskParams 追加 keywords/pages/
       provider/posts_per_group
 - 预估 10min；验收：tsc 通过
 

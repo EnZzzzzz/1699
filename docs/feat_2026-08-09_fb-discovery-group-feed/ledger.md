@@ -268,3 +268,9 @@
   （pidfile 记父进程，AGENTS.md 已注明）③ start.sh 经 bash 工具调用挂超时需 nohup
   脱离（harness 调用方式问题）
 - Phase 3 完成标准满足：两类型任务可创建/启动/停止、入队断言正确、平台测试全绿。
+
+## Step 4.1 执行记录
+
+- implementer commit `a8edfe3`（DONE，tsc 全绿）
+- reviewer：spec ✅，0 问题
+- Step 4.1: complete (commits 95fd521..a8edfe3, review clean)
