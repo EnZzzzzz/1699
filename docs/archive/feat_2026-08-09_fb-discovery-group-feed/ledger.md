@@ -448,3 +448,9 @@
 - 终审 MERGE READY；装配层冒烟核实通过（daemon 9 队列 + 2 local 消费者活跃、
   后端/前端运行、看板两新队列）。
 - Step 5.4: 归档前记录完成。
+
+## 归档完成（2026-08-09）
+
+- 全分支终审 MERGE READY；PLAN 76 checkbox 全勾；目录移入 docs/archive/。
+- 工作区残留：scraper/fb_group_wa.py（冒烟期间产生的临时快脚本，非 feature 交付物，
+  scraper/ 只读约定下未提交；保留待用户处置）。
