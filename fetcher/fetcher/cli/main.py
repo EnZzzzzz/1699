@@ -312,6 +312,18 @@ def _build_registry(selected_queues: list[str] | None = None) -> list:
         print("[daemon] [!] wa_check 未注册：vendor wa-check/check.js 或"
               " node 不可用（跳过本地队列）")
 
+    # discover_fb（FB discovery：本地队列，无 site、无浏览器，LocalLoop 消费；
+    # 货源=平台批次参数直接入 work_items，无自喂 → topup=None）
+    from fetcher.sites.facebook.discover_task import FbDiscoverTask  # 延迟导入
+    specs.append(QueueSpec(
+        queue="discover_fb",
+        site=None,
+        task=FbDiscoverTask(),
+        topup=None,
+        domain_suffix="",
+        requires={"local"},
+    ))
+
     if selected_queues:
         specs = [s for s in specs if s.queue in selected_queues]
     return specs

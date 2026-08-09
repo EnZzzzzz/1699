@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
-"""Step 1.4: crawl_fb_post 队列注册测试。
+"""Step 1.4: crawl_fb_post / discover_fb 队列注册测试。
 
 覆盖：_build_registry 注册 crawl_fb_post QueueSpec（site/domain_suffix/
 requires/task 类型）、topup lambda 从 fb_posts 补货、--queues 动态校验
 包含 fb 队列、daemon prepare 经 FbPostTask.prepare 重置 fb_posts
-in_progress（reset_daemon_state 不覆盖 fb_posts 的缺口补位）。
+in_progress（reset_daemon_state 不覆盖 fb_posts 的缺口补位）；
+FB discovery 的 discover_fb 队列注册（site=None/topup=None/
+requires={"local"}，FbDiscoverTask 实例）。
 """
 
 import json
@@ -13,6 +15,7 @@ import unittest
 from pathlib import Path
 
 from fetcher import ShopDB
+from fetcher.sites.facebook.discover_task import FbDiscoverTask
 from fetcher.sites.facebook.post_task import FbPostTask
 
 POST_URL = ("https://www.facebook.com/groups/185879310028412/posts/"
@@ -52,6 +55,19 @@ class FbQueueRegistrationTest(unittest.TestCase):
         self.assertEqual(spec.requires, {"channel", "browser"})
         self.assertIsInstance(spec.task, FbPostTask)
         self.assertIsNotNone(spec.topup)
+
+    def test_discover_fb_registered(self):
+        """discover_fb：local 消费者注册（site=None、topup=None、
+        requires={"local"}），task 是 FbDiscoverTask 实例。"""
+        reg = self._registry()
+        self.assertIn("discover_fb", reg)
+        spec = reg["discover_fb"]
+        self.assertEqual(spec.queue, "discover_fb")
+        self.assertIsNone(spec.site)
+        self.assertEqual(spec.domain_suffix, "")
+        self.assertEqual(spec.requires, {"local"})
+        self.assertIsInstance(spec.task, FbDiscoverTask)
+        self.assertIsNone(spec.topup)
 
     def test_fb_topup_feeds_work_items(self):
         """topup lambda：pending fb_posts → work_items，payload 键 url/domain/name。"""
