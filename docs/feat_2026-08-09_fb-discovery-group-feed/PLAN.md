@@ -99,14 +99,14 @@ fb_contacts 增量 + 群状态机 done；相关测试全绿。
 
 ### Step 2.1 — FbGroupTask（TDD）
 
-- [ ] `fetcher/fetcher/sites/facebook/group_task.py`：Task 协议实现（SPEC §5.3）：
+- [x] `fetcher/fetcher/sites/facebook/group_task.py`：Task 协议实现（SPEC §5.3）：
       prepare（fb_groups in_progress→pending 崩溃恢复）/acquire_item/label/fetch
       （FetchFbGroupPosts 透传 url/provider/limit）/on_success（逐帖 save_fb_contacts
       + mark_fb_group_done 回写）/on_giveup（mark_fb_group_failed）/on_abort/
       giveup_cost/make_stats
-- [ ] fetcher/db.py 补 `mark_fb_group_done(url, post_count, has_contact)` /
+- [x] fetcher/db.py 补 `mark_fb_group_done(url, post_count, has_contact)` /
       `mark_fb_group_failed(url)` / `reset_fb_groups_in_progress() -> int`
-- [ ] 测试（`fetcher/tests/test_fb_group_task.py`）：fetch 透传（mock 原子）、
+- [x] 测试（`fetcher/tests/test_fb_group_task.py`）：fetch 透传（mock 原子）、
       on_success 逐帖落号 + 群 done 回写、on_giveup 群 failed、prepare 崩溃恢复、
       acquire_item
 - 预估 50min；验收：新测试全绿

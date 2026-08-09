@@ -164,3 +164,16 @@
   ③ smoke daemon 启动对生产库执行 reset_claimed_work_items（已自愈，生产 daemon 34402
   重新认领 FIFO）——事故已止损
 - Phase 1 完成标准满足：Step 1.1-1.5 全 done（含冒烟记录）；Phase 2 Step 2.1 可开始。
+
+## Step 2.1 执行记录
+
+- implementer commit `7a09836`（DONE，13 新增 + 734 全量）
+- reviewer：spec ✅，2 Important（均标注不阻塞）+ 4 Minor
+- Minor 记 deferred：① fetch 的 `int(item.get("limit") or 10)` 对 limit=0 兜底为 10
+  ② on_success state 的 n_new 是去重新增数、与 len(phones) 可能不同 ③ _result 测试
+  助手同 number 不同 bucket 去重丢弃 ④ prepare 打印进测试输出（既有行为）
+- 修复循环 round 1：2 个 Important 派发（_group_id_from_url 与 post_task.py 逐字重复→
+  提取共享；stats 依赖 data["phones"] 顶级聚合与逐帖口径不一致→改逐帖计数）
+- Step 2.1 fix round 1/5（2 addressed, 0 open — group_id 共享函数提取 urls.py + 逐帖口径
+  stats; commits 7a09836..40e3de9），re-review 干净
+- Step 2.1: complete (commits 5e9dce7..40e3de9, review clean)
