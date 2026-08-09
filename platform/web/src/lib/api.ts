@@ -84,6 +84,8 @@ export type TaskType =
   | 'yiwugo_search'
   | 'wa_check'
   | 'fb_post'
+  | 'fb_discover'
+  | 'fb_group'
 
 // 采集类参数全量可选键：留空即不传，由 CLI 默认值生效。
 // 批次类型（1688/madeinchina 采集 + wa_check）只读 limit / repeat_interval /
@@ -117,6 +119,11 @@ export interface TaskParams {
   repeat_interval?: number
   // wa_check 专用
   accounts?: string[]
+  // fb_discover / fb_group 专用
+  keywords?: string // 换行分隔的搜索原文
+  pages?: number
+  provider?: string
+  posts_per_group?: number
 }
 
 export interface CreateTaskRequest {
