@@ -391,3 +391,23 @@
 - **Step 5.1 终判（覆盖首轮 BLOCKED）**：验收 1/2/3/5 首轮已证满足；验收 4 本阶段补验
   满足 → **Step 5.1 全部 5 项验收满足，状态 DONE**。
 - 详报：task-5.1b-report.md（补充报告，追加于 task-5.1-report.md 侧）
+
+## Step 5.1 执行记录（终判 DONE）
+
+- 首轮 BLOCKED（daemon local 消费者停摆）→ 根因：LocalLoop FATAL→break→local 线程
+  结束→engine 不重启（既有框架设计，本 feature 多 local 队列首次暴露连坐）。非本
+  feature 代码 bug，不改代码。daemon 恢复 + 验收 4 补验后全 DONE。
+- 验收判定：SPEC §10 1/2/3/5 首轮满足；4（wa_check 入队链）补验满足
+  （号码→topup→wa_check work_item→local0 认领；查号 403 为既有账号问题）。
+- 非阻塞发现（终审分诊，建议开 issue）：
+  ① LocalLoop FATAL 连坐：单队列 FATAL 停全部 local 消费者（wa_check 注释「FATAL→
+    停止」是有意语义，但多队列共享消费者池时需队列级熔断或线程重启）
+  ② wa_check topup 无限补货 + FIFO 认领导致 fb 队列饥饿（冒烟需多次 bulk-stop
+    wa_check 释放消费者）
+  ③ wa_check topup 在途守卫对 batch_id NULL 的 stale pending 无限期堵塞
+  ④ DDG 限流：5 词仅 1 词 200（20% 通过率，spike 预期 2 连查后封，实测首两词即封——
+    当前窗口限流更严，原子退避后成功为准，SPec §8.1 数字可调）
+  ⑤ 假 URL 帖无法真提取号码——验收 4 以「号码直接落 fb_contacts + fb_post 任务
+    批次路径」口径完成
+- Step 5.1: complete (commits 05276a1..2d8eb86, review clean——冒烟类 Step 以验收证据
+  为准，无代码 review)

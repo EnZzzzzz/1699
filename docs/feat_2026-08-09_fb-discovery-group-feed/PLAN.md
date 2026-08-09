@@ -336,12 +336,12 @@ payload/requires 断言）；平台测试全绿。
 
 ### Step 5.1 — 端到端闭环冒烟
 
-- [ ] 起 daemon（全量队列）+ 后端；创建 fb_discover 任务（默认矩阵 × 1 页）→
+- [x] 起 daemon（全量队列）+ 后端；创建 fb_discover 任务（默认矩阵 × 1 页）→
       跑批 → fb_posts/fb_groups 增量；创建 fb_post 任务 → crawl_fb_post 接续 →
       fb_contacts 增量；创建 fb_group 任务 → 群 feed 采集 → fb_contacts 增量；
       wa_check 批次涵盖新落号码（观察，零改动）
-- [ ] dispatcher 看板出现 discover_fb / crawl_fb_group 两条队列
-- [ ] 冒烟记录（含实测节奏/限流/耗时）写入 ledger.md
+- [x] dispatcher 看板出现 discover_fb / crawl_fb_group 两条队列
+- [x] 冒烟记录（含实测节奏/限流/耗时）写入 ledger.md
 - 预估 60min（含批次节奏等待）；验收：SPEC §10 验收 1/2/4/5 满足
 
 ### Step 5.2 — 全量回归
