@@ -301,7 +301,8 @@ def enqueue_batch_for_task(task_id: int, task_type: str,
         raise ValueError(f"非批次任务类型: {task_type}")
     params = params or {}
     limit = int(params.get("limit") or 0)
-    from app.db import (enqueue_contact_batch, enqueue_fb_post_batch,
+    from app.db import (enqueue_contact_batch, enqueue_fb_discover_batch,
+                        enqueue_fb_group_batch, enqueue_fb_post_batch,
                         enqueue_feeder_batch, enqueue_wa_batch)
     if spec["kind"] == "contact":
         return enqueue_contact_batch(spec["queue"], spec["site"],
@@ -310,14 +311,11 @@ def enqueue_batch_for_task(task_id: int, task_type: str,
         return enqueue_fb_post_batch(spec["queue"], spec["site"],
                                      task_id, limit)
     if spec["kind"] == "fb_discover":
-        # Step 3.2 提供真实函数；此处懒导入，缺省 keywords=""、pages=1
-        from app.db import enqueue_fb_discover_batch
+        # 缺省 keywords=""、pages=1
         return enqueue_fb_discover_batch(task_id, params.get("keywords") or "",
                                          int(params.get("pages") or 1))
     if spec["kind"] == "fb_group":
-        # Step 3.2 提供真实函数；此处懒导入，缺省 provider="brightdata"、
-        # posts_per_group=50，limit 透传
-        from app.db import enqueue_fb_group_batch
+        # 缺省 provider="brightdata"、posts_per_group=50，limit 透传
         return enqueue_fb_group_batch(task_id,
                                       (params.get("provider") or "brightdata"),
                                       int(params.get("posts_per_group") or 50),

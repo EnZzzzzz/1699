@@ -239,6 +239,102 @@ def enqueue_fb_post_batch(queue: str, site: str, batch_id: int,
         conn.close()
 
 
+def enqueue_fb_discover_batch(batch_id: int, keywords: str,
+                               pages: int) -> int:
+    """fb_discover 批次入队：关键词（换行分隔）逐词 × 页码展开。
+
+    payload {"kind":"serp","engine":"ddg","query":kw,"page":N}；
+    requires=["local"]、site=NULL。幂等：同 query+page 已有 pending
+    跳过（防循环模式重入批量重复堆栈，参照 enqueue_feeder_batch 的
+    json_extract 幂等模式）。keywords 空 → 0。返回入队 item 数。
+    """
+    words = [w.strip() for w in (keywords or "").splitlines()]
+    words = [w for w in words if w]
+    if not words:
+        return 0
+    pages = max(1, int(pages))
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        conn.execute("PRAGMA busy_timeout = 30000")
+        now = _bj_now()
+        n = 0
+        for kw in words:
+            for page in range(1, pages + 1):
+                exists = conn.execute(
+                    "SELECT COUNT(*) FROM work_items WHERE queue=?"
+                    " AND status='pending'"
+                    " AND json_extract(payload_json, '$.query')=?"
+                    " AND json_extract(payload_json, '$.page')=?",
+                    ("discover_fb", kw, page)).fetchone()[0]
+                if exists:
+                    continue
+                payload = {"kind": "serp", "engine": "ddg",
+                           "query": kw, "page": page}
+                conn.execute(
+                    "INSERT INTO work_items (queue, site, batch_id,"
+                    " payload_json, requires, created_at)"
+                    " VALUES (?, NULL, ?, ?, ?, ?)",
+                    ("discover_fb", batch_id,
+                     json.dumps(payload, ensure_ascii=False),
+                     '["local"]', now))
+                n += 1
+        conn.commit()
+        return n
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def enqueue_fb_group_batch(batch_id: int, provider: str,
+                           posts_per_group: int, limit: int) -> int:
+    """fb_group 批次入队：SELECT pending fb_groups → INSERT items →
+    源行置 in_progress（BEGIN IMMEDIATE 单事务，与群采集消费互斥不双喂，
+    对齐 enqueue_fb_post_batch）。
+
+    payload {"url","provider","limit"}（limit=posts_per_group）；
+    requires=["local"]、site=NULL。fb_groups 表不存在（fetcher 侧未建
+    表）→ 返回 0（防御性探测）。limit>0 限量（<=0 不限）。返回入队行数。
+    """
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout = 30000")
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        if "fb_groups" not in tables:
+            return 0
+        conn.execute("BEGIN IMMEDIATE")
+        sql = ("SELECT * FROM fb_groups WHERE status='pending'"
+               " ORDER BY first_seen_at, id")
+        params: list = []
+        if limit > 0:
+            sql += " LIMIT ?"
+            params.append(limit)
+        rows = conn.execute(sql, params).fetchall()
+        now = _bj_now()
+        for r in rows:
+            payload = json.dumps(
+                {"url": r["url"], "provider": provider,
+                 "limit": posts_per_group},
+                ensure_ascii=False)
+            conn.execute(
+                "INSERT INTO work_items (queue, site, batch_id, payload_json,"
+                " requires, created_at) VALUES (?, NULL, ?, ?, ?, ?)",
+                ("crawl_fb_group", batch_id, payload, '["local"]', now))
+            conn.execute(
+                "UPDATE fb_groups SET status='in_progress' WHERE id=?",
+                (r["id"],))
+        conn.commit()
+        return len(rows)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def enqueue_feeder_batch(queue: str, site: str, batch_id: int,
                          limit: int) -> tuple[int, int]:
     """feeder 批次入队：1 条 discover + 活跃类目 category 种子，全部带

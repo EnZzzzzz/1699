@@ -529,5 +529,123 @@ class FbBatchDispatchTest(BatchTasksTestBase):
         self.assertEqual(n, 4)
 
 
+# =====================================================================
+# 6. Step 3.2：fb_discover / fb_group 真实入队
+# =====================================================================
+
+
+class FbBatchEnqueueTest(BatchTasksTestBase):
+    """enqueue_fb_discover_batch / enqueue_fb_group_batch 真实落库。
+
+    临时 sqlite 断言真实行：展开数/幂等/空关键词/限量/表缺失/源行置位/
+    payload 全键断言。
+    """
+
+    def _seed_fb_groups(self, n=3):
+        """建 fb_groups 表（对齐 fetcher 侧 schema）+ 种 n 条 pending 群。"""
+        conn = self._conn()
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS fb_groups ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " url TEXT NOT NULL UNIQUE, group_id TEXT, name TEXT,"
+            " source TEXT NOT NULL DEFAULT 'ddg',"
+            " status TEXT NOT NULL DEFAULT 'pending', post_count INTEGER,"
+            " has_contact INTEGER, first_seen_at TEXT NOT NULL,"
+            " last_crawled_at TEXT)")
+        for i in range(n):
+            conn.execute(
+                "INSERT INTO fb_groups (url, group_id, name, status,"
+                " first_seen_at) VALUES (?, ?, ?, 'pending',"
+                " '2026-08-08 10:00:00')",
+                (f"https://www.facebook.com/groups/g{i}", f"g{i}",
+                 f"群{i}"))
+        conn.commit()
+        conn.close()
+
+    def test_fb_discover_expands_keywords_times_pages(self):
+        """2 词 × 2 页 = 4 条；payload 全键/requires/site/batch_id 断言。"""
+        from app.db import enqueue_fb_discover_batch
+        n = enqueue_fb_discover_batch(7, "面膜\n洗面奶", 2)
+        self.assertEqual(n, 4)
+        items = self._wi(7)
+        self.assertEqual(len(items), 4)
+        for r in items:
+            self.assertEqual(r["queue"], "discover_fb")
+            self.assertIsNone(r["site"])
+            self.assertEqual(r["batch_id"], 7)
+            self.assertEqual(json.loads(r["requires"]), ["local"])
+            p = json.loads(r["payload_json"])
+            self.assertEqual(p["kind"], "serp")
+            self.assertEqual(p["engine"], "ddg")
+            self.assertIn(p["query"], ("面膜", "洗面奶"))
+            self.assertIn(p["page"], (1, 2))
+        # 每个词 × 每页组合恰好一条
+        combos = {(json.loads(r["payload_json"])["query"],
+                   json.loads(r["payload_json"])["page"])
+                  for r in items}
+        self.assertEqual(combos, {("面膜", 1), ("面膜", 2),
+                                  ("洗面奶", 1), ("洗面奶", 2)})
+
+    def test_fb_discover_idempotent_same_query_page(self):
+        """同 query+page 已有 pending → 二次调用入队 0（不重复堆栈）。"""
+        from app.db import enqueue_fb_discover_batch
+        self.assertEqual(enqueue_fb_discover_batch(7, "面膜\n洗面奶", 2), 4)
+        self.assertEqual(enqueue_fb_discover_batch(7, "面膜\n洗面奶", 2), 0)
+        self.assertEqual(len(self._wi(7)), 4)
+
+    def test_fb_discover_empty_keywords_returns_zero(self):
+        """空关键词（空串/纯空白行）→ 0，不产生 item。"""
+        from app.db import enqueue_fb_discover_batch
+        self.assertEqual(enqueue_fb_discover_batch(7, "", 2), 0)
+        self.assertEqual(enqueue_fb_discover_batch(7, "  \n \n", 2), 0)
+        self.assertEqual(len(self._wi(7)), 0)
+
+    def test_fb_discover_pages_less_than_one_treated_as_one(self):
+        """pages<1 → 按 1 页处理（裁定 2）。"""
+        from app.db import enqueue_fb_discover_batch
+        self.assertEqual(enqueue_fb_discover_batch(7, "面膜", 0), 1)
+
+    def test_fb_group_enqueues_and_marks_in_progress(self):
+        """limit=2 取 2 群；payload {url,provider,limit}；源行置 in_progress。"""
+        from app.db import enqueue_fb_group_batch
+        self._seed_fb_groups(3)
+        n = enqueue_fb_group_batch(8, "brightdata", posts_per_group=50,
+                                   limit=2)
+        self.assertEqual(n, 2)
+        items = self._wi(8)
+        self.assertEqual(len(items), 2)
+        urls = [json.loads(r["payload_json"])["url"] for r in items]
+        self.assertEqual(urls[0], "https://www.facebook.com/groups/g0")
+        self.assertEqual(urls[1], "https://www.facebook.com/groups/g1")
+        for r in items:
+            self.assertEqual(r["queue"], "crawl_fb_group")
+            self.assertIsNone(r["site"])
+            self.assertEqual(r["batch_id"], 8)
+            self.assertEqual(json.loads(r["requires"]), ["local"])
+            p = json.loads(r["payload_json"])
+            self.assertEqual(set(p), {"url", "provider", "limit"})
+            self.assertEqual(p["provider"], "brightdata")
+            self.assertEqual(p["limit"], 50)
+        # 源行：前 2 群 in_progress，第 3 群保持 pending
+        conn = self._conn()
+        sts = conn.execute(
+            "SELECT status FROM fb_groups ORDER BY id").fetchall()
+        conn.close()
+        self.assertEqual([r["status"] for r in sts],
+                         ["in_progress", "in_progress", "pending"])
+
+    def test_fb_group_limit_zero_unlimited(self):
+        """limit=0（不限）→ 全部 pending 群入队。"""
+        from app.db import enqueue_fb_group_batch
+        self._seed_fb_groups(3)
+        self.assertEqual(enqueue_fb_group_batch(8, "brightdata", 50, 0), 3)
+
+    def test_fb_group_missing_table_returns_zero(self):
+        """fb_groups 表不存在（fetcher 侧未建）→ 0（防御性探测）。"""
+        from app.db import enqueue_fb_group_batch
+        self.assertEqual(enqueue_fb_group_batch(8, "brightdata", 50, 2), 0)
+        self.assertEqual(len(self._wi(8)), 0)
+
+
 if __name__ == "__main__":
     unittest.main()
