@@ -62,10 +62,14 @@ BATCH_TYPES = {
         "queue": "crawl_fb_post", "site": "facebook",
         "domain_suffix": "", "kind": "fb_post",
     },
-    "fb_discover": {"queue": "discover_fb", "site": None,
-                    "domain_suffix": "", "kind": "fb_discover"},
-    "fb_group":    {"queue": "crawl_fb_group", "site": None,
-                    "domain_suffix": "", "kind": "fb_group"},
+    "fb_discover": {
+        "queue": "discover_fb", "site": None,
+        "domain_suffix": "", "kind": "fb_discover",
+    },
+    "fb_group": {
+        "queue": "crawl_fb_group", "site": None,
+        "domain_suffix": "", "kind": "fb_group",
+    },
 }
 
 # 批次任务类型集合（TASK_TYPES = TASK_COMMANDS ∪ BATCH_TYPES）

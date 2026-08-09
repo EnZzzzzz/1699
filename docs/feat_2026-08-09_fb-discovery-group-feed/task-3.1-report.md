@@ -149,3 +149,56 @@ OK
 2. mock 用 `create=True` 是 brief 协调者裁定（函数尚不存在）的直接推论；Step 3.2
    后如把 mock 换成真实函数路径（届时函数已存在），`create=True` 可去掉，属彼 Step
    收尾工作，本 Step 不越界。
+
+---
+
+## 修复 1（review 第 1 轮发现 #1）— BATCH_TYPES 新条目格式对齐既有风格
+
+### 改了什么
+
+`platform/server/app/runner.py` BATCH_TYPES 中 fb_discover/fb_group 两条目由
+「行内紧凑 dict」改为与既有 7 条一致的多行 dict 格式（`{` 独占首行、每行 k-v、
+`},` 收尾），与 wa_check/fb_post 风格逐字对齐：
+
+```python
+"fb_discover": {
+    "queue": "discover_fb", "site": None,
+    "domain_suffix": "", "kind": "fb_discover",
+},
+"fb_group": {
+    "queue": "crawl_fb_group", "site": None,
+    "domain_suffix": "", "kind": "fb_group",
+},
+```
+
+键值（queue/site/domain_suffix/kind）、顺序、语义零变化——纯格式改动，行为不变。
+enqueue 分派分支与测试文件本修复未触碰。
+
+### 覆盖测试
+
+```
+cd platform/server && .venv/bin/python -m unittest tests.test_batch_tasks -v
+Ran 21 tests in 0.336s
+OK
+```
+
+全绿（含 FbBatchDispatchTest 4 测试 + 既有 17 批次测试）。
+
+### 全量回归
+
+```
+cd platform/server && .venv/bin/python -m unittest discover -s tests
+Ran 63 tests in 0.252s
+OK
+```
+
+零回归。
+
+### Commit
+
+`git add platform/server/app/runner.py docs/feat_2026-08-09_fb-discovery-group-feed/task-3.1-report.md`
+（仅两文件，未 add -A）。
+
+### 疑虑
+
+无——格式与既有条目一致，行为零变化，测试全绿。
