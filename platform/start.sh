@@ -14,7 +14,14 @@ FRONTEND_PORT=3000
 # daemon 可选参数（如 --queues 子集 / --workers 调整），默认全量 5+1 队列
 # 注意：daemon 1 进程多 context 只占 1 席 CloakBrowser，默认直连 1 worker；
 # 生产多 worker 由运维在此显式加 --workers N
+# daemon 全局有头运行：桌面会弹出浏览器窗口，属预期行为，勿当异常关闭
 DAEMON_ARGS=${DAEMON_ARGS:---workers 1}
+# 有头为全局硬性要求：即使外部覆盖了 DAEMON_ARGS，也强制保留 --headed
+[[ " $DAEMON_ARGS " == *" --headed "* ]] || DAEMON_ARGS="$DAEMON_ARGS --headed"
+
+# wa_check 查号账号池（逗号分隔，对应 vendor/wa-check/auth_info-<name>/）；
+# 缺省 default 无登录态，wa_check 批次会全部「未登录」空跑放弃
+export WA_CHECK_ACCOUNTS=${WA_CHECK_ACCOUNTS:-xiaohao-4,xiaohao-5}
 
 is_running() { # pidfile
   [[ -f "$1" ]] && kill -0 "$(cat "$1")" 2>/dev/null

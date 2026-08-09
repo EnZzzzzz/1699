@@ -192,7 +192,9 @@ def _derive_batch_status(stats: dict, stop_requested: bool) -> str:
     - 全部终态（done/failed/stopped）且无 pending/claimed：
       stop_requested 且无 pending → stopped；否则 done（有 failed 也
       done，failed 计数进 progress——与现状 CLI 部分失败=整体跑完一致）；
-    - 无任何 work_items（批次未入队/空）→ pending 保持（sweeper 不动）。
+    - 无任何 work_items：stop_requested → stopped（批次项被清空/删除后
+      兜底落终态，否则任务永远卡 running 停不掉）；否则 pending 保持
+      （批次未入队/空，sweeper 不动）。
     """
     if stats["pending"] > 0 or stats["claimed"] > 0:
         return "running"
@@ -201,7 +203,7 @@ def _derive_batch_status(stats: dict, stop_requested: bool) -> str:
         if stop_requested and stats["pending"] == 0:
             return "stopped"
         return "done"
-    return "pending"  # 无任何项（未入队）
+    return "stopped" if stop_requested else "pending"  # 零项：停止兜底/未入队
 
 
 def sweep_batch_tasks() -> None:

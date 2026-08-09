@@ -515,7 +515,7 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
                 </p>
               </div>
               <p className="text-xs text-muted-foreground">
-                节奏/代理/并发已收敛到 daemon 启动参数，不再逐任务下发。
+                节奏/代理/并发/有头模式已收敛到 daemon 启动参数（当前全局有头运行），不再逐任务下发。
               </p>
             </>
           ) : isWaCheck ? (

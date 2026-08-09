@@ -343,6 +343,40 @@ class SweeperTest(BatchTasksTestBase):
         conn.close()
         self.assertEqual([r["status"] for r in items], ["done", "stopped"])
 
+    def test_sweeper_stopped_with_zero_items(self):
+        """stop_requested + 批次已无任何 work_items（被清空/删除）→ stopped。
+
+        回归：旧逻辑零项恒派生 pending 且 sweeper 跳过写回，任务永远
+        卡在 running 停不掉（线上 wa_check 任务实例）。
+        """
+        from app.runner import sweep_batch_tasks
+        conn = self._conn()
+        conn.execute("DELETE FROM work_items WHERE batch_id=?", (self.tid,))
+        conn.execute("UPDATE tasks SET stop_requested=1 WHERE id=?",
+                     (self.tid,))
+        conn.commit()
+        conn.close()
+        sweep_batch_tasks()
+        conn = self._conn()
+        row = conn.execute("SELECT status FROM tasks WHERE id=?",
+                           (self.tid,)).fetchone()
+        conn.close()
+        self.assertEqual(row["status"], "stopped")
+
+    def test_sweeper_zero_items_not_stopped_without_stop_request(self):
+        """零项且未请求停止 → pending 保持（未入队语义不变）。"""
+        from app.runner import sweep_batch_tasks
+        conn = self._conn()
+        conn.execute("DELETE FROM work_items WHERE batch_id=?", (self.tid,))
+        conn.commit()
+        conn.close()
+        sweep_batch_tasks()
+        conn = self._conn()
+        row = conn.execute("SELECT status FROM tasks WHERE id=?",
+                           (self.tid,)).fetchone()
+        conn.close()
+        self.assertEqual(row["status"], "pending")
+
 
 # =====================================================================
 # 3. start/stop 端点批次语义
