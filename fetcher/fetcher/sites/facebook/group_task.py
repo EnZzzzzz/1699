@@ -14,21 +14,11 @@ FATAL 直接停止（on_giveup 不会被调），本 Task 不额外处理（SPEC
 
 from __future__ import annotations
 
-import re
-
 from fetcher.control.task import Task
 from fetcher.core.types import ActionResult
+from fetcher.sites.facebook.urls import group_id_from_url
 
 QUEUE = "crawl_fb_group"
-
-# 从群 URL 解析 group_id：facebook.com/groups/{gid}（payload.url 是群 URL）
-_GROUP_RE = re.compile(r"facebook\.com/groups/([^/]+)")
-
-
-def _group_id_from_url(url: str) -> str | None:
-    """群 URL → 群 id；无/非法返回 None。"""
-    m = _GROUP_RE.search(url or "")
-    return m.group(1) if m else None
 
 
 class FbGroupTask(Task):
@@ -125,7 +115,7 @@ class FbGroupTask(Task):
         """逐帖号码落 fb_contacts + 群置 done 回写三字段 + stats。"""
         data = result.data or {}
         posts = data.get("posts") or []
-        group_id = _group_id_from_url(item.get("url") or "")
+        group_id = group_id_from_url(item.get("url") or "")
         db = ctx.store.db
         # 逐帖落号：正文全文已在手，直接落库（无需再走 crawl_fb_post）
         n_new = 0
@@ -135,10 +125,12 @@ class FbGroupTask(Task):
                 continue
             n_new += db.save_fb_contacts(post_url, group_id,
                                          (post or {}).get("phones") or [])
-        has_contact = bool(data.get("has_contact") or data.get("phones"))
+        # 逐帖口径：任一帖有号码 → has_contact / ok（不依赖原子顶级聚合字段）
+        phones = [ph for post in posts
+                  for ph in ((post or {}).get("phones") or [])]
+        has_contact = bool(phones)
         db.mark_fb_group_done(item["url"], len(posts), has_contact)
         stats = self.wctx_stats(ctx)
-        phones = data.get("phones") or []
         if phones:
             stats["ok"] += 1
             state = f"✓ {len(phones)} 个号码（新增 {n_new}）"

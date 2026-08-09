@@ -14,21 +14,11 @@ fetch 调 FetchFbPost 原子，不内联 page 操作）。匿名白板会话无�
 
 from __future__ import annotations
 
-import re
-
 from fetcher.control.task import Task
 from fetcher.core.types import ActionResult
+from fetcher.sites.facebook.urls import group_id_from_url
 
 QUEUE = "crawl_fb_post"
-
-# 从群 URL 解析 group_id：facebook.com/groups/{gid}（payload.domain 是群 URL）
-_GROUP_RE = re.compile(r"facebook\.com/groups/([^/]+)")
-
-
-def _group_id_from_url(url: str) -> str | None:
-    """群 URL → 群 id；无/非法返回 None。"""
-    m = _GROUP_RE.search(url or "")
-    return m.group(1) if m else None
 
 
 class FbPostTask(Task):
@@ -136,7 +126,7 @@ class FbPostTask(Task):
         """号码落 fb_contacts + fb_posts 置 done + 侧车副产物留 result_json。"""
         data = result.data or {}
         phones = data.get("phones") or []
-        group_id = _group_id_from_url(item.get("domain") or "")
+        group_id = group_id_from_url(item.get("domain") or "")
         db = ctx.store.db
         n_new = db.save_fb_contacts(item["url"], group_id, phones)
         has_contact = bool(data.get("has_contact"))

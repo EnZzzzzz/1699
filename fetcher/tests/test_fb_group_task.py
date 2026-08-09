@@ -17,7 +17,8 @@ from unittest.mock import MagicMock
 
 from fetcher import RunConfig, ShopDB
 from fetcher.core.types import ActionResult, Outcome
-from fetcher.sites.facebook.group_task import FbGroupTask, _group_id_from_url
+from fetcher.sites.facebook.group_task import FbGroupTask
+from fetcher.sites.facebook.urls import group_id_from_url
 
 GROUP_URL = "https://www.facebook.com/groups/185879310028412"
 POST_URL_1 = GROUP_URL + "/posts/1111111111111/"
@@ -139,6 +140,41 @@ class FbGroupTaskTest(unittest.TestCase):
         self.assertEqual(ctx.state["task"]["stats"]["ok"], 1)
         self.assertEqual(ctx.state["task"]["stats"]["empty"], 0)
 
+    def test_on_success_stats_judged_per_post_phones(self):
+        """stats ok/empty 判定基于逐帖 post['phones']，不依赖原子顶级
+        phones/has_contact 聚合（原子结构变化不影响判定）。"""
+        # 场景 1：逐帖有号码但顶级聚合缺失 → ok + has_contact=1
+        _seed_group(self.db)
+        ctx = self._ctx()
+        posts = [{"url": POST_URL_1, "text": "x" * 200,
+                  "phones": [{"number": "13812345678",
+                               "bucket": "cn_uncertain",
+                               "source": "text"}]}]
+        data = {"provider": "brightdata", "group_url": GROUP_URL,
+                "post_count": 1, "posts": posts}  # 顶级 phones/has_contact 缺失
+        self.task.on_success(ctx, {"url": GROUP_URL},
+                             ActionResult(Outcome.OK, "ok", data))
+        self.assertEqual(ctx.state["task"]["stats"]["ok"], 1)
+        self.assertEqual(ctx.state["task"]["stats"]["empty"], 0)
+        self.assertEqual(self.db.conn.execute(
+            "SELECT has_contact FROM fb_groups WHERE url=?",
+            (GROUP_URL,)).fetchone()[0], 1)
+        # 场景 2：逐帖全无号码但顶级聚合有值 → empty + has_contact=0
+        url2 = GROUP_URL + "2"
+        _seed_group(self.db, url=url2)
+        ctx2 = self._ctx()
+        posts2 = [{"url": POST_URL_2, "text": "x" * 200, "phones": []}]
+        data2 = {"provider": "brightdata", "group_url": url2,
+                 "post_count": 1, "posts": posts2,
+                 "phones": [{"number": "1"}], "has_contact": True}
+        self.task.on_success(ctx2, {"url": url2},
+                             ActionResult(Outcome.OK, "ok", data2))
+        self.assertEqual(ctx2.state["task"]["stats"]["ok"], 0)
+        self.assertEqual(ctx2.state["task"]["stats"]["empty"], 1)
+        self.assertEqual(self.db.conn.execute(
+            "SELECT has_contact FROM fb_groups WHERE url=?",
+            (url2,)).fetchone()[0], 0)
+
     def test_on_success_no_phones_counts_empty_and_has_contact_0(self):
         _seed_group(self.db)
         ctx = self._ctx()
@@ -222,12 +258,12 @@ class FbGroupTaskTest(unittest.TestCase):
     # ---- group_id 解析 ----
 
     def test_group_id_from_url(self):
-        self.assertEqual(_group_id_from_url(GROUP_URL),
+        self.assertEqual(group_id_from_url(GROUP_URL),
                          "185879310028412")
-        self.assertEqual(_group_id_from_url(GROUP_URL + "/"),
+        self.assertEqual(group_id_from_url(GROUP_URL + "/"),
                          "185879310028412")
-        self.assertIsNone(_group_id_from_url(""))
-        self.assertIsNone(_group_id_from_url("https://www.1688.com/"))
+        self.assertIsNone(group_id_from_url(""))
+        self.assertIsNone(group_id_from_url("https://www.1688.com/"))
 
 
 if __name__ == "__main__":

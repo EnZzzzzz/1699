@@ -130,3 +130,88 @@ OK
    严格只传三个键的意图不同，可再议（当前与裁定「透传 url/provider/limit」一致）。
 2. prepare/on_success 的 print 会在测试输出尾部出现（与 test_fb_post_task.py
    行为一致），非失败输出；如需测试输出零噪音可后续统一加 stdout 捕获。
+
+---
+
+## Fix 1 报告（review 发现修复，第 1 轮）
+
+## 状态
+
+**DONE** — 2 条 review 发现全部修复；group/post 任务测试 + 全量回归 735 测试通过。
+
+## 修复内容
+
+### 发现 1：`_group_id_from_url` / `_GROUP_RE` 逐字重复 → 提取共享
+
+- 新建 `fetcher/fetcher/sites/facebook/urls.py`（零依赖，仅 `re`）：
+  `group_id_from_url(url)` + `_GROUP_RE` 唯一来源（公共名，跨模块共享不再用
+  下划线私有名）。
+- `group_task.py` / `post_task.py`：删除各自的 `import re` + `_GROUP_RE` +
+  `_group_id_from_url` 定义，改为 `from fetcher.sites.facebook.urls import
+  group_id_from_url`，调用点 `_group_id_from_url(...)` → `group_id_from_url(...)`。
+  选 `urls.py` 而非 `__init__.py` 的理由：`__init__.py` 含 `FacebookPlugin` 与
+  `register_site` 副作用（import 即注册站点），放进去会让纯 URL 工具耦合站点
+  注册；`urls.py` 职责清晰且无循环依赖（task 模块 import 它时，包 `__init__`
+  已先加载，无新环）。
+- 行为零变更：正则与函数体逐字符一致；既有 `test_fb_post_task.py` /
+  `test_fb_group_task.py` 的 `test_group_id_from_url` 断言全部保持（仅 import
+  与调用名随共享位置更新）。
+
+### 发现 2：stats 依赖顶级 `data["phones"]` 聚合 → 改逐帖口径
+
+- `group_task.py on_success`：`has_contact` 与 stats ok/empty 判定改由逐帖
+  `post["phones"]` 推导——`phones = [ph for post in posts for ph in
+  ((post or {}).get("phones") or [])]`，`has_contact = bool(phones)`，
+  `phones` 非空 → ok+1（state 显示逐帖号码数），否则 empty+1。
+- 同时 `mark_fb_group_done` 的 `has_contact` 参数也走同一逐帖口径，彻底消除对
+  原子顶级 `phones`/`has_contact` 聚合字段的隐含依赖（原子结构变化不再影响
+  判定与回写）。
+
+## TDD 证据
+
+### RED
+
+新增测试 `test_on_success_stats_judged_per_post_phones`（场景 1：逐帖有号码但
+顶级聚合缺失 → 应 ok=1；场景 2：逐帖无号码但顶级聚合有值 → 应 empty=1）。
+
+命令：
+```
+cd fetcher && ../platform/server/.venv/bin/python -m unittest discover -s tests -p "test_fb_group_task.py"
+```
+输出（失败）：
+```
+AssertionError: 0 != 1
+Ran 14 tests in 0.084s
+FAILED (failures=1)
+```
+符合预期：旧代码用顶级 `data.get("phones")`（缺失 → 判 empty），逐帖口径未生效。
+
+### GREEN
+
+实现 urls.py 提取 + on_success 逐帖口径后，同命令输出：
+```
+Ran 14 tests in 0.076s
+OK
+```
+
+## 回归
+
+- `-p "test_fb_post_task.py"`：OK（post_task 改动行为零回归，既有测试全绿）
+- `-p "test_fb_*.py"`：**56 测试 OK**（原 55 + 新增 1）
+- 全量 `-s tests`：**735 测试 OK**（原 734 + 新增 1，28.3s）
+
+## 改动的文件
+
+- `fetcher/fetcher/sites/facebook/urls.py`（新建，共享位置）
+- `fetcher/fetcher/sites/facebook/group_task.py`（去重 + 逐帖口径）
+- `fetcher/fetcher/sites/facebook/post_task.py`（去重，行为不变）
+- `fetcher/tests/test_fb_group_task.py`（新增逐帖口径测试 + import/调用名随共享）
+- `fetcher/tests/test_fb_post_task.py`（import/调用名随共享，断言不变）
+- `docs/feat_2026-08-09_fb-discovery-group-feed/task-2.1-report.md`（本文件）
+
+## 疑虑
+
+- Step 2.3 会再改 post_task.py：共享函数已就位，届时 `from
+  fetcher.sites.facebook.urls import group_id_from_url` 直接复用，无需再搬。
+- `len(phones)` 为逐帖号码总数（跨帖同号会重复计数，仅作 state 展示用，
+  不影响 ok/empty 判定与落库去重——`save_fb_contacts` 侧自有幂等）。

@@ -15,7 +15,8 @@ from unittest.mock import MagicMock
 
 from fetcher import RunConfig, ShopDB, WorkerContext
 from fetcher.core.types import ActionResult, Outcome
-from fetcher.sites.facebook.post_task import FbPostTask, _group_id_from_url
+from fetcher.sites.facebook.post_task import FbPostTask
+from fetcher.sites.facebook.urls import group_id_from_url
 
 POST_URL = ("https://www.facebook.com/groups/185879310028412/posts/"
             "1437583168191347/")
@@ -242,11 +243,11 @@ class FbPostTaskTest(unittest.TestCase):
     # ---- group_id 解析 ----
 
     def test_group_id_from_url(self):
-        self.assertEqual(_group_id_from_url(GROUP_URL),
+        self.assertEqual(group_id_from_url(GROUP_URL),
                          "185879310028412")
-        self.assertEqual(_group_id_from_url(GROUP_URL + "/"), "185879310028412")
-        self.assertIsNone(_group_id_from_url(""))
-        self.assertIsNone(_group_id_from_url("https://www.1688.com/"))
+        self.assertEqual(group_id_from_url(GROUP_URL + "/"), "185879310028412")
+        self.assertIsNone(group_id_from_url(""))
+        self.assertIsNone(group_id_from_url("https://www.1688.com/"))
 
 
 if __name__ == "__main__":
