@@ -314,7 +314,7 @@ payload/requires 断言）；平台测试全绿。
 
 ### Step 4.4 — Tasks.tsx BATCH_TYPE_NAMES
 
-- [ ] BATCH_TYPE_NAMES 追加 'fb_discover' | 'fb_group'（批次进度渲染；归档 SPEC
+- [x] BATCH_TYPE_NAMES 追加 'fb_discover' | 'fb_group'（批次进度渲染；归档 SPEC
       §6.2 的坑）
 - 预估 5min；验收：tsc 通过 + 任务列表进度列对两新类型生效
 

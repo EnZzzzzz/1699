@@ -294,3 +294,9 @@
 - Step 4.3 fix round 1/5（2 addressed, 0 open — keywords 空 warning + provider 防御校验;
   commits 8d0f528..95ff95f），re-review 干净
 - Step 4.3: complete (commits 5735a78..95ff95f, review clean)
+
+## Step 4.4 执行记录
+
+- implementer commit `e4a6866`（DONE，tsc 全绿）
+- reviewer：spec ✅，0 问题
+- Step 4.4: complete (commits 211927a..e4a6866, review clean)
