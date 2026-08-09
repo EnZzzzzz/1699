@@ -69,10 +69,10 @@ work_items 后真实抓取 1-2 词 → fb_posts/fb_groups 出现增量；相关�
 
 ### Step 1.4 — discover_fb 队列注册（TDD）
 
-- [ ] `fetcher/fetcher/cli/main.py _build_registry` 追加
+- [x] `fetcher/fetcher/cli/main.py _build_registry` 追加
       `QueueSpec(queue="discover_fb", site=None, task=FbDiscoverTask(), topup=None,
       domain_suffix="", requires={"local"})`
-- [ ] 测试（并入 test_fb_discover_task.py 或 test_cli_fb.py）：注册存在 + 字段
+- [x] 测试（并入 test_fb_discover_task.py 或 test_cli_fb.py）：注册存在 + 字段
       断言（site=None、requires={"local"}、topup=None）
 - 预估 20min；验收：注册测试全绿 + `--queues discover_fb` 动态校验通过
 

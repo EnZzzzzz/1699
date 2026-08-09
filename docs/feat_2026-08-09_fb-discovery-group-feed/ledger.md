@@ -109,3 +109,11 @@
   协调者裁定 8 字面对齐）② 全 kind=None 条目按 ok 计（报告已记录理由，接受）③
   _make_atom 不缓存（与 WaCheckTask 既有模式一致，非本 Step 引入）
 - Step 1.3: complete (commits ab27fab..5dff797, review clean)
+
+## Step 1.4 执行记录
+
+- implementer commit `59812e1`（DONE，test_cli_fb.py 5/5 + 42 fb + 721 全量）
+- reviewer：spec ✅，0 Critical/Important，1 Minor
+- Minor 记 deferred：test_cli_fb.py test_queues_choices_accept_fb 命名过泛（只断言
+  crawl_fb_post，非本 Step 引入；discover_fb 由 test_discover_fb_registered 覆盖）
+- Step 1.4: complete (commits d85f774..59812e1, review clean)
