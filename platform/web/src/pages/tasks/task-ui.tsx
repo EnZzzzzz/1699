@@ -78,6 +78,8 @@ export const TASK_TYPE_OPTIONS: { value: TaskType; label: string }[] = [
   { value: 'yiwugo_search', label: '义乌购搜索' },
   { value: 'wa_check', label: 'WhatsApp 查号' },
   { value: 'fb_post', label: 'Facebook 帖子采集' },
+  { value: 'fb_discover', label: 'Facebook 帖子发现' },
+  { value: 'fb_group', label: 'Facebook 群帖采集' },
 ]
 
 export function taskTypeLabel(type: string): string {
@@ -142,6 +144,34 @@ export function paramsSummary(task: { type: string; params: Record<string, unkno
     if (accs.length > 0) parts.push(`账号=${accs.join(',')}`)
     if (repeatPart) parts.push(repeatPart)
     return parts.length > 0 ? parts.join(' ') : '默认参数'
+  }
+
+  // fb_discover：N 词 × M 页（keywords 按换行拆词计数、空视为 1；pages 缺省 1）
+  if (task.type === 'fb_discover') {
+    const raw = typeof p.keywords === 'string' ? p.keywords : ''
+    const wordCount = raw
+      .split('\n')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0).length
+    const m = typeof p.pages === 'number' && Number.isFinite(p.pages) ? p.pages : 1
+    const parts: string[] = []
+    parts.push(wordCount > 0 ? `${wordCount} 词 × ${m} 页` : `默认矩阵 × ${m} 页`)
+    if (repeatPart) parts.push(repeatPart)
+    return parts.join(' ')
+  }
+
+  // fb_group：provider + 每群≤N帖 + 群数上限（limit，0=不限）
+  if (task.type === 'fb_group') {
+    const provider = p.provider === 'apify' ? 'Apify' : 'Bright Data'
+    const ppg =
+      typeof p.posts_per_group === 'number' && Number.isFinite(p.posts_per_group)
+        ? p.posts_per_group
+        : 50
+    const limit = num('limit')
+    const parts: string[] = [`provider=${provider}`, `每群≤${ppg}帖`]
+    parts.push(limit !== null && limit > 0 ? `群数上限=${limit}` : '群数不限')
+    if (repeatPart) parts.push(repeatPart)
+    return parts.join(' ')
   }
 
   // P4 批次采集类型（1688/madeinchina shop/company/contact + fb_post）：
