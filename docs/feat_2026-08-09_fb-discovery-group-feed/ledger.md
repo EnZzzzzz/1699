@@ -260,3 +260,11 @@
   优先），消费链路已在 Step 1.5/2.4 临时库验证 ② stop.sh 对 daemon 子进程需 kill -9
   补刀（pidfile 记父进程，AGENTS.md 已注明）③ start.sh 经 bash 工具调用会挂超时并
   连带杀新起进程，需 nohup 脱离调用 shell（harness 调用方式问题，非脚本缺陷）
+
+## Phase 3 完成（Step 3.1-3.4 全 done）
+
+- 冒烟非阻塞发现（终审分诊）：① daemon 冒烟期未实际 claim 新队列（1688/mic 重队列
+  优先，消费链路已由 Step 1.5/2.4 临时库验证）② stop.sh SIGTERM 后需 kill -9 补刀
+  （pidfile 记父进程，AGENTS.md 已注明）③ start.sh 经 bash 工具调用挂超时需 nohup
+  脱离（harness 调用方式问题）
+- Phase 3 完成标准满足：两类型任务可创建/启动/停止、入队断言正确、平台测试全绿。
