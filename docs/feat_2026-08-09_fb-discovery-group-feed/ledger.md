@@ -220,3 +220,12 @@
 - Step 3.1 fix round 1/5（1 addressed, 0 open — BATCH_TYPES 多行格式; commits
   acf205a..61f36e2），re-review 干净
 - Step 3.1: complete (commits 966120b..61f36e2, review clean)
+
+## Step 3.2 执行记录
+
+- implementer commit `6896454`（DONE，28/28 + test_fb_batch 14/14 回归；懒导入收尾完成）
+- reviewer：spec ✅，0 Critical/Important，3 Minor
+- Minor 记 deferred：① int(pages) 恒等冗余 ② discover 幂等检查与 INSERT 无 BEGIN
+  IMMEDIATE 的并发窗口——brief 明确参照 enqueue_feeder_batch 模式，有意权衡
+  ③ n=0 时无操作 commit
+- Step 3.2: complete (commits dc717aa..6896454, review clean)

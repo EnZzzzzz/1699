@@ -159,6 +159,100 @@ payload/requires 断言）；平台测试全绿。
 
 ### Step 3.2 — app/db.py enqueue 双函数（TDD）
 
+
+
+### Step 1.4 — discover_fb 队列注册（TDD）
+
+- [x] `fetcher/fetcher/cli/main.py _build_registry` 追加
+      `QueueSpec(queue="discover_fb", site=None, task=FbDiscoverTask(), topup=None,
+      domain_suffix="", requires={"local"})`
+- [x] 测试（并入 test_fb_discover_task.py 或 test_cli_fb.py）：注册存在 + 字段
+      断言（site=None、requires={"local"}、topup=None）
+- 预估 20min；验收：注册测试全绿 + `--queues discover_fb` 动态校验通过
+
+### Step 1.5 — 发现层运行时冒烟（真实 DDG）
+
+- [x] 起 daemon（`python -m fetcher daemon --queues discover_fb --local-workers 1`，
+      临时 DB 或生产库视环境），手工 INSERT 2 条 work_items（默认矩阵前 2 词 × 1 页）
+- [x] 观察：2 条 item 顺序消费、间隔 ≥60s、fb_posts/fb_groups 出现真实增量
+      （若 202 触发，验证退避后继续）
+- [x] 冒烟记录（结果 + 实际耗时 + 限流观测）写入 ledger.md
+- 预估 30min（含等待节奏）；验收：fb_posts 或 fb_groups ≥1 行真实新增（202 场景
+      下以退避后成功为准）；冒烟记录完整
+
+**Phase 1 完成标准**：Step 1.1-1.5 全部 done（含冒烟记录）；Phase 2 的 Step 2.1
+可开始（依赖 1.1 已满足）。
+
+---
+
+## Phase 2 — 群采集（fetcher 侧）
+
+**准入**：Phase 1 Step 1.1 done（fb_groups 表 + upsert 就绪）。
+**完成标准**：`--queues crawl_fb_group` 可跑批；mock/真实 provider 采 1 群 →
+fb_contacts 增量 + 群状态机 done；相关测试全绿。
+
+### Step 2.1 — FbGroupTask（TDD）
+
+- [x] `fetcher/fetcher/sites/facebook/group_task.py`：Task 协议实现（SPEC §5.3）：
+      prepare（fb_groups in_progress→pending 崩溃恢复）/acquire_item/label/fetch
+      （FetchFbGroupPosts 透传 url/provider/limit）/on_success（逐帖 save_fb_contacts
+      + mark_fb_group_done 回写）/on_giveup（mark_fb_group_failed）/on_abort/
+      giveup_cost/make_stats
+- [x] fetcher/db.py 补 `mark_fb_group_done(url, post_count, has_contact)` /
+      `mark_fb_group_failed(url)` / `reset_fb_groups_in_progress() -> int`
+- [x] 测试（`fetcher/tests/test_fb_group_task.py`）：fetch 透传（mock 原子）、
+      on_success 逐帖落号 + 群 done 回写、on_giveup 群 failed、prepare 崩溃恢复、
+      acquire_item
+- 预估 50min；验收：新测试全绿
+
+### Step 2.2 — crawl_fb_group 队列注册（TDD）
+
+- [x] `_build_registry` 追加 `QueueSpec(queue="crawl_fb_group", site=None,
+      task=FbGroupTask(), topup=None, domain_suffix="", requires={"local"})`
+- [x] 测试：注册存在 + 字段断言
+- 预估 15min；验收：注册测试全绿 + `--queues crawl_fb_group` 校验通过
+
+### Step 2.3 — FbPostTask.on_success 群 upsert 补位（TDD）
+
+- [x] `fetcher/fetcher/sites/facebook/post_task.py on_success` 追加：group_id 非空时
+      `db.upsert_fb_groups([{"url": 派生群URL, "group_id", "name": item.get("name")}])`
+      （SPEC §5.5）
+- [x] 测试（扩展 test_fb_post_task.py）：抓帖后 fb_groups 出现该群（pending、name
+      溯源）；无 group_id 时零写入；既有 on_success 测试零回归
+- 预估 20min；验收：新断言全绿 + 既有 test_fb_post_task.py 全绿
+
+### Step 2.4 — 群采集运行时冒烟
+
+- [x] 起 daemon（`--queues crawl_fb_group --local-workers 1`），手工灌 1 条
+      work_items（真实群 URL × provider，key 用环境变量或 mock）
+- [x] 观察：FetchFbGroupPosts 执行 → fb_contacts 新增（post_url 溯源正确）→ 群
+      done + post_count/has_contact 回写；缺 key 场景验证 FATAL → 群 failed
+- [x] 冒烟记录写入 ledger.md
+- 预估 30min；验收：群状态机完成一轮 pending→done（或 key 缺失→failed），
+      fb_contacts 落号正确
+
+**Phase 2 完成标准**：Step 2.1-2.4 全部 done；Phase 3 可开始。
+
+---
+
+## Phase 3 — 平台批次接线
+
+**准入**：Phase 1 + Phase 2 done。
+**完成标准**：平台创建/启动两个新类型任务 → work_items 正确入队（batch_id/
+payload/requires 断言）；平台测试全绿。
+
+### Step 3.1 — runner BATCH_TYPES + enqueue 分支（TDD）
+
+- [x] `platform/server/app/runner.py` BATCH_TYPES 追加 fb_discover/fb_group
+      （SPEC §6.1 精确 dict）
+- [x] `enqueue_batch_for_task` 追加两分支（keywords×pages / provider+posts_per_group
+      +limit，缺省值 1/50/brightdata）
+- [x] 测试（扩展 platform/server/tests/test_batch_tasks.py）：enqueue_batch_for_task
+      对两类型分派正确（mock app.db 函数断言参数）
+- 预估 30min；验收：新测试全绿 + 既有批次测试零回归
+
+### Step 3.2 — app/db.py enqueue 双函数（TDD）
+
 - [ ] `enqueue_fb_discover_batch(batch_id, keywords, pages) -> int`：换行拆词 × 页
       展开，payload {"kind","engine","query","page"}，requires='["local"]'，
       同 query+page 已有 pending 跳过，keywords 空→0
