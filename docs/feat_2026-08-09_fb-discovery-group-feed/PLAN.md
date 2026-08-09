@@ -346,8 +346,8 @@ payload/requires 断言）；平台测试全绿。
 
 ### Step 5.2 — 全量回归
 
-- [ ] fetcher 全测试组（unittest discover）全绿
-- [ ] 平台测试组全绿；`npx tsc -b` 全绿
+- [x] fetcher 全测试组（unittest discover）全绿
+- [x] 平台测试组全绿；`npx tsc -b` 全绿
 - 预估 15min；验收：三组全绿（SPEC §10 验收 6）
 
 ### Step 5.3 — 文档同步

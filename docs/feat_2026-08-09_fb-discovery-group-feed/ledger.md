@@ -415,3 +415,10 @@
   (0.319s，含 FbBatchDispatch/Enqueue 8 例；唯一警告为既有 StarletteDeprecationWarning)；
   前端 npx tsc -b EXIT=0 (3.098s)。纯回归零代码改动，SPEC §10 验收 6 满足。
 - Step 5.2: complete
+
+## Step 5.2 执行记录
+
+- implementer commit `b7191d8`（DONE：fetcher 740 / 平台 72 / tsc 0 错，三组全绿，
+  验收 6 满足）
+- 观察：平台测试既有 StarletteDeprecationWarning（httpx→httpx2），非 feature 引入
+- Step 5.2: complete (commits 73a63f0..b7191d8, review clean——纯回归类 Step)
