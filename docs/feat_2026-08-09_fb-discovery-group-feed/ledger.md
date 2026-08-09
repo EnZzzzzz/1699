@@ -100,3 +100,12 @@
   274a409..83c75e2），re-review 干净；re-review 补 Minor（非数值输入 ValueError 边缘路径，
   记 deferred 留终审）
 - Step 1.2: complete (commits 4600ca1..83c75e2, review clean)
+
+## Step 1.3 执行记录
+
+- implementer commit `5dff797`（DONE，21 新增 + 42 fb + 29 wa + 720 全量回归）
+- reviewer：spec ✅，0 Critical/Important，3 Minor
+- Minor 记 deferred：① 空 results 的 set_status 只传 empty 未传 ok/failed（快照完整性，
+  协调者裁定 8 字面对齐）② 全 kind=None 条目按 ok 计（报告已记录理由，接受）③
+  _make_atom 不缓存（与 WaCheckTask 既有模式一致，非本 Step 引入）
+- Step 1.3: complete (commits ab27fab..5dff797, review clean)

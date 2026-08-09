@@ -59,10 +59,10 @@ work_items 后真实抓取 1-2 词 → fb_posts/fb_groups 出现增量；相关�
 
 ### Step 1.3 — FbDiscoverTask（TDD）
 
-- [ ] `fetcher/fetcher/sites/facebook/discover_task.py`：Task 协议实现（SPEC §5.2）：
+- [x] `fetcher/fetcher/sites/facebook/discover_task.py`：Task 协议实现（SPEC §5.2）：
       prepare/acquire_item/label/fetch（原子透传节奏）/on_success（save_fb_posts +
       upsert_fb_groups 分流）/on_giveup/make_stats
-- [ ] 测试（`fetcher/tests/test_fb_discover_task.py`）：fetch 原子透传、on_success
+- [x] 测试（`fetcher/tests/test_fb_discover_task.py`）：fetch 原子透传、on_success
       分流落库（帖→fb_posts、群→fb_groups、派生群、名称去后缀）、on_giveup 无落库、
       acquire_item 认领
 - 预估 40min；验收：新测试全绿
