@@ -194,3 +194,12 @@
 - Minor 记 deferred：① test 用 row[0] 位置取值与列名取值风格不一 ② 幂等测试二次调用
   同 name 无法区分覆盖与否（INSERT OR IGNORE 语义已保证）
 - Step 2.3: complete (commits 1f6d100..8c58e4e, review clean)
+
+## Step 2.4 冒烟记录（2026-08-09 22:26，DONE）
+
+- 临时 DB：A 段 /tmp/fb_group_smoke_A_1786285428/1688.db；B 段 /tmp/fb_group_smoke_B_1786285428/1688.db（均为 ShopDB 初始化建表，未触碰生产库 .cache/1688.db）
+- A. 缺 key 真实链路：daemon PID 7771（`python -m fetcher daemon --db <A库> --queues crawl_fb_group --local-workers 1`，不带 key 环境，无头），观测日志
+  `[claim] queue=crawl_fb_group item=1 → [finish] item=1 status=failed`，work_items#1 result_json=`{"reason": "缺少 Bright Data API key（传 api_key 或设环境变量 BRIGHTDATA_API_KEY）", "kind": "fatal"}`（reason 即原子 FATAL detail，经 LocalLoop on_giveup(fatal)→QueueRouter._finish 落库）；fb_groups 群 `https://www.facebook.com/groups/676368063029200/` status=pending→**failed** ✓（daemon 随后自行退出）
+- B. mock done 链路：方案=同进程 monkeypatch `FetchFbGroupPosts.run`（返回构造的 2 帖：帖1 含 cn_uncertain+declared_wa 两号、帖2 无号）后，按 `fetcher/cli/main.py::_run_daemon` 逐行装配 QueueRouter+Engine（local_workers=1、browser_workers=0、status_store=None）跑真实 LocalLoop；与真实 daemon 仅差进程边界（patch 不跨子进程）与心跳（非验收项）。日志 `[claim] → [mock atom] → [finish] item=1 status=done`；fb_contacts 新增 **2 行**（post_url=帖 permalink 溯源、group_id=676368063029200、declared_wa→wa_source='declared'、cn_uncertain→wa_source=NULL）；fb_groups 群 status=pending→**done** + post_count=2 + has_contact=1 + last_crawled_at 回写 ✓
+- 验收判定：**满足**——两段各走通一轮完整状态机（A: pending→claimed→failed[fatal]；B: pending→claimed→done），B 段 fb_contacts 落号 2 行证据完整；生产 daemon 34402 全程未受影响
+- 观测（非阻塞）：① 原子 FATAL 不写 ctx.log，日志链看不到 FATAL 文本，detail 仅落 work_items.result_json（可观测性可议，非缺陷）；② B 段 mock 帖 URL 拼接带双斜杠（`groups/676368063029200//posts/...`）为 mock 数据自身拼接所致，真实 BD/Apify 帖 url 由接口返回不会双斜杠，非代码缺陷
