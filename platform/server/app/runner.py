@@ -62,6 +62,10 @@ BATCH_TYPES = {
         "queue": "crawl_fb_post", "site": "facebook",
         "domain_suffix": "", "kind": "fb_post",
     },
+    "fb_discover": {"queue": "discover_fb", "site": None,
+                    "domain_suffix": "", "kind": "fb_discover"},
+    "fb_group":    {"queue": "crawl_fb_group", "site": None,
+                    "domain_suffix": "", "kind": "fb_group"},
 }
 
 # 批次任务类型集合（TASK_TYPES = TASK_COMMANDS ∪ BATCH_TYPES）
@@ -301,6 +305,19 @@ def enqueue_batch_for_task(task_id: int, task_type: str,
     if spec["kind"] == "fb_post":
         return enqueue_fb_post_batch(spec["queue"], spec["site"],
                                      task_id, limit)
+    if spec["kind"] == "fb_discover":
+        # Step 3.2 提供真实函数；此处懒导入，缺省 keywords=""、pages=1
+        from app.db import enqueue_fb_discover_batch
+        return enqueue_fb_discover_batch(task_id, params.get("keywords") or "",
+                                         int(params.get("pages") or 1))
+    if spec["kind"] == "fb_group":
+        # Step 3.2 提供真实函数；此处懒导入，缺省 provider="brightdata"、
+        # posts_per_group=50，limit 透传
+        from app.db import enqueue_fb_group_batch
+        return enqueue_fb_group_batch(task_id,
+                                      (params.get("provider") or "brightdata"),
+                                      int(params.get("posts_per_group") or 50),
+                                      limit)
     if spec["kind"] == "feeder":
         n_cat, n_disc = enqueue_feeder_batch(
             spec["queue"], spec["site"], task_id, limit)

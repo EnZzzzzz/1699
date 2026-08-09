@@ -475,5 +475,59 @@ class TaskTypesTest(BatchTasksTestBase):
         self.assertEqual(row["status"], "running")
 
 
+# =====================================================================
+# 5. Step 3.1：fb_discover / fb_group 分派
+# =====================================================================
+
+
+class FbBatchDispatchTest(BatchTasksTestBase):
+    """enqueue_batch_for_task 对 fb_discover/fb_group 分派参数透传。
+
+    enqueue_fb_discover_batch / enqueue_fb_group_batch 由 Step 3.2 实现，
+    本 Step mock app.db 模块属性断言分派参数（缺省值/显式值/limit 透传）。
+    """
+
+    def test_fb_discover_dispatch_with_defaults(self):
+        """缺省 keywords=""、pages=1。"""
+        from app.runner import enqueue_batch_for_task
+        with patch.object(db_module, "enqueue_fb_discover_batch",
+                          create=True, return_value=3) as mock_enqueue:
+            n = enqueue_batch_for_task(7, "fb_discover", {})
+        mock_enqueue.assert_called_once_with(7, "", 1)
+        self.assertEqual(n, 3)
+
+    def test_fb_discover_dispatch_with_explicit_keywords_pages(self):
+        """显式 keywords 原样透传、pages 转 int。"""
+        from app.runner import enqueue_batch_for_task
+        with patch.object(db_module, "enqueue_fb_discover_batch",
+                          create=True, return_value=3) as mock_enqueue:
+            n = enqueue_batch_for_task(
+                7, "fb_discover",
+                {"keywords": "面膜 洗面奶", "pages": "3"})
+        mock_enqueue.assert_called_once_with(7, "面膜 洗面奶", 3)
+        self.assertEqual(n, 3)
+
+    def test_fb_group_dispatch_with_defaults(self):
+        """缺省 provider="brightdata"、posts_per_group=50、limit=0。"""
+        from app.runner import enqueue_batch_for_task
+        with patch.object(db_module, "enqueue_fb_group_batch",
+                          create=True, return_value=4) as mock_enqueue:
+            n = enqueue_batch_for_task(8, "fb_group", {})
+        mock_enqueue.assert_called_once_with(8, "brightdata", 50, 0)
+        self.assertEqual(n, 4)
+
+    def test_fb_group_dispatch_with_explicit_values_and_limit(self):
+        """显式 provider/posts_per_group 转 int + limit 透传。"""
+        from app.runner import enqueue_batch_for_task
+        with patch.object(db_module, "enqueue_fb_group_batch",
+                          create=True, return_value=4) as mock_enqueue:
+            n = enqueue_batch_for_task(
+                8, "fb_group",
+                {"provider": "scraperapi", "posts_per_group": "30",
+                 "limit": "120"})
+        mock_enqueue.assert_called_once_with(8, "scraperapi", 30, 120)
+        self.assertEqual(n, 4)
+
+
 if __name__ == "__main__":
     unittest.main()
