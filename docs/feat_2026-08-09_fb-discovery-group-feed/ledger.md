@@ -208,3 +208,15 @@
 
 - 冒烟非阻塞发现（终审分诊）：原子 FATAL 不写 ctx.log（可观测性，非缺陷）
 - Phase 2 完成标准满足：crawl_fb_group 队列可跑批、状态机两段各走通一轮、相关测试全绿。
+
+## Step 3.1 执行记录
+
+- implementer commit `acf205a`（DONE，21/21 + 63 全量）
+- reviewer：spec ✅，1 Important（BATCH_TYPES 新条目行内紧凑格式与既有多行风格不一
+  ）+ 2 Minor
+- Minor 记 deferred：② 懒导入技术债——report 承诺 Step 3.2 落地真实函数后并入顶部
+  import → **列为 Step 3.2 必做收尾项** ③ fb_group 分支注释跨行不规整
+- 修复循环 round 1：Important「BATCH_TYPES 格式对齐多行」派发
+- Step 3.1 fix round 1/5（1 addressed, 0 open — BATCH_TYPES 多行格式; commits
+  acf205a..61f36e2），re-review 干净
+- Step 3.1: complete (commits 966120b..61f36e2, review clean)

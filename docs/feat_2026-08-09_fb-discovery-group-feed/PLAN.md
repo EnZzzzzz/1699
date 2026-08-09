@@ -149,11 +149,11 @@ payload/requires 断言）；平台测试全绿。
 
 ### Step 3.1 — runner BATCH_TYPES + enqueue 分支（TDD）
 
-- [ ] `platform/server/app/runner.py` BATCH_TYPES 追加 fb_discover/fb_group
+- [x] `platform/server/app/runner.py` BATCH_TYPES 追加 fb_discover/fb_group
       （SPEC §6.1 精确 dict）
-- [ ] `enqueue_batch_for_task` 追加两分支（keywords×pages / provider+posts_per_group
+- [x] `enqueue_batch_for_task` 追加两分支（keywords×pages / provider+posts_per_group
       +limit，缺省值 1/50/brightdata）
-- [ ] 测试（扩展 platform/server/tests/test_batch_tasks.py）：enqueue_batch_for_task
+- [x] 测试（扩展 platform/server/tests/test_batch_tasks.py）：enqueue_batch_for_task
       对两类型分派正确（mock app.db 函数断言参数）
 - 预估 30min；验收：新测试全绿 + 既有批次测试零回归
 
