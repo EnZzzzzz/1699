@@ -227,6 +227,24 @@ CREATE TABLE IF NOT EXISTS fb_contacts (
     first_seen_at TEXT NOT NULL
 );
 
+-- FB 群表（发现层 SERP 群主页 + 帖派生群统一落这里，url UNIQUE 幂等）。
+-- 状态机对齐 fb_posts：pending → in_progress → done/failed；已存在行 status
+-- 不被 upsert 改动（保持采集进度）。post_count/has_contact 由 fb_group
+-- on_success 回写；source 缺省 'ddg'（FbDiscoverTask），帖派生传 'fb_post'。
+CREATE TABLE IF NOT EXISTS fb_groups (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    url             TEXT NOT NULL UNIQUE,     -- 群 URL https://www.facebook.com/groups/{gid}
+    group_id        TEXT,                     -- 群 id（数字或 slug，URL 解析）
+    name            TEXT,                     -- 群名（发现层取自 SERP 标题，溯源用，近似值）
+    source          TEXT NOT NULL DEFAULT 'ddg',  -- 发现来源 ddg / fb_post（帖派生）
+    status          TEXT NOT NULL DEFAULT 'pending', -- pending/in_progress/done/failed
+    post_count      INTEGER,                  -- 已采帖数（fb_group on_success 回写）
+    has_contact     INTEGER,                  -- 是否提到联系方式（fb_group 回写）
+    first_seen_at   TEXT NOT NULL,            -- 北京时间字符串
+    last_crawled_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_fb_groups_status ON fb_groups(status, id);
+
 -- daemon 消费者状态心跳表（P4 daemon 可观测）：写方 = fetcher daemon
 -- （claim/finish/release/冷却登记即时 + 10s 心跳 + 退出清空）；
 -- 读方 = 平台 dispatcher API（看板）。stale（updated_at 超 30s）由
@@ -838,6 +856,52 @@ class ShopDB:
             "UPDATE fb_posts SET status='pending' WHERE status='in_progress'")
         self.conn.commit()
         return cur.rowcount
+
+    def save_fb_posts(self, keyword: str, source: str,
+                      posts: list[dict]) -> int:
+        """发现层结果落 fb_posts（INSERT OR IGNORE，url UNIQUE 去重；
+        同帖二次发现不覆盖 first_seen_at/keyword/source）。
+
+        keyword: 溯源查询词；source: 发现来源（'ddg' / 'fb_post'）；posts:
+        [{"url", "group_id", "group_name"}, ...]。返回本次实际新增行数。
+        """
+        now = _now()
+        inserted = 0
+        for p in posts:
+            url = (p.get("url") or "").strip()
+            if not url:
+                continue
+            cur = self.conn.execute(
+                "INSERT OR IGNORE INTO fb_posts (url, group_id, group_name,"
+                " keyword, source, first_seen_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (url, p.get("group_id"), p.get("group_name"),
+                 keyword, source, now))
+            inserted += cur.rowcount
+        self.conn.commit()
+        return inserted
+
+    def upsert_fb_groups(self, groups: list[dict]) -> int:
+        """发现/帖派生的群条目落 fb_groups（INSERT OR IGNORE，url UNIQUE
+        去重；已存在行不动 status/name，保持采集进度）。
+
+        groups: [{"url", "group_id", "name", "source"?}, ...]，source 缺省
+        'ddg'（FbDiscoverTask 不带 source 键；FbPostTask 传 'fb_post'）。
+        返回本次实际新增行数。
+        """
+        now = _now()
+        inserted = 0
+        for g in groups:
+            url = (g.get("url") or "").strip()
+            if not url:
+                continue
+            cur = self.conn.execute(
+                "INSERT OR IGNORE INTO fb_groups (url, group_id, name,"
+                " source, first_seen_at) VALUES (?, ?, ?, ?, ?)",
+                (url, g.get("group_id"), g.get("name"),
+                 g.get("source") or "ddg", now))
+            inserted += cur.rowcount
+        self.conn.commit()
+        return inserted
 
     # ---------- category_progress ----------
     def get_category_progress(self, keyword: str) -> dict | None:
