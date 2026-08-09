@@ -857,6 +857,32 @@ class ShopDB:
         self.conn.commit()
         return cur.rowcount
 
+    def mark_fb_group_done(self, url: str, post_count: int,
+                           has_contact: bool) -> None:
+        """群采集完成：status=done + 回写 post_count/has_contact/
+        last_crawled_at（FbGroupTask.on_success 调用）。"""
+        self.conn.execute(
+            "UPDATE fb_groups SET status='done', post_count=?, has_contact=?, "
+            "last_crawled_at=? WHERE url=?",
+            (post_count, 1 if has_contact else 0, _now(), url))
+        self.conn.commit()
+
+    def mark_fb_group_failed(self, url: str) -> None:
+        """群采集失败：status=failed（402/429 额度/限流、网络错误、无帖
+        均置 failed；重跑由平台重开批次）。"""
+        self.conn.execute(
+            "UPDATE fb_groups SET status='failed' WHERE url=?", (url,))
+        self.conn.commit()
+
+    def reset_fb_groups_in_progress(self) -> int:
+        """fb_groups 的 in_progress 重置回 pending（进程中断残留的认领，
+        FbGroupTask.prepare 启动时调用——reset_daemon_state 只认
+        domain_suffix 非空的 contact 队列，不覆盖 fb_groups）。"""
+        cur = self.conn.execute(
+            "UPDATE fb_groups SET status='pending' WHERE status='in_progress'")
+        self.conn.commit()
+        return cur.rowcount
+
     def save_fb_posts(self, keyword: str, source: str,
                       posts: list[dict]) -> int:
         """发现层结果落 fb_posts（INSERT OR IGNORE，url UNIQUE 去重；
