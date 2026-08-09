@@ -265,8 +265,8 @@ payload/requires 断言）；平台测试全绿。
 
 ### Step 3.3 — api/tasks.py TaskParams 四字段
 
-- [ ] TaskParams 追加 keywords/pages/provider/posts_per_group（SPEC §6.3）
-- [ ] 测试：TaskCreate 携带四字段 round-trip 成功；TASK_TYPES 并集含两新类型
+- [x] TaskParams 追加 keywords/pages/provider/posts_per_group（SPEC §6.3）
+- [x] 测试：TaskCreate 携带四字段 round-trip 成功；TASK_TYPES 并集含两新类型
 - 预估 15min；验收：测试全绿
 
 ### Step 3.4 — 平台冒烟

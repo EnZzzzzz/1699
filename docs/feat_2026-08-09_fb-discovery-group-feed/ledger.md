@@ -229,3 +229,11 @@
   IMMEDIATE 的并发窗口——brief 明确参照 enqueue_feeder_batch 模式，有意权衡
   ③ n=0 时无操作 commit
 - Step 3.2: complete (commits dc717aa..6896454, review clean)
+
+## Step 3.3 执行记录
+
+- implementer commit `d90e01f`（DONE，30/30 + 72 全量）
+- reviewer：spec ✅，0 Critical/Important，2 Minor
+- Minor 记 deferred：① round-trip 只测 fb_discover 未独立测 fb_group（同模型已覆盖序列化）
+  ② _conn() 无 try/finally（临时 SQLite 无实际影响）
+- Step 3.3: complete (commits fd29bf1..d90e01f, review clean)
