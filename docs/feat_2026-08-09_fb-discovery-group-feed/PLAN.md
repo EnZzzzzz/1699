@@ -271,8 +271,8 @@ payload/requires 断言）；平台测试全绿。
 
 ### Step 3.4 — 平台冒烟
 
-- [ ] 重启后端（uvicorn 不自动 reload，按 start.sh/stop.sh）；起 daemon 全量
-- [ ] API 创建 fb_discover（默认矩阵 × 1 页）→ 断言 work_items 5 条
+- [x] 重启后端（uvicorn 不自动 reload，按 start.sh/stop.sh）；起 daemon 全量
+- [x] API 创建 fb_discover（默认矩阵 × 1 页）→ 断言 work_items 5 条
       （requires=["local"]、engine="ddg"）；创建 fb_group → 断言入队数（fb_groups
       有 pending 时）或 0（空表防御）
 - [x] 冒烟记录写入 ledger.md

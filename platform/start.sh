@@ -23,6 +23,12 @@ DAEMON_ARGS=${DAEMON_ARGS:---workers 1}
 # 缺省 default 无登录态，wa_check 批次会全部「未登录」空跑放弃
 export WA_CHECK_ACCOUNTS=${WA_CHECK_ACCOUNTS:-xiaohao-4,xiaohao-5}
 
+# FB 群采集第三方 API key（fb_group 批次用；缺失时该群采集 FATAL → 批次 failed）
+# key 由部署方在启动 shell 环境提供（.env 已 gitignore，不入库）；daemon 继承该环境
+# （start.sh 的 nohup 子进程天然继承）。缺失时原子 FATAL 是既有行为，本期不新增凭证体系。
+export BRIGHTDATA_API_KEY="${BRIGHTDATA_API_KEY:-}"
+export APIFY_TOKEN="${APIFY_TOKEN:-}"
+
 is_running() { # pidfile
   [[ -f "$1" ]] && kill -0 "$(cat "$1")" 2>/dev/null
 }

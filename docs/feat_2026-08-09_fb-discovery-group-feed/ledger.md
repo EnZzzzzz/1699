@@ -237,3 +237,26 @@
 - Minor 记 deferred：① round-trip 只测 fb_discover 未独立测 fb_group（同模型已覆盖序列化）
   ② _conn() 无 try/finally（临时 SQLite 无实际影响）
 - Step 3.3: complete (commits fd29bf1..d90e01f, review clean)
+
+## Step 3.4 平台冒烟记录（2026-08-09 22:46，DONE）
+
+- start.sh：SPEC §6.5 追加 `export BRIGHTDATA_API_KEY="${BRIGHTDATA_API_KEY:-}"` /
+  `export APIFY_TOKEN="${APIFY_TOKEN:-}"`（WA_CHECK_ACCOUNTS 之后、daemon 启动前；
+  grep 第 29-30 行 + `bash -n` 通过；.env 已 gitignore）
+- 后端/daemon：stop.sh 停旧（旧 daemon 34402 不认新队列）→ start.sh 起新；
+  uvicorn 30012 / daemon 30020 / vite 30051；daemon.log 最新 boot 段 8 队列全量注册
+  含 `[daemon] 队列 discover_fb` / `[daemon] 队列 crawl_fb_group`（line 32954/32956），
+  无 key 相关报错
+- fb_discover 任务 85（自定义 2 词 × 1 页）：work_items 2 条（requires=["local"]、
+  engine=ddg、query 逐词正确、page=1）；任务 89（默认矩阵 5 词 × 1 页）：5 条同断言
+- fb_group 任务 86（空表防御）：入队 0 条；任务 88（手动种子 1 条 pending 群）：
+  入队 1 条，payload {"url","provider":"brightdata","limit":50}，源行 pending→in_progress
+  （冒烟后已清理种子行 + 派生 work_items，生产库复核 0 残留）
+- start/stop 流转：85/86/88/89 均 create(201)→start(running)→stop(stopped)，
+  progress 计数与入队数一致（85:2/2、86:0/0 零项兜底、88:1/1、89:5/5）
+- 验收判定：**满足**——两类型任务可创建/启动/停止，入队断言正确；daemon 8 队列
+  全量注册（含新队列）
+- 观测（非阻塞）：① daemon 冒烟期内未 claim discover_fb/crawl_fb_group（重队列
+  优先），消费链路已在 Step 1.5/2.4 临时库验证 ② stop.sh 对 daemon 子进程需 kill -9
+  补刀（pidfile 记父进程，AGENTS.md 已注明）③ start.sh 经 bash 工具调用会挂超时并
+  连带杀新起进程，需 nohup 脱离调用 shell（harness 调用方式问题，非脚本缺陷）
