@@ -9,7 +9,7 @@
 
 | Phase | 目标 | 预计 Step 数 | 依赖 | 状态 |
 |---|---|---|---|---|
-| 1 发现层（fetcher 侧） | FetchDdgSerp 原子 + FbDiscoverTask + discover_fb 队列 + DB 前置 | 6 | 无 | pending |
+| 1 发现层（fetcher 侧） | FetchDdgSerp 原子 + FbDiscoverTask + discover_fb 队列 + DB 前置 | 6 | 无 | done |
 | 2 群采集（fetcher 侧） | fb_groups 数据面 + FbGroupTask + crawl_fb_group 队列 + FbPostTask 补位 | 4 | Phase 1 Step 1.1 | pending |
 | 3 平台批次 | BATCH_TYPES 双类型 + enqueue 双函数 + TaskParams + 平台测试 | 4 | Phase 1 + 2 | pending |
 | 4 前端 | api.ts/task-ui/TaskFormDialog/Tasks.tsx 五处同步 + tsc | 5 | Phase 3 | pending |
@@ -78,11 +78,11 @@ work_items 后真实抓取 1-2 词 → fb_posts/fb_groups 出现增量；相关�
 
 ### Step 1.5 — 发现层运行时冒烟（真实 DDG）
 
-- [ ] 起 daemon（`python -m fetcher daemon --queues discover_fb --local-workers 1`，
+- [x] 起 daemon（`python -m fetcher daemon --queues discover_fb --local-workers 1`，
       临时 DB 或生产库视环境），手工 INSERT 2 条 work_items（默认矩阵前 2 词 × 1 页）
-- [ ] 观察：2 条 item 顺序消费、间隔 ≥60s、fb_posts/fb_groups 出现真实增量
+- [x] 观察：2 条 item 顺序消费、间隔 ≥60s、fb_posts/fb_groups 出现真实增量
       （若 202 触发，验证退避后继续）
-- [ ] 冒烟记录（结果 + 实际耗时 + 限流观测）写入 ledger.md
+- [x] 冒烟记录（结果 + 实际耗时 + 限流观测）写入 ledger.md
 - 预估 30min（含等待节奏）；验收：fb_posts 或 fb_groups ≥1 行真实新增（202 场景
       下以退避后成功为准）；冒烟记录完整
 

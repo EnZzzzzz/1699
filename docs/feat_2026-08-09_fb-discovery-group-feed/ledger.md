@@ -153,3 +153,14 @@
 - 落库：fb_posts 新增 1 行（source='ddg'，keyword='site:facebook.com/groups 外贸 whatsapp'，url=真实 FB 帖 permalink groups/676368063029200/posts/1442991693033496/，group_name 已去 " | Facebook" 后缀）；fb_groups 新增 18 行（source 全为 'ddg'，含数字 gid 与 slug gid，如 whatspphaiwai；item2 结果与 item1 大量同 URL 被 INSERT OR IGNORE 去重）
 - 限流观测：无 202 触发——两条查询首次即 200 返回真实结果，无需退避（协调者 spike 曾实测 2 连查后第 3 次 202，本次节奏 62s 留足余量）
 - 验收判定：**满足**——fb_posts 1 行 + fb_groups 18 行真实新增（source='ddg' 溯源完整）、间隔 62s≥60s、item 状态流转 pending→claimed→done 完整
+
+## Phase 1 完成（Step 1.1-1.5 全 done）
+
+- 冒烟过程非阻塞发现（终审分诊，建议开 issue）：
+  ① FETCHER_DB_PATH 环境变量对 daemon 无效（config_from_args 只读 --db；与 ShopDB
+  无参构造语义不一致）——冒烟已用 --db 绕过，属既有 daemon 行为，非 feature 缺陷
+  ② 同机多 daemon 的 consumer_status local0 心跳键冲突（smoke 短暂覆盖生产 daemon
+  心跳行，10s 心跳自动写回）——运维注意点
+  ③ smoke daemon 启动对生产库执行 reset_claimed_work_items（已自愈，生产 daemon 34402
+  重新认领 FIFO）——事故已止损
+- Phase 1 完成标准满足：Step 1.1-1.5 全 done（含冒烟记录）；Phase 2 Step 2.1 可开始。
