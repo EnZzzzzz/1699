@@ -300,3 +300,21 @@
 - implementer commit `e4a6866`（DONE，tsc 全绿）
 - reviewer：spec ✅，0 问题
 - Step 4.4: complete (commits 211927a..e4a6866, review clean)
+
+## Step 4.5 前端冒烟记录（2026-08-09 23:03:43）
+- 环境：vite :3000（PID 30015）、backend :8765 复用（未重启）
+- 工具：playwright-core 1.62.1 + 系统缓存 chromium-1228 headless shell（executablePath 直启，
+  无网络下载）；脚本 /tmp/fb_smoke_web_smoke.mjs（不入库）
+- 操作：打开 /tasks → 新建 fb_discover（断言默认矩阵 5 行、每词页数=1、hint「DDG SERP 单 IP
+  限流」）→ 切 fb_group（断言 provider 默认 Bright Data 且 trigger 含 h-8+font-medium、每群
+  帖数=50、hint「Bright Data 免费层」）→ 提交自定义 1 词 fb_discover（断言类型标签「Facebook
+  帖子发现」+ 摘要「1 词 × 1 页」）→ 提交默认 fb_group（断言标签「Facebook 群帖采集」+ 摘要
+  「provider=Bright Data 每群≤50帖 群数不限」+ 状态列排队中渲染不崩）→ 编辑 fb_discover 回填
+  （keywords/pages=1 正确、类型只读）。共 18 项断言全部通过（passed=18 failed=0）
+- 创建的任务：id=92 fb_discover {keywords:"site:facebook.com/groups 冒烟测试",pages:1}、
+  id=93 fb_group {provider:brightdata,posts_per_group:50}——创建即 pending 不入队（批次入队
+  仅在显式 start 时发生），冒烟后 DELETE 两任务清理，DB 验证 0 残留 work_items
+- 截图：/tmp/fb_smoke_web/01-tasks-list.png ~ 06-edit-backfill.png
+- 验收判定：满足（PLAN checkbox 两项均达成）
+- 观测：打开 Dialog 时出现 React 19 既存 ref 警告（shadcn Slot 组件，非本 Step 引入，改动前
+  文件即存在）
