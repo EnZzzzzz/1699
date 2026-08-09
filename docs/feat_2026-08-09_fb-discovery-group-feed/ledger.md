@@ -411,3 +411,7 @@
     批次路径」口径完成
 - Step 5.1: complete (commits 05276a1..2d8eb86, review clean——冒烟类 Step 以验收证据
   为准，无代码 review)
+- Step 5.2 全量回归：三组全绿零失败。fetcher 740 tests OK (29.193s)；平台 72 tests OK
+  (0.319s，含 FbBatchDispatch/Enqueue 8 例；唯一警告为既有 StarletteDeprecationWarning)；
+  前端 npx tsc -b EXIT=0 (3.098s)。纯回归零代码改动，SPEC §10 验收 6 满足。
+- Step 5.2: complete
