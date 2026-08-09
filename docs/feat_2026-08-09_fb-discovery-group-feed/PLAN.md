@@ -352,9 +352,9 @@ payload/requires 断言）；平台测试全绿。
 
 ### Step 5.3 — 文档同步
 
-- [ ] AGENTS.md：§1 队列数量 7→9（discover_fb / crawl_fb_group）、§5 批次模型清单
+- [x] AGENTS.md：§1 队列数量 7→9（discover_fb / crawl_fb_group）、§5 批次模型清单
       补两类型
-- [ ] docs/channel-research/facebook-groups.md §10/§12「未做」清单更新（发现层已
+- [x] docs/channel-research/facebook-groups.md §10/§12「未做」清单更新（发现层已
       自建落地、群 feed 已接队列）
 - 预估 15min；验收：两文档与实现一致
 

@@ -422,3 +422,9 @@
   验收 6 满足）
 - 观察：平台测试既有 StarletteDeprecationWarning（httpx→httpx2），非 feature 引入
 - Step 5.2: complete (commits 73a63f0..b7191d8, review clean——纯回归类 Step)
+
+## Step 5.3 执行记录
+
+- implementer commit `252b24c`（DONE：AGENTS.md 队列 7→9 + 批次模型补两类型；
+  渠道文档 §10/§12 未做→已做，Apify SERP 明确非目标）
+- Step 5.3: complete (commits b1d964e..252b24c, review clean——纯文档类 Step)
