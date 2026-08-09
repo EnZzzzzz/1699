@@ -143,3 +143,13 @@
   方案 A `config_from_args` 加 `os.environ.get("FETCHER_DB_PATH")` 回退（与 ShopDB 语义对齐）；
   方案 B 冒烟改用显式 `--db`（brief 环境事实第 3 条修正）。不自行修代码，按 brief 纪律
   上报 BLOCKED
+
+## Step 1.5 冒烟记录（2026-08-09 22:03，DONE）
+
+- 临时 DB：/tmp/fb_smoke_1786283975/1688.db（ShopDB 初始化建表，2 条 work_items 就绪，requires='["local"]'）
+- daemon：`-u -m fetcher daemon --db /tmp/fb_smoke_1786283975/1688.db --queues discover_fb --local-workers 1`，PID 80522，有头观察：无浏览器窗口弹出（local 消费者，符合预期）；**隔离确认**：启动日志 `队列 discover_fb: 待补货店铺 0 个 + 待认领工作项 2 个`、`[fb_discover] 队列待处理: 2`——读的是临时库（对比上次事故的 3164 店铺计数），consumer_status 心跳仅写临时库 local0，未触碰生产库
+- item 消费：item1 21:59:37 claimed → 22:00:39 done（query「site:facebook.com/groups 外贸 whatsapp」第1页）；item2 22:00:39 claimed → 22:01:41 done（query「跨境电商 whatsapp」）；均 local0 消费，终态 done
+- 间隔：62s（两次 claimed 与两次 finish 均差 62s；≥60s 下限达标）
+- 落库：fb_posts 新增 1 行（source='ddg'，keyword='site:facebook.com/groups 外贸 whatsapp'，url=真实 FB 帖 permalink groups/676368063029200/posts/1442991693033496/，group_name 已去 " | Facebook" 后缀）；fb_groups 新增 18 行（source 全为 'ddg'，含数字 gid 与 slug gid，如 whatspphaiwai；item2 结果与 item1 大量同 URL 被 INSERT OR IGNORE 去重）
+- 限流观测：无 202 触发——两条查询首次即 200 返回真实结果，无需退避（协调者 spike 曾实测 2 连查后第 3 次 202，本次节奏 62s 留足余量）
+- 验收判定：**满足**——fb_posts 1 行 + fb_groups 18 行真实新增（source='ddg' 溯源完整）、间隔 62s≥60s、item 状态流转 pending→claimed→done 完整
