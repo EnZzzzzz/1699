@@ -120,6 +120,9 @@ def add_common_args(ap: argparse.ArgumentParser,
                     help="数据库路径（默认项目根 .cache/1688.db）")
     ap.add_argument("--no-auto-solve", action="store_true",
                     help="关闭滑块轨迹回放自动过证（退化为纯人工/休息换 IP）")
+    ap.add_argument("--item-timeout", type=float, default=1800.0,
+                    help="单个工作项执行超时秒数，超时由看门狗中止并释放"
+                         "（默认 1800，0 关闭看门狗）")
 
 
 def config_from_args(args) -> RunConfig:
@@ -147,6 +150,7 @@ def config_from_args(args) -> RunConfig:
         rest_max=args.rest_max,
         stagger_min=args.stagger_min,
         stagger_max=args.stagger_max,
+        item_timeout=args.item_timeout,
         workers=args.workers,
         auto_solve_slider=not args.no_auto_solve,
     )

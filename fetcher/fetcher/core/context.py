@@ -8,6 +8,7 @@ WorkerContext 是控制层（P2）装配好后传给 Atom/Detector/Strategy 的
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
@@ -66,6 +67,9 @@ class RunConfig:
     # ---- 席位等待 ----
     license_seat_timeout: float = 600.0
 
+    # ---- 看门狗 ----
+    item_timeout: float = 1800.0    # 单工作项执行超时（秒，0=关闭看门狗）
+
     # ---- 行为开关 ----
     auto_solve_slider: bool = True  # 是否启用轨迹回放自动过证
 
@@ -94,6 +98,10 @@ class WorkerContext:
     store: "IdentityStore | None" = None
     site: "SitePlugin | None" = None
     stop: threading.Event = field(default_factory=threading.Event)
+    # 看门狗中止信号：当前 item 执行超时由 watchdog 线程置位（区别于
+    # stop——abort_item 只中止当前 item，worker 清标志后继续取新任务）。
+    # ctx.wait 对两者都可中断。
+    abort_item: threading.Event = field(default_factory=threading.Event)
     log: Callable[[str], None] = print
     # 状态行更新（控制层装配；无状态板时为 noop）。任务层经它更新状态板字段
     set_status: Callable[..., None] = lambda **kw: None
@@ -139,5 +147,12 @@ class WorkerContext:
         return self.stop.is_set()
 
     def wait(self, seconds: float) -> bool:
-        """可中断等待；返回 True 表示被停止信号中断。"""
-        return self.stop.wait(seconds)
+        """可中断等待；返回 True 表示被停止/中止信号中断。"""
+        deadline = time.monotonic() + seconds
+        while True:
+            if self.stop.is_set() or self.abort_item.is_set():
+                return True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            self.stop.wait(min(remaining, 0.5))

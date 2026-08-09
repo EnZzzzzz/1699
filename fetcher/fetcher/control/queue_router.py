@@ -362,6 +362,34 @@ class QueueRouter:
             ctx.log(f"[!] 工作项 #{item_id} 释放失败: {e}")
             return ""
 
+    def timeout_release(self, ctx) -> str:
+        """看门狗超时释放：当前 worker 认领的 item 强制回 pending（attempts+1，
+        耗尽置 failed）。与 release_item 的差异：由看门狗线程调用（非 worker
+        自己），并清理 consumer_status 的 current 字段。无认领记录返回 ""
+        """
+        item_id = ctx.state.pop(_STATE_KEY, None)
+        if item_id is None:
+            return ""
+        try:
+            status = self._db(ctx).release_work_item(item_id, max_attempts=3)
+            store = self._status(ctx)
+            if store is not None:
+                try:
+                    store.upsert(
+                        consumer_id_for(ctx),
+                        getattr(ctx, "consumer_kind", "browser"),
+                        queue=None, item_id=None, batch_id=None,
+                        cooldowns=ctx.cooldown_until)
+                except Exception as e:  # noqa: BLE001
+                    ctx.log(f"[!] watchdog 状态上报失败: {e}")
+            from datetime import datetime
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            ctx.log(f"[watchdog] item={item_id} 超时释放 status={status} @{ts}")
+            return status
+        except Exception as e:  # noqa: BLE001
+            ctx.log(f"[!] watchdog 释放工作项 #{item_id} 失败: {e}")
+            return ""
+
     def _finish(self, ctx, status: str, result: dict | None = None):
         """把当前 worker 认领的 work_item 落终态（done/failed）。"""
         item_id = ctx.state.pop(_STATE_KEY, None)

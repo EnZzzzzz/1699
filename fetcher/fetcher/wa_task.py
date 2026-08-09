@@ -11,9 +11,10 @@ FATAL→停止、SKIPPED→收工、NET_ERROR→giveup 继续。节奏（逐号�
 原子 sample_min/max）与批间休息由原子/循环控制；风控冷却经让出型冷却
 （冷却键 = queue 名 "wa_check"，Step 1.1 泛化已就绪）。
 
-入队 feeder（daemon topup 角色）：wa_check_topup 从 contacts 捞未查号码
-→ normalize 去重 → 50/块 → 账号按块轮换（WA_CHECK_ACCOUNTS 环境变量，
-空则 ["default"]）→ INSERT work_item（requires=["local"]，site=NULL）。
+入队 feeder（daemon topup 角色）：wa_check_topup 挑未查号码（FB 源
+fb_contacts 优先，再 contacts）→ normalize 去重 → 50/块 → 账号按块轮换
+（WA_CHECK_ACCOUNTS 环境变量，空则 ["default"]）→ INSERT work_item
+（requires=["local"]，site=NULL）。
 
 DB 写入一律短事务 + busy_timeout（WAL，爬虫可能正在写库）。
 """
@@ -49,20 +50,22 @@ def wa_check_topup(db, limit: int = 0) -> int:
         " AND status IN ('pending','claimed')", (WA_QUEUE,)).fetchone()[0]
     if in_flight:
         return 0
-    # 双源挑号（P3）：contacts 未查 mobile ∪ fb_contacts 未查 cn_uncertain
-    # 桶（declared_wa/overseas 桶不进 wa_check；declared 抽样见 Step 3.2）。
-    # UNION 天然 DISTINCT 去重（SPEC §7.6 双源口径）。
-    rows = db.conn.execute(
-        "SELECT mobile AS number FROM contacts"
-        " WHERE wa_checked_at IS NULL AND mobile IS NOT NULL"
-        "   AND TRIM(mobile) <> ''"
-        " UNION"
-        " SELECT number FROM fb_contacts"
+    # 双源挑号（P3，FB 源优先）：先 fb_contacts 未查 cn_uncertain 桶，
+    # 再 contacts 未查 mobile（declared_wa/overseas 桶不进 wa_check；
+    # declared 抽样见下方 Step 3.2）。跨源同号经 seen 去重，fb 先入库
+    # 的号码排在 contacts 之前 → 批次按 FB 优先顺序消费。
+    fb_rows = db.conn.execute(
+        "SELECT number FROM fb_contacts"
         " WHERE bucket='cn_uncertain' AND wa_checked_at IS NULL"
         " ORDER BY number").fetchall()
+    contact_rows = db.conn.execute(
+        "SELECT mobile FROM contacts"
+        " WHERE wa_checked_at IS NULL AND mobile IS NOT NULL"
+        "   AND TRIM(mobile) <> ''"
+        " ORDER BY mobile").fetchall()
     numbers: list[str] = []
     seen: set[str] = set()
-    for (number,) in rows:
+    for (number,) in fb_rows + contact_rows:
         for n in normalize_numbers([number], DEFAULT_CC):
             if n not in seen:
                 seen.add(n)

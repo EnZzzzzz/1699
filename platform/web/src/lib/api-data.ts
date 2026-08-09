@@ -60,6 +60,20 @@ export interface Paged<T> {
   items: T[]
 }
 
+export interface FbContactItem {
+  id: number
+  number: string
+  bucket: string
+  wa_source: string | null
+  wa_registered: number | null
+  wa_checked_at: string | null
+  post_url: string
+  group_id: string | null
+  first_seen_at: string | null
+  group_name: string | null
+  keyword: string | null
+}
+
 export type WaFilter = 'registered' | 'unregistered' | 'unchecked'
 
 export interface ShopsQuery {
@@ -72,6 +86,16 @@ export interface ShopsQuery {
 export interface ContactsQuery {
   wa?: WaFilter | ''
   has_mobile?: boolean
+  q?: string
+  page?: number
+  size?: number
+}
+
+export type FbBucket = 'declared_wa' | 'cn_uncertain' | 'overseas'
+
+export interface FbContactsQuery {
+  wa?: WaFilter | ''
+  bucket?: FbBucket | ''
   q?: string
   page?: number
   size?: number
@@ -95,4 +119,7 @@ export const dataApi = {
   contacts: ({ wa, has_mobile, q, page = 1, size = 20 }: ContactsQuery) =>
     request<Paged<ContactItem>>(
       `/data/contacts${qs({ wa: wa || undefined, has_mobile: has_mobile ? '1' : undefined, q, page, size })}`),
+  fbContacts: ({ wa, bucket, q, page = 1, size = 20 }: FbContactsQuery) =>
+    request<Paged<FbContactItem>>(
+      `/data/fb-contacts${qs({ wa: wa || undefined, bucket: bucket || undefined, q, page, size })}`),
 }

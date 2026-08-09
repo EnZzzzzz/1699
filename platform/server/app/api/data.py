@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""数据浏览接口：shops / contacts 分页查询（全部只读 SELECT）。
+"""数据浏览接口：shops / contacts / fb-contacts 分页查询（全部只读 SELECT）。
 
 防御性说明：
 - contacts 表的 wa_registered / wa_checked_at 两列由另一模块负责添加，可能尚不存在。
@@ -7,6 +7,7 @@
   - items 中 wa_registered / wa_checked_at 统一返回 None
   - wa=registered / wa=unregistered 筛选返回空结果
   - wa=unchecked（或未传 wa）返回全量（即"全部未查"语义）
+- fb_contacts / fb_posts 两表同理：缺表时直接返回空分页结果。
 """
 
 from fastapi import APIRouter, Query
@@ -108,6 +109,72 @@ def list_contacts(
             SELECT c.id, c.shop_id, c.contact_person, c.gender, c.phone, c.mobile,
                    c.address, c.scraped_at, {wa_select},
                    s.domain AS shop_domain, s.name AS shop_name
+            {base}
+            {where_sql}
+            ORDER BY c.id DESC
+            LIMIT ? OFFSET ?
+            """,
+            params + [size, (page - 1) * size],
+        ).fetchall()
+
+    return {
+        "total": total,
+        "page": page,
+        "size": size,
+        "items": [dict(r) for r in rows],
+    }
+
+
+def _fb_tables(cur) -> bool:
+    """探测 fb_contacts / fb_posts 两表是否已存在。"""
+    tables = {
+        row[0]
+        for row in cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    }
+    return "fb_contacts" in tables and "fb_posts" in tables
+
+
+@router.get("/fb-contacts")
+def list_fb_contacts(
+    wa: str = Query(default=""),
+    bucket: str = Query(default=""),
+    q: str = Query(default=""),
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=20, ge=1, le=200),
+):
+    empty = {"total": 0, "page": page, "size": size, "items": []}
+    with connect() as conn:
+        cur = conn.cursor()
+        if not _fb_tables(cur):
+            return empty
+
+        where = []
+        params: list = []
+        if wa == "registered":
+            where.append("c.wa_registered = 1")
+        elif wa == "unregistered":
+            where.append("c.wa_registered = 0")
+        elif wa == "unchecked":
+            where.append("c.wa_registered IS NULL")
+        if bucket:
+            where.append("c.bucket = ?")
+            params.append(bucket)
+        if q:
+            where.append("(c.number LIKE ? OR c.post_url LIKE ? OR p.group_name LIKE ?)")
+            like = f"%{q}%"
+            params.extend([like, like, like])
+        where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+
+        base = "FROM fb_contacts c LEFT JOIN fb_posts p ON p.url = c.post_url"
+        total = cur.execute(
+            f"SELECT COUNT(*) {base} {where_sql}", params).fetchone()[0]
+        rows = cur.execute(
+            f"""
+            SELECT c.id, c.number, c.bucket, c.wa_source,
+                   c.wa_registered, c.wa_checked_at,
+                   c.post_url, c.group_id, c.first_seen_at,
+                   p.group_name AS group_name, p.keyword AS keyword
             {base}
             {where_sql}
             ORDER BY c.id DESC

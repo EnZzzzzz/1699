@@ -311,6 +311,21 @@ class EnqueueWaBatchDualSourceTest(FbBatchTestBase):
         nums = self._payload_numbers(9)
         self.assertEqual(nums, ["8613800000001"])
 
+    def test_fb_numbers_prioritized_over_contacts(self):
+        """FB 源优先：fb cn_uncertain 号排在 contacts 号之前入队。
+
+        contacts 用 131 段（字典序在 fb 的 137 段之前），旧 UNION
+        ORDER BY number 会把 contacts 排前面；新逻辑 fb 源显式优先。
+        """
+        self._seed(
+            contacts=[(f"131{i:08d}", None) for i in range(60)],
+            fb=[(f"137{i:08d}", "cn_uncertain", None) for i in range(10)])
+        from app.db import enqueue_wa_batch
+        enqueue_wa_batch(9, ["a1"], limit=0)
+        nums = self._payload_numbers(9)
+        self.assertTrue(all(x.startswith("86137") for x in nums[:10]))
+        self.assertTrue(all(x.startswith("86131") for x in nums[10:]))
+
     def test_declared_sampling_mixed(self):
         """cn_uncertain 10 个 → 配 1 个 declared 抽样。"""
         self._seed(

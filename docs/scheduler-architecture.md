@@ -139,7 +139,7 @@ def consumer_loop(consumer):
 
 - `claim_next_eligible` 的 SQL 过滤：只查 `consumer.eligible` 为真的队列；浏览器类站点队列用内存冷却表过滤（不进 SQL）。
 - **长阻塞工作项**（滑块自愈、风控修复可能原地跑 10 分钟+）期间该消费者对其他队列不可用——v1 接受（仍远优于现状纯睡）；v2 可考虑修复类操作「换通道继续」而非原地等。
-- 消费者异常崩溃：工作项 `claimed` 超租约时间未 finish → 调度器回收重置为 `pending`（租约字段 + 心跳）。
+- 消费者异常崩溃：工作项 `claimed` 超租约时间未 finish → 调度器回收重置为 `pending`（租约字段 + 心跳）。**已落地为看门狗（2026-08-09）**：daemon/CLI 均有 30s 扫描线程（`engine.py watchdog_tick` + `--item-timeout`，默认 1800s），超时 item 置 `ctx.abort_item` 中止信号（`ctx.wait` 可中断）+ `QueueRouter.timeout_release` 释放回 pending（attempts 熔断复用）；worker 感知后跳过簿记、重建浏览器会话、取新任务。设计意图（不杀线程只置信号）与 v1 限制：卡在不可中断 Playwright 调用时 worker 需等该调用返回才感知，watchdog 日志可观测。
 - 停止语义：平台停止批次 → 该批次 pending 项直接标记 `stopped`，claimed 项跑完当前项后不再取新项（协作式，沿用现有 stop Event 模式）。
 - daemon 退出：各消费者回写 Cookie、关浏览器、释放通道（沿用 `Session.close` 语义）。
 

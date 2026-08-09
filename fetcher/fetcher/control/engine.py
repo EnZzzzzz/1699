@@ -25,6 +25,38 @@ from fetcher.net.seeds import load_seed_kits
 from fetcher.strategy.policy import Policy
 
 
+# ---- 工作项执行超时看门狗（模块级纯函数，便于单测）----
+
+def watchdog_tick(ctxs, task, now: float, timeout: float) -> int:
+    """扫描 worker ctx 列表，中止执行超时的 item：置 abort_item 信号 +
+    释放工作项（task 有 timeout_release 时，如 daemon 的 QueueRouter）。
+
+    返回本次中止的 item 数。设计要点：
+    - 只置信号不杀线程：worker 在可中断点（ctx.wait/阶段边界）感知后
+      自行收尾（loop 跳簿记、重建会话、取新任务）；
+    - abort 已置位的跳过（同一 item 不重复释放）；
+    - 释放失败（DB 锁等）只记日志不炸看门狗线程；
+    - CLI 单任务（task 无 timeout_release）只置信号，无 DB 可释放。
+    """
+    aborted = 0
+    for ctx in list(ctxs):
+        started = ctx.state.get("item_started_at")
+        if not started or now - started < timeout \
+                or ctx.abort_item.is_set():
+            continue
+        ctx.abort_item.set()
+        aborted += 1
+        ctx.log(f"[watchdog] item 执行超过 {timeout:.0f}s，"
+                f"强制中止并释放（worker w{ctx.wid}）")
+        release = getattr(task, "timeout_release", None)
+        if release is not None:
+            try:
+                release(ctx)
+            except Exception as e:  # noqa: BLE001
+                ctx.log(f"[!] watchdog 释放工作项失败: {e}")
+    return aborted
+
+
 class Engine:
     """多 worker 采集引擎。
 
@@ -73,6 +105,10 @@ class Engine:
         # 心跳线程（10s 批量刷新 updated_at），daemon 路径启动
         self._heartbeat_thread: threading.Thread | None = None
         self._heartbeat_stop = threading.Event()
+        # 看门狗线程（30s 扫描超时 item）；worker ctx 注册表（扫描对象）
+        self._watchdog_thread: threading.Thread | None = None
+        self._watchdog_stop = threading.Event()
+        self._worker_ctxs: list = []
         # 可注入工厂（测试用；默认每 worker 独立 ShopDB / BrowserManager /
         # CrawlLoop）
         self.store_factory = store_factory or (
@@ -237,6 +273,8 @@ class Engine:
             loop_kw["policies"] = self.policies
         loop = self.loop_factory(ctx, self.task, policy=self.policy,
                                  board=board, seed_kit=seed_kit, **loop_kw)
+        with self.lock:
+            self._worker_ctxs.append(ctx)
         stats = loop.run()
         with self.lock:
             self.state["stats"][wid] = stats
@@ -268,6 +306,8 @@ class Engine:
         ctx.set_status = lambda **kw: None
         from fetcher.control.local_loop import LocalLoop
         loop = self.local_loop_factory(ctx, self.task)
+        with self.lock:
+            self._worker_ctxs.append(ctx)
         stats = loop.run()
         with self.lock:
             self.state["stats"][wid + 10000] = stats
@@ -358,6 +398,14 @@ class Engine:
                 name="daemon-heartbeat", daemon=True)
             self._heartbeat_thread.start()
 
+        # 看门狗：30s 扫描超时 item（item_timeout=0 关闭；CLI/daemon 均启用）
+        if cfg.item_timeout and cfg.item_timeout > 0:
+            self._watchdog_stop.clear()
+            self._watchdog_thread = threading.Thread(
+                target=self._watchdog_loop,
+                name="item-watchdog", daemon=True)
+            self._watchdog_thread.start()
+
         for i, t in enumerate(threads):
             t.start()
             if i < len(threads) - 1:
@@ -384,6 +432,9 @@ class Engine:
             (board.log if board else print)("[!] 进度已保存，下次运行自动续爬")
 
         # P4 daemon 可观测：退出停心跳、清 consumer_status 行、释放租约
+        self._watchdog_stop.set()
+        if self._watchdog_thread is not None:
+            self._watchdog_thread.join(timeout=2)
         if self.status_store is not None:
             self._heartbeat_stop.set()
             if self._heartbeat_thread is not None:
@@ -402,6 +453,17 @@ class Engine:
 
         print(f"[OK] {self.task.summary(self.state['stats'], self.config.resolved_db_path())}")
         return 0
+
+    def _watchdog_loop(self) -> None:
+        """30s 看门狗循环：扫描并中止执行超时的 item。"""
+        timeout = float(self.config.item_timeout)
+        while not self._watchdog_stop.wait(30.0):
+            try:
+                with self.lock:
+                    ctxs = list(self._worker_ctxs)
+                watchdog_tick(ctxs, self.task, time.time(), timeout)
+            except Exception as e:  # noqa: BLE001
+                print(f"[!] watchdog 扫描异常: {e}", flush=True)
 
     def _heartbeat_loop(self, consumers: list[str]) -> None:
         """10s 心跳：批量刷新在册消费者的 updated_at（不 clobber 其他字段）。"""

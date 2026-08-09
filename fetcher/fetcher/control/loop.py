@@ -214,6 +214,7 @@ class CrawlLoop:
                     break
                 self._bind_item_site()
                 self.ctx.state["item"] = item
+                self.ctx.state["item_started_at"] = time.time()  # 看门狗计时
                 self.ctx.set_status(shop=self.task.label(item),
                                     state="检查出口 IP…")
 
@@ -229,6 +230,10 @@ class CrawlLoop:
 
                 # ---- item 级重试循环（策略表驱动）----
                 kind, count = self._process_item(item)
+                self.ctx.state.pop("item_started_at", None)
+                if kind == "timeout_abort":
+                    self._handle_timeout_abort(item)
+                    continue
                 if kind in ("abort", "stop"):
                     return self.stats
                 if kind == "release":
@@ -348,6 +353,28 @@ class CrawlLoop:
         self.log(f"[X] 重启浏览器失败: {result.detail}")
         return False
 
+    def _handle_timeout_abort(self, item):
+        """看门狗超时中止的收尾：清信号 → 跳簿记 → 重建浏览器会话。
+
+        item 已被看门狗释放回 pending（timeout_release），本方法只做
+        worker 侧恢复。会话可能已 wedge（挂起的直接诱因），一律关闭重建；
+        重建失败抛 RuntimeError 让 worker 退出（浏览器死了 worker 活着
+        也没用，daemon 重启由运维/start.sh 负责）。
+        """
+        ctx = self.ctx
+        ctx.abort_item.clear()
+        self.log("[watchdog] item 执行超时被强制中止，跳过簿记，"
+                 "重建浏览器会话后取新任务")
+        self.task.after_item(ctx, item)
+        if ctx.consumer_kind == "local" or ctx.session is None:
+            return
+        try:
+            ctx.session.close(store=ctx.store, log=ctx.log)
+        except Exception as e:  # noqa: BLE001
+            self.log(f"[!] 中止后关闭旧会话失败（忽略，直接重建）: {e}")
+        self._launch_with_retry()
+        ctx.set_status(ip=ctx.identity, state="浏览器已重建", force=True)
+
     def _ensure_fresh_ip(self) -> bool:
         """青果出口 30 分钟轮换：不一致即重启浏览器重绑 Cookie。
 
@@ -389,7 +416,7 @@ class CrawlLoop:
     # ---- item 级重试循环（核心：采集 → 判场景 → 执行策略） ----
 
     def _process_item(self, item) -> tuple[str, int]:
-        """返回 (kind, count)：kind ∈ success/giveup/abort/stop。"""
+        """返回 (kind, count)：kind ∈ success/giveup/abort/stop/timeout_abort。"""
         ctx = self.ctx
         # 熔断按店计非按次：同一店铺的重试链无论多长只计一次，单个慢/卡
         # 店铺不会烧穿熔断中止整个任务（旧引擎同店铺最多 3 段升级后放弃）
@@ -399,6 +426,9 @@ class CrawlLoop:
             ctx.set_status(state="采集中")
             ctx.last_error = None
             result = self.task.fetch(ctx, item)
+            # 看门狗中止：跳过一切簿记/策略，交 run() 收尾（item 已被释放）
+            if ctx.abort_item.is_set():
+                return "timeout_abort", 0
             scenario = self.inspector.inspect(ctx)
             if scenario is Scenario.OK:
                 if result is None:
@@ -463,6 +493,9 @@ class CrawlLoop:
             self.log(f"⚠ {reason} → 策略 {decision.strategy}"
                      f"（第 {decision.attempt} 次）")
             step = strategy.run(ctx)
+            if ctx.abort_item.is_set():
+                # 策略链途中被看门狗中止（修复等待被 ctx.wait 中断）
+                return "timeout_abort", 0
             if step.solved:
                 self.log(f"✓ 策略 {decision.strategy} 完成: {step.detail}")
             # 策略冷却统一让出 + release（P3 SPEC §3.4）：冷却期间该

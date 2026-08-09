@@ -315,14 +315,15 @@ def _normalize_numbers(raw, default_cc="86"):
 
 def enqueue_wa_batch(batch_id: int, accounts: list[str],
                      limit: int = 0) -> int:
-    """wa_check 批次入队：contacts ∪ fb_contacts 未查号码 → 50/块 →
-    账号按块轮换（双源口径与 fetcher wa_check_topup 一致，SPEC §7.6）。
+    """wa_check 批次入队：fb_contacts ∪ contacts 未查号码（FB 源优先）
+    → 50/块 → 账号按块轮换（双源口径与 fetcher wa_check_topup 一致，SPEC §7.6）。
 
-    - contacts：未查 mobile；fb_contacts：仅 bucket='cn_uncertain' 未查号
-      （declared_wa/overseas 桶不进）；UNION 天然 DISTINCT 去重；
+    - fb_contacts：仅 bucket='cn_uncertain' 未查号（declared_wa/overseas
+      桶不进），排在 contacts 未查 mobile 之前 → 批次按 FB 优先消费；
+      跨源同号经 seen 去重；
     - declared_wa 抽样校准（Step 3.2）：按 max(1, N×10%) 抽未查 declared
       号混入同批（ORDER BY RANDOM()），供一致率统计；
-    - limit>0 时作用于 UNION（不确定号上限），抽样在其上追加；
+    - limit>0 时作用于不确定号上限（fb 优先截取），抽样在其上追加；
     accounts 为空拒绝（防空跑 default 主号）。requires=["local"]、
     site=NULL。返回入队 item 数。
     """
@@ -337,22 +338,23 @@ def enqueue_wa_batch(batch_id: int, accounts: list[str],
         tables = {r[0] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'")}
         if "fb_contacts" in tables:
-            sql = ("SELECT mobile AS number FROM contacts"
-                   " WHERE wa_checked_at IS NULL AND mobile IS NOT NULL"
-                   "   AND TRIM(mobile) <> ''"
-                   " UNION"
-                   " SELECT number FROM fb_contacts"
-                   " WHERE bucket='cn_uncertain' AND wa_checked_at IS NULL"
-                   " ORDER BY number")
+            fb_rows = conn.execute(
+                "SELECT number FROM fb_contacts"
+                " WHERE bucket='cn_uncertain' AND wa_checked_at IS NULL"
+                " ORDER BY number").fetchall()
+            contact_rows = conn.execute(
+                "SELECT mobile FROM contacts"
+                " WHERE wa_checked_at IS NULL AND mobile IS NOT NULL"
+                "   AND TRIM(mobile) <> ''"
+                " ORDER BY mobile").fetchall()
+            rows = fb_rows + contact_rows
         else:
-            sql = ("SELECT mobile AS number FROM contacts"
-                   " WHERE wa_checked_at IS NULL AND mobile IS NOT NULL"
-                   "   AND TRIM(mobile) <> '' ORDER BY id")
+            rows = conn.execute(
+                "SELECT mobile FROM contacts"
+                " WHERE wa_checked_at IS NULL AND mobile IS NOT NULL"
+                "   AND TRIM(mobile) <> '' ORDER BY id").fetchall()
         if limit > 0:
-            sql += " LIMIT ?"
-            rows = conn.execute(sql, (limit,)).fetchall()
-        else:
-            rows = conn.execute(sql).fetchall()
+            rows = rows[:limit]
         numbers: list[str] = []
         seen: set[str] = set()
         for (number,) in rows:
