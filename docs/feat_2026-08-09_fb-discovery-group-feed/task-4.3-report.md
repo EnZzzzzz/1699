@@ -109,3 +109,62 @@ fillFromParams 可正确从 params 键回填四个新状态。
 - 所有 10 项 PLAN checkbox 均已满足
 - 五形态渲染顺序符合协调者裁定（isBatch → isWaCheck → isFbDiscover → isFbGroup → 默认）
 - fb_group 群数上限复用 batchLimit state（与 isBatch 共用，符合裁定）
+
+---
+
+# Step 4.3 修复记录（第 1 轮 review 发现）
+
+## 状态：FIXED
+
+## Review 发现与修复
+
+### 1. 缺失 keywords 空 toast 警告（validate() fb_discover 分支）
+
+**现象**：fb_discover 分支只校验了 pages，keywords 为空时静默放行，无任何提示。
+
+**修复**：在 fb_discover 分支顶部增加——
+
+```ts
+if (fbDiscoverKeywords.trim() === '') {
+  toast.warning('未填写查询词，将使用空关键词（后端幂等跳过）')
+}
+```
+
+符合裁定#5：keywords 空 → `toast.warning` 但不阻塞（后端 enqueue 空→0 幂等），
+pages 校验逻辑保持在其后，pages 非法仍 `toast.error + return false`。
+
+### 2. 缺失 provider 防御校验（validate() fb_group 分支）
+
+**现象**：fb_group 分支未对 provider 做代码级防御校验（Select UI 已限定，但无
+兜底）。
+
+**修复**：在 fb_group 分支顶部增加——
+
+```ts
+const provider = fbGroupProvider as string
+if (provider !== 'brightdata' && provider !== 'apify') {
+  toast.error('数据来源仅支持 Bright Data 或 Apify')
+  return false
+}
+```
+
+符合裁定#5：provider ∈ {brightdata, apify} 防御校验，非法 → `toast.error` 并
+`return false` 阻塞提交。`as string` 是为了通过 TS 严格类型（state 类型本身已限定
+为联合类型，直接比较非法值字面量会触发 TS 无重叠告警；运行时防御依然有效）。
+
+## TypeScript 编译
+
+```
+$ cd platform/web && npx tsc -b
+EXIT: 0
+```
+
+全绿，零错误零警告（含新增两处校验代码的严格类型检查）。
+
+## 回归影响
+
+- 仅改动 validate() 两个分支内部，未触及 buildParams / 渲染 / 其它分支。
+- fb_discover：空 keywords 现在会弹 warning toast，提交照常（行为从"静默放行"变为
+  "提示后放行"，不阻塞）。
+- fb_group：provider 非法（正常 UI 路径不可能触发，仅防 API 层或异常状态）会
+  toast.error 并阻止提交；合法 provider 路径行为不变。

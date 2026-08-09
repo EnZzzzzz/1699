@@ -340,6 +340,10 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
       return true
     }
     if (isFbDiscover) {
+      // keywords 空 → 警告但不阻塞（后端 enqueue 空→0 幂等，裁定#5）
+      if (fbDiscoverKeywords.trim() === '') {
+        toast.warning('未填写查询词，将使用空关键词（后端幂等跳过）')
+      }
       if (fbDiscoverPages.trim() !== '') {
         const n = Number(fbDiscoverPages)
         if (!Number.isInteger(n) || n < 1 || n > 10) {
@@ -350,6 +354,12 @@ export function TaskFormDialog({ open, onOpenChange, onSaved, task }: TaskFormDi
       return true
     }
     if (isFbGroup) {
+      // provider 防御校验：Select 已限定，代码级再兜底（裁定#5）
+      const provider = fbGroupProvider as string
+      if (provider !== 'brightdata' && provider !== 'apify') {
+        toast.error('数据来源仅支持 Bright Data 或 Apify')
+        return false
+      }
       if (fbGroupPostsPerGroup.trim() !== '') {
         const n = Number(fbGroupPostsPerGroup)
         if (!Number.isInteger(n) || n < 1) {
