@@ -282,3 +282,15 @@
 - Minor 记 deferred：① task-ui.tsx:150 注释「空视为 1」与代码「默认矩阵」行为不一
   ② 空 keywords + 显式 pages>1 显示「默认矩阵 × M 页」vs 裁定示例 × 1 页（实际场景罕见）
 - Step 4.2: complete (commits 15a0d90..9c20140, review clean)
+
+## Step 4.3 执行记录
+
+- implementer commit `8d0f528`（DONE，tsc 全绿 + API 冒烟三分支零回归）
+- reviewer：spec ✅（2 项 plan-mandated Important + 3 Minor）
+- Minor 记 deferred：③ fbDiscoverKeywords useState 初始值可直填默认矩阵（SSR 闪现
+  边缘）④ fb_group 循环间隔独占一行（视觉偏好）⑤ batchLimit 重置修复了 isBatch 潜伏
+  bug（正向，已验证非回归）
+- 修复循环 round 1：2 个 Important 派发（keywords 空 toast 警告、provider 防御校验）
+- Step 4.3 fix round 1/5（2 addressed, 0 open — keywords 空 warning + provider 防御校验;
+  commits 8d0f528..95ff95f），re-review 干净
+- Step 4.3: complete (commits 5735a78..95ff95f, review clean)

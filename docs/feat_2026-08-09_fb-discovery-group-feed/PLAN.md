@@ -301,14 +301,14 @@ payload/requires 断言）；平台测试全绿。
 
 ### Step 4.3 — TaskFormDialog.tsx 两独立表单分支（主要改动面）
 
-- [ ] 新表单状态：fbDiscoverKeywords / fbDiscoverPages / fbGroupProvider /
+- [x] 新表单状态：fbDiscoverKeywords / fbDiscoverPages / fbGroupProvider /
       fbGroupPostsPerGroup
-- [ ] 渲染分支扩为五形态：fb_discover 分支（Textarea 预填默认矩阵 §7.4 + 每词页数
+- [x] 渲染分支扩为五形态：fb_discover 分支（Textarea 预填默认矩阵 §7.4 + 每词页数
       1-10 + 循环 + hint）；fb_group 分支（provider Select h-8 font-medium + 每群
       帖数默认 50 + 群数上限 + 循环 + hint）；isBatch/isWaCheck/默认 分支行为不变
-- [ ] buildParams/validate/fillFromParams/paramsKey 增加两分支（校验：pages 1-10、
+- [x] buildParams/validate/fillFromParams/paramsKey 增加两分支（校验：pages 1-10、
       posts_per_group ≥1、provider 限定、keywords 换行透传）
-- [ ] 测试/验证：编辑模式回填、模板加载回填、预览不崩（现有测试基建若覆盖表单则
+- [x] 测试/验证：编辑模式回填、模板加载回填、预览不崩（现有测试基建若覆盖表单则
       补断言；否则走 tsc + 手工冒烟）
 - 预估 60min；验收：tsc 全绿 + 新建两类型任务表单可提交（API 冒烟）
 
