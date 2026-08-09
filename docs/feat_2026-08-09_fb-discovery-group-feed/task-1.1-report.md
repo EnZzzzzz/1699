@@ -71,3 +71,51 @@ DDG 分页行「依据」列追加：
    后续 Step 若继续在其上加代码，建议考虑按域拆分模块，但非本 Step 职责。
 2. `upsert_fb_groups` 的 source 缺省用了 `g.get("source") or "ddg"`（空串也归 ddg），
    与协调者裁定「缺省 'ddg'」一致；若未来需要区分「显式空串」语义需另行约定，目前无此需求（YAGNI 不处理）。
+
+---
+
+## 修复报告（第 1 轮 review 发现，Fix 1）
+
+> 状态：DONE。依据 task-1.1-review.md 三条发现逐条修复，TDD 流程（先 RED 后 GREEN）。
+
+### 修复内容
+
+1. **`fetcher/fetcher/db.py` upsert_fb_groups source 缺省语义收窄**（review 发现 1）：
+   `g.get("source") or "ddg"` → `g.get("source") if g.get("source") is not None else "ddg"`。
+   现在仅 key 不存在或值为 None 时缺省 'ddg'；显式空字符串 `""` 是合法显式值，原样落库
+   （与协调者裁定「缺省」= key 不存在时默认一致）。
+2. **`fetcher/tests/test_db_fb_groups.py` 新增 schema 契约固化断言**（review 发现 2）：
+   `test_tables_created_and_idempotent` 内补 `PRAGMA table_info('fb_posts')` 断言
+   `status` 列 `dflt_value == "'pending'"`——固化 save_fb_posts 依赖的 schema 契约，
+   防未来改 DEFAULT 静默破坏。
+3. **`fetcher/tests/test_db_fb_groups.py` 补 source 不覆盖断言**（review 发现 3）：
+   `test_upsert_groups_dedup_keeps_status_and_name` 补一行
+   `assertEqual(rows[0]["source"], "ddg")`——二次 upsert（带 source='fb_post'）后
+   该行 source 仍保持首次 'ddg'（INSERT OR IGNORE：已存在行全字段不动）。
+4. **新增测试**：`test_upsert_groups_explicit_empty_source_kept`——显式传 `{"source": ""}`
+   期望原样落库为 `""`（review 发现 1 的失败测试）。
+
+### TDD 证据
+
+- **RED**（仅改测试后、改代码前）：`cd fetcher && ../platform/server/.venv/bin/python
+  -m unittest discover -s tests -p "test_db_fb_groups.py"` → `Ran 8 tests ... FAILED (failures=1)`：
+  ```
+  FAIL: test_upsert_groups_explicit_empty_source_kept
+  AssertionError: 'ddg' != ''
+  ```
+  正是 review 发现 1 的 bug（空串被吞成 ddg）。发现 2/3 为 schema 契约固化断言，
+  首次运行即绿（schema 本已正确），属守护而非修复。
+- **GREEN**（改代码后）：同一命令 → `Ran 8 tests in 0.037s OK`。
+- **回归**：`-p "test_db_fb*.py"`（test_db_fb.py 10 例 + test_db_fb_groups.py 8 例）
+  → `Ran 18 tests in 0.106s OK`，输出干净。
+
+### 改动的文件
+
+- `fetcher/fetcher/db.py`（upsert_fb_groups 内 1 行语义修正 + docstring 措辞对齐，仅增量）
+- `fetcher/tests/test_db_fb_groups.py`（+3 断言、+1 新测试用例，共 8 用例）
+- `docs/feat_2026-08-09_fb-discovery-group-feed/task-1.1-report.md`（本报告）
+
+### 遗留疑虑
+
+- 显式空串 `source=""` 现在落库为空串；若未来数据面要求空串也归一 'ddg'，需在调用方
+  （FbDiscoverTask/FbPostTask）显式不传 key 或传 None，db 层语义已按裁定收窄，不再吞空串。

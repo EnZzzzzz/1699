@@ -884,9 +884,9 @@ class ShopDB:
         """发现/帖派生的群条目落 fb_groups（INSERT OR IGNORE，url UNIQUE
         去重；已存在行不动 status/name，保持采集进度）。
 
-        groups: [{"url", "group_id", "name", "source"?}, ...]，source 缺省
-        'ddg'（FbDiscoverTask 不带 source 键；FbPostTask 传 'fb_post'）。
-        返回本次实际新增行数。
+        groups: [{"url", "group_id", "name", "source"?}, ...]，source 仅在
+        key 不存在或 None 时缺省 'ddg'（FbDiscoverTask 不带 source 键；
+        FbPostTask 传 'fb_post'）。返回本次实际新增行数。
         """
         now = _now()
         inserted = 0
@@ -894,11 +894,11 @@ class ShopDB:
             url = (g.get("url") or "").strip()
             if not url:
                 continue
+            source = g.get("source") if g.get("source") is not None else "ddg"
             cur = self.conn.execute(
                 "INSERT OR IGNORE INTO fb_groups (url, group_id, name,"
                 " source, first_seen_at) VALUES (?, ?, ?, ?, ?)",
-                (url, g.get("group_id"), g.get("name"),
-                 g.get("source") or "ddg", now))
+                (url, g.get("group_id"), g.get("name"), source, now))
             inserted += cur.rowcount
         self.conn.commit()
         return inserted

@@ -38,6 +38,11 @@ class FbGroupsDataTest(unittest.TestCase):
         idx = {r[0] for r in self.db.conn.execute(
             "SELECT name FROM sqlite_master WHERE type='index'")}
         self.assertIn("idx_fb_groups_status", idx)
+        # schema 契约固化：save_fb_posts 依赖 fb_posts.status 默认 pending，
+        # 防未来改 DEFAULT 静默破坏（status 列 dflt_value 须为 'pending'）。
+        cols = {r["name"]: r for r in self.db.conn.execute(
+            "PRAGMA table_info('fb_posts')").fetchall()}
+        self.assertEqual(cols["status"]["dflt_value"], "'pending'")
 
     # ---- save_fb_posts ----
 
@@ -106,6 +111,17 @@ class FbGroupsDataTest(unittest.TestCase):
             "SELECT * FROM fb_groups WHERE url=?", (GROUP_URL_1,)).fetchone()
         self.assertEqual(row["source"], "fb_post")
 
+    def test_upsert_groups_explicit_empty_source_kept(self):
+        """协调者裁定：source 仅在 key 不存在或 None 时缺省 'ddg'；
+        显式传空字符串 '' 是合法显式值，必须原样落库不被吞成 'ddg'。"""
+        groups = [{"url": GROUP_URL_1, "group_id": "g1", "name": "G1",
+                   "source": ""}]
+        n = self.db.upsert_fb_groups(groups)
+        self.assertEqual(n, 1)
+        row = self.db.conn.execute(
+            "SELECT * FROM fb_groups WHERE url=?", (GROUP_URL_1,)).fetchone()
+        self.assertEqual(row["source"], "")
+
     def test_upsert_groups_dedup_keeps_status_and_name(self):
         """先落 pending 行并置 in_progress（模拟采集进行中），再同 url
         不同 name/source 的 upsert → 0 行且 status/name 保持原值。"""
@@ -124,6 +140,7 @@ class FbGroupsDataTest(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["status"], "in_progress")  # 不动 status
         self.assertEqual(rows[0]["name"], "G1")  # 不覆盖 name
+        self.assertEqual(rows[0]["source"], "ddg")  # 二次 upsert 带 fb_post 也不覆盖 source
 
 
 if __name__ == "__main__":
