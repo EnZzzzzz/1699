@@ -113,9 +113,9 @@ fb_contacts 增量 + 群状态机 done；相关测试全绿。
 
 ### Step 2.2 — crawl_fb_group 队列注册（TDD）
 
-- [ ] `_build_registry` 追加 `QueueSpec(queue="crawl_fb_group", site=None,
+- [x] `_build_registry` 追加 `QueueSpec(queue="crawl_fb_group", site=None,
       task=FbGroupTask(), topup=None, domain_suffix="", requires={"local"})`
-- [ ] 测试：注册存在 + 字段断言
+- [x] 测试：注册存在 + 字段断言
 - 预估 15min；验收：注册测试全绿 + `--queues crawl_fb_group` 校验通过
 
 ### Step 2.3 — FbPostTask.on_success 群 upsert 补位（TDD）

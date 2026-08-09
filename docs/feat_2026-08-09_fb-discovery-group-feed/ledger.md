@@ -177,3 +177,11 @@
 - Step 2.1 fix round 1/5（2 addressed, 0 open — group_id 共享函数提取 urls.py + 逐帖口径
   stats; commits 7a09836..40e3de9），re-review 干净
 - Step 2.1: complete (commits 5e9dce7..40e3de9, review clean)
+
+## Step 2.2 执行记录
+
+- implementer commit `b9c6ad5`（DONE，test_cli_fb.py 6/6 + 56 fb 回归）
+- reviewer：spec ✅，0 Critical/Important，2 Minor
+- Minor 记 deferred：① test_cli_fb.py docstring 未提 crawl_fb_group ②
+  test_queues_choices_accept_fb 未断言 crawl_fb_group（Step 1.4 同款命名过泛）
+- Step 2.2: complete (commits cb3e02b..b9c6ad5, review clean)
