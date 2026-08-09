@@ -441,6 +441,33 @@ class TaskTypesTest(BatchTasksTestBase):
                   "yiwugo_search"):
             self.assertIn(t, TASK_TYPES)
 
+    def test_task_types_union_contains_fb_batch_types(self):
+        """Step 3.3：TASK_TYPES 并集（TASK_COMMANDS ∪ BATCH_TYPES）含两新批次类型。"""
+        from app.api.tasks import TASK_TYPES
+        self.assertIn("fb_discover", TASK_TYPES)
+        self.assertIn("fb_group", TASK_TYPES)
+
+    def test_fb_batch_params_roundtrip_via_create_task(self):
+        """TaskCreate 携带四字段 → create_task 落库 params_json → 读回齐全。"""
+        from app.api.tasks import TaskCreate, create_task
+        body = TaskCreate(type="fb_discover", params={
+            "keywords": "耐克\n阿迪达斯",
+            "pages": 3,
+            "provider": "brightdata",
+            "posts_per_group": 50,
+        })
+        task = create_task(body)
+        conn = self._conn()
+        row = conn.execute(
+            "SELECT params_json FROM tasks WHERE id=?",
+            (task["id"],)).fetchone()
+        conn.close()
+        params = json.loads(row["params_json"])
+        self.assertEqual(params["keywords"], "耐克\n阿迪达斯")
+        self.assertEqual(params["pages"], 3)
+        self.assertEqual(params["provider"], "brightdata")
+        self.assertEqual(params["posts_per_group"], 50)
+
     def test_preview_batch_type_returns_description(self):
         from app.api.tasks import preview_task
         body = type("Body", (), {"type": "1688_contact",

@@ -116,6 +116,11 @@ class TaskParams(BaseModel):
     retry_failed: bool | None = None        # 前端 1688_contact 表单开关遗留，不映射 CLI
     # wa_check 专用：
     accounts: list[str] | None = None       # 账号池，空 = 仅默认账号
+    # fb 批次专用：
+    keywords: str | None = None            # fb_discover：查询词，换行分隔原文
+    pages: int | None = None               # fb_discover：每词页数（1-10）
+    provider: str | None = None            # fb_group：brightdata / apify
+    posts_per_group: int | None = None     # fb_group：每群帖数上限
     # 注：batch_num/sample_min/sample_max 为 subprocess 类型（yiwugo）节奏参数；
     # wa_check 走 daemon 批次，只消费 limit/accounts
     # 循环模式：本轮正常结束（done/failed）后 N 秒自动重启；None/<=0 = 不循环
