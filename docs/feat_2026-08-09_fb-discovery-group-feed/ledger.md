@@ -185,3 +185,12 @@
 - Minor 记 deferred：① test_cli_fb.py docstring 未提 crawl_fb_group ②
   test_queues_choices_accept_fb 未断言 crawl_fb_group（Step 1.4 同款命名过泛）
 - Step 2.2: complete (commits cb3e02b..b9c6ad5, review clean)
+
+## Step 2.3 执行记录
+
+- implementer commit `8c58e4e`（DONE，19/19 + 60 fb 回归；第 4 个幂等守护测试无独立
+  RED——守护既有 INSERT OR IGNORE 语义，可接受）
+- reviewer：spec ✅，0 Critical/Important，2 Minor
+- Minor 记 deferred：① test 用 row[0] 位置取值与列名取值风格不一 ② 幂等测试二次调用
+  同 name 无法区分覆盖与否（INSERT OR IGNORE 语义已保证）
+- Step 2.3: complete (commits 1f6d100..8c58e4e, review clean)

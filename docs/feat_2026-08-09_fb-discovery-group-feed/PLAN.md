@@ -120,10 +120,10 @@ fb_contacts 增量 + 群状态机 done；相关测试全绿。
 
 ### Step 2.3 — FbPostTask.on_success 群 upsert 补位（TDD）
 
-- [ ] `fetcher/fetcher/sites/facebook/post_task.py on_success` 追加：group_id 非空时
+- [x] `fetcher/fetcher/sites/facebook/post_task.py on_success` 追加：group_id 非空时
       `db.upsert_fb_groups([{"url": 派生群URL, "group_id", "name": item.get("name")}])`
       （SPEC §5.5）
-- [ ] 测试（扩展 test_fb_post_task.py）：抓帖后 fb_groups 出现该群（pending、name
+- [x] 测试（扩展 test_fb_post_task.py）：抓帖后 fb_groups 出现该群（pending、name
       溯源）；无 group_id 时零写入；既有 on_success 测试零回归
 - 预估 20min；验收：新断言全绿 + 既有 test_fb_post_task.py 全绿
 
