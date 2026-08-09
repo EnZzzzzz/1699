@@ -324,3 +324,31 @@
 - 冒烟非阻塞发现（终审分诊）：React 19 + shadcn Slot 的既存 ref 警告（dialog/select
   改动在旧提交 a1e5c8a，非本 feature 引入）
 - Phase 4 完成标准满足：npx tsc -b 全绿、表单可创建两类型任务、既有类型零回归。
+
+## Step 5.1 端到端冒烟记录（2026-08-09 23:05-23:55）
+
+- 环境：daemon PID 30020（全量队列，复用）· backend :8765 · frontend :3000
+- 看板：discover_fb / crawl_fb_group 两条队列出现 ✓（depth: discover_fb done=1,failed=4；crawl_fb_group failed=2,stopped=3）
+- fb_discover 任务 #94：默认矩阵 5 词 × 1 页，5 item 消费耗时 ~10 min（含 23 min wa_check 清空等待）
+  实测节奏 60-80s、202 退避 4 次（每 item ~4:30-5:00）、1/5 成功（20% 通过率）
+  fb_posts 新增 1 行（source='ddg'，keyword 溯源「亚马逊卖家 微信」正确）
+  fb_groups 新增 10 行（全部 source='ddg'，SERP 群主页 + 帖派生群）
+  无重复行（url UNIQUE 约束生效）
+- fb_post 接续：DDG 帖 #389 自动被 crawl_fb_post 消费者接续（work_item 25766 done，306→306）
+  独立 fb_post 批次未创建（fb_posts 0 pending，全部已消费）
+- fb_group 任务 #95：limit=5，2 个 item FATAL→failed（缺 BRIGHTDATA_API_KEY）✓
+  群状态机 pending→in_progress→failed 流转正确 ✓
+  3 个 item 因 daemon 本地消费者停滞未处理（后 stopped）
+  done 路径已由 Step 2.4 mock 覆盖，本步仅验证 FATAL 真实路径
+- wa_check：❌ 未验证（消费者停滞；topup 机制活跃但无消费者消费）
+- 关键问题：daemon 本地消费者（local0/local1）在 23:48 处理 fb_group FATAL 后停滞
+  board.py fields 越界为已知历史问题（昨日启动复现），今日停滞待查；心跳线程持续运行
+  造成 131 wa_check + 3 fb_group items 滞留
+- 验收判定：
+  SPEC §10-1 ✅ fb_discover → fb_posts source='ddg' + fb_groups，keyword 溯源，无重复
+  SPEC §10-2 ⚠️ fb_group FATAL→failed 验证通过（2/5），余 3 items 因 daemon 停滞
+  SPEC §10-3 ✅ fb_post 接续链路验证（DDG 帖自动消费），独立批次因无 pending 未创
+  SPEC §10-4 ❌ wa_check 未验证（消费者停滞）
+  SPEC §10-5 ✅ dispatcher 看板两条队列出现
+- 状态：**BLOCKED**（daemon 本地消费者停滞，验收 2/4 未完整）
+- 详报：task-5.1-report.md
