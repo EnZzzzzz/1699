@@ -428,3 +428,23 @@
 - implementer commit `252b24c`（DONE：AGENTS.md 队列 7→9 + 批次模型补两类型；
   渠道文档 §10/§12 未做→已做，Apify SERP 明确非目标）
 - Step 5.3: complete (commits b1d964e..252b24c, review clean——纯文档类 Step)
+
+## 终审（2026-08-09，全分支 review）
+
+- reviewer：**MERGE READY** ✅
+- Spec 合规：全部 10 节 ✅ 零违规；§10 验收 1-6 全部冒烟/测试满足
+- 代码质量：0 Critical；2 Important + 2 Minor
+- Important 分诊：
+  - I1 or 反模式残留（discover_task.py:107 / group_task.py:127 的 `int(item.get("page")
+    or 1)`）——真实存在但平台传 page≥1，生产不受影响。**parked（真实但延期）**，
+   终审理由：与 Step 1.2 已修的同型，非承重；建议后续统一清理。
+  - I2 LocalLoop FATAL 连坐——既有框架设计，非本 feature 引入，**开独立 issue**（不
+    在 feature 分支处理）。
+- deferred 24 项全部分诊为可延期；2 项已收尾（懒导入、BATCH_TYPES 格式）。
+- 跨 Step 一致性：payload 键名、source 缺省、requires='["local"]' 全链路一致。
+
+## Step 5.4 执行记录
+
+- 终审 MERGE READY；装配层冒烟核实通过（daemon 9 队列 + 2 local 消费者活跃、
+  后端/前端运行、看板两新队列）。
+- Step 5.4: 归档前记录完成。

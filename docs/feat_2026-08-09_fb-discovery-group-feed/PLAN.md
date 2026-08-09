@@ -13,7 +13,7 @@
 | 2 群采集（fetcher 侧） | fb_groups 数据面 + FbGroupTask + crawl_fb_group 队列 + FbPostTask 补位 | 4 | Phase 1 Step 1.1 | done |
 | 3 平台批次 | BATCH_TYPES 双类型 + enqueue 双函数 + TaskParams + 平台测试 | 4 | Phase 1 + 2 | done |
 | 4 前端 | api.ts/task-ui/TaskFormDialog/Tasks.tsx 五处同步 + tsc | 5 | Phase 3 | done |
-| 5 端到端冒烟 + 收尾 | 真实批次闭环 + 看板 + 文档同步 + 归档 | 4 | 全部 | pending |
+| 5 端到端冒烟 + 收尾 | 真实批次闭环 + 看板 + 文档同步 + 归档 | 4 | 全部 | done |
 
 依赖关系：P1 → P2（DB 共享）→ P3 → P4 → P5；P1/P2 其余部分可并行。
 
@@ -253,13 +253,13 @@ payload/requires 断言）；平台测试全绿。
 
 ### Step 3.2 — app/db.py enqueue 双函数（TDD）
 
-- [ ] `enqueue_fb_discover_batch(batch_id, keywords, pages) -> int`：换行拆词 × 页
+- [x] `enqueue_fb_discover_batch(batch_id, keywords, pages) -> int`：换行拆词 × 页
       展开，payload {"kind","engine","query","page"}，requires='["local"]'，
       同 query+page 已有 pending 跳过，keywords 空→0
-- [ ] `enqueue_fb_group_batch(batch_id, provider, posts_per_group, limit) -> int`：
+- [x] `enqueue_fb_group_batch(batch_id, provider, posts_per_group, limit) -> int`：
       BEGIN IMMEDIATE 单事务 SELECT pending fb_groups → INSERT items → 置
       in_progress；fb_groups 表不存在→0（防御性探测）
-- [ ] 测试（扩展 test_batch_tasks.py）：展开数/幂等/空关键词/限量/表缺失返回 0/
+- [x] 测试（扩展 test_batch_tasks.py）：展开数/幂等/空关键词/限量/表缺失返回 0/
       payload 断言
 - 预估 40min；验收：新测试全绿
 
@@ -360,10 +360,10 @@ payload/requires 断言）；平台测试全绿。
 
 ### Step 5.4 — 终审 + 归档
 
-- [ ] 全分支终审（subagent-driven-development skill 终审流程）：spec 合规 +
+- [x] 全分支终审（subagent-driven-development skill 终审流程）：spec 合规 +
       代码质量 + 冲突扫描结论复核
-- [ ] PLAN checkbox 收尾；ledger.md 随代码 commit
-- [ ] 整个 docs/feat_2026-08-09_fb-discovery-group-feed/ 移入 docs/archive/
+- [x] PLAN checkbox 收尾；ledger.md 随代码 commit
+- [x] 整个 docs/feat_2026-08-09_fb-discovery-group-feed/ 移入 docs/archive/
 - 预估 20min；验收：归档完成、git 工作区干净（除既有未提交改动）
 
 **Phase 5 完成标准**：全部 Step done；SPEC §10 验收 1-6 全部满足。
