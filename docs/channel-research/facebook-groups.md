@@ -150,11 +150,13 @@ wa_check 走 WhatsApp 协议、有封号成本且吞吐受风控节奏限制，�
 - 号码口径：中国号存裸 11 位（86 由 wa 链路补）；国际号保留原国家码纯数字。
 - **真机验证**（CloakBrowser 无头直连，10 基线帖全量）：**10/10 Outcome.OK**，og 层号码 8/8 全对、分桶全部正确（双标帖归 declared_wa、+86 国际格式去码入 cn_uncertain、产品名 WhatsApp 零误标）。
 - **评论增量的局限**：WebBridge（真实 Chrome 窗口）里帖 8/9/10 评论区多捞到 4 个号，但 CloakBrowser 无头匿名会话两轮（含滚动触发懒加载）均未渲染出这些评论——评论是否匿名渲染**随会话/客户端随机**，不能作为稳定采集面，只能算"碰上就收"的机会增量。稳定采集面 = og:description + 帖子正文。
-- 未做（2026-08-09 二期落地后更新）：Google 发现层（P2 Apify SERP 路线
-  规划就绪，待 APIFY_TOKEN 实调 spike，见 docs/feat_2026-08-09_facebook-
-  daemon-integration/）；其余二期项（落库 fb_posts/fb_contacts、daemon
-  队列 crawl_fb_post + FbPostTask、平台 fb_post 批次类型+前端、wa_check
-  双源衔接）已全部落地并冒烟通过。
+- 已做（2026-08-09 三期落地后更新）：发现层已换 **DDG html 端点自建**落地
+  （docs/feat_2026-08-09_fb-discovery-group-feed/，fetcher 侧 FetchDdgSerp
+  原子 + FbDiscoverTask + discover_fb 队列 + 平台 fb_discover 批次）；群
+  feed 已接队列（FbGroupTask + crawl_fb_group + 平台 fb_group 批次）。其余
+  二期项（落库 fb_posts/fb_contacts、daemon 队列 crawl_fb_post + FbPostTask、
+  平台 fb_post 批次类型+前端、wa_check 双源衔接）均已落地并冒烟通过。
+  Apify SERP 路线仍为非目标（自建优先）。
 
 ## 11. 附：其他渠道全景（2026-08 调研）
 
@@ -220,10 +222,10 @@ wa_check 走 WhatsApp 协议、有封号成本且吞吐受风控节奏限制，�
 - `fetcher/fetcher/atoms/facebook_group.py`：`FetchFbGroupPosts`（name=`fetch_fb_group_posts`），双 provider（默认 brightdata），输入群 URL + limit，输出归一化帖子 + 复用 `parse_post` 的四桶分桶（跨帖按号码去重）。Outcome 口径：402/429→BLOCKED（额度/限流）、401/403→FATAL、0 帖→EMPTY、轮询中断→SKIPPED。只用标准库 urllib；key 走 `api_key` 参数或环境变量 `BRIGHTDATA_API_KEY` / `APIFY_TOKEN`。
 - 测试：`fetcher/tests/test_facebook_group.py` 17 例（mock HTTP，样本取自本次实测）。
 - 真机验证：两家各采 5 帖均 `ok`，结果一致；花费 BD 5 credits + Apify $0.025，均在免费额度内。
-- 未做（2026-08-09 更新）：二期接入已完成——runner BATCH_TYPES 注册
-  fb_post、daemon 队列 crawl_fb_post、落库 fb_posts/fb_contacts、平台
-  前端 fb_post 任务类型；两家 key 沿用环境变量（APIFY_TOKEN 未入 DB，
-  本期明确非目标，见 SPEC 非目标清单）；发现层 P2 待 token 推进。
+- 已做（2026-08-09 三期落地后更新）：二期接入已完成——runner BATCH_TYPES
+  注册 fb_post、daemon 队列 crawl_fb_post、落库 fb_posts/fb_contacts、平台
+  前端 fb_post 任务类型；三期发现层已自建落地（DDG SERP，见 §10）。两家
+  key 沿用环境变量（本期未入 DB，非目标保持，见 SPEC 非目标清单）。
 
 ## 附：实测原始数据
 
