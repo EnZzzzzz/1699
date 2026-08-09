@@ -117,3 +117,29 @@
 - Minor 记 deferred：test_cli_fb.py test_queues_choices_accept_fb 命名过泛（只断言
   crawl_fb_post，非本 Step 引入；discover_fb 由 test_discover_fb_registered 覆盖）
 - Step 1.4: complete (commits d85f774..59812e1, review clean)
+
+## Step 1.5 冒烟记录（2026-08-09 21:58，BLOCKED）
+
+- 临时 DB：/tmp/fb_smoke_1786283750/1688.db（ShopDB 初始化建表，2 条 work_items 就绪）
+- daemon：`python -u -m fetcher daemon --queues discover_fb --local-workers 1`，PID 76730（首）/77134
+  （-u 重启），有头观察：无浏览器窗口弹出（local 消费者，符合预期）
+- **阻断发现（代码/环境事实不匹配）**：FETCHER_DB_PATH 对 daemon **无效**——`config_from_args`
+  （fetcher/cli/main.py:128）只读 `--db`（默认 None），`RunConfig.resolved_db_path()`
+  （core/context.py:76）在 None 时回退 `DEFAULT_CACHE_DIR/1688.db` = **生产库 .cache/1688.db**；
+  FETCHER_DB_PATH 仅 fetcher/db.py 模块级 DB_PATH（ShopDB 无参构造）读取，daemon 全程显式
+  传 config.resolved_db_path() 不经过它。日志佐证：`[daemon] 队列 discover_fb: 待补货店铺
+  3164 个`（discover_fb 无 topup，不该有店铺计数）、`待认领工作项 0 个`（生产库无
+  discover_fb 队列）
+- **附带损伤（已止损，自愈）**：两次 daemon 启动对生产库执行了
+  `reset_claimed_work_items()`（启动崩溃恢复路径）——首次 1 个、二次 7 个 claimed → pending；
+  生产 daemon（PID 34402，`--workers 1 --headed`）重新认领（FIFO 自愈）；smoke 的 local0
+  心跳曾短暂覆盖生产 daemon 的 local0 心跳行（consumer_id 冲突，生产 daemon 后续已写回）。
+  smoke 未消费任何 item（生产库无 discover_fb 队列，`成功 0，空 0，失败 0`），未 INSERT 数据
+- item 消费：无（阻断于启动阶段，未达消费环节）
+- 间隔：N/A（未消费）
+- 落库：fb_posts 0 行、fb_groups 0 行（临时库为空，未执行 DDG 抓取）
+- 限流观测：N/A（未发起真实 DDG 请求）
+- 验收判定：**不满足**——冒烟未执行（隔离失效，禁止用生产库冒烟）。根因待协调：
+  方案 A `config_from_args` 加 `os.environ.get("FETCHER_DB_PATH")` 回退（与 ShopDB 语义对齐）；
+  方案 B 冒烟改用显式 `--db`（brief 环境事实第 3 条修正）。不自行修代码，按 brief 纪律
+  上报 BLOCKED
