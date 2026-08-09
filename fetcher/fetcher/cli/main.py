@@ -324,6 +324,19 @@ def _build_registry(selected_queues: list[str] | None = None) -> list:
         requires={"local"},
     ))
 
+    # crawl_fb_group（FB 群全量采集：本地队列，无 site、无浏览器，
+    # LocalLoop 消费；货源=平台批次参数（fb_groups pending）直接入
+    # work_items，无自喂 → topup=None）
+    from fetcher.sites.facebook.group_task import FbGroupTask  # 延迟导入
+    specs.append(QueueSpec(
+        queue="crawl_fb_group",
+        site=None,
+        task=FbGroupTask(),
+        topup=None,
+        domain_suffix="",
+        requires={"local"},
+    ))
+
     if selected_queues:
         specs = [s for s in specs if s.queue in selected_queues]
     return specs

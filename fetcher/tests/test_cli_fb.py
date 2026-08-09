@@ -16,6 +16,7 @@ from pathlib import Path
 
 from fetcher import ShopDB
 from fetcher.sites.facebook.discover_task import FbDiscoverTask
+from fetcher.sites.facebook.group_task import FbGroupTask
 from fetcher.sites.facebook.post_task import FbPostTask
 
 POST_URL = ("https://www.facebook.com/groups/185879310028412/posts/"
@@ -67,6 +68,19 @@ class FbQueueRegistrationTest(unittest.TestCase):
         self.assertEqual(spec.domain_suffix, "")
         self.assertEqual(spec.requires, {"local"})
         self.assertIsInstance(spec.task, FbDiscoverTask)
+        self.assertIsNone(spec.topup)
+
+    def test_crawl_fb_group_registered(self):
+        """crawl_fb_group：local 消费者注册（site=None、topup=None、
+        requires={"local"}），task 是 FbGroupTask 实例。"""
+        reg = self._registry()
+        self.assertIn("crawl_fb_group", reg)
+        spec = reg["crawl_fb_group"]
+        self.assertEqual(spec.queue, "crawl_fb_group")
+        self.assertIsNone(spec.site)
+        self.assertEqual(spec.domain_suffix, "")
+        self.assertEqual(spec.requires, {"local"})
+        self.assertIsInstance(spec.task, FbGroupTask)
         self.assertIsNone(spec.topup)
 
     def test_fb_topup_feeds_work_items(self):
