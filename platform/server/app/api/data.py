@@ -156,7 +156,10 @@ def list_fb_contacts(
         elif wa == "unregistered":
             where.append("c.wa_registered = 0")
         elif wa == "unchecked":
-            where.append("c.wa_registered IS NULL")
+            # 无效号（wa_source='invalid'）已查过但永远查不出，不算「未查」
+            where.append(
+                "c.wa_registered IS NULL"
+                " AND (c.wa_source IS NULL OR c.wa_source != 'invalid')")
         if bucket:
             where.append("c.bucket = ?")
             params.append(bucket)

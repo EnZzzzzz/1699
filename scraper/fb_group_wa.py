@@ -12,7 +12,9 @@
 流程（依据 docs/channel-research/facebook-groups.md 的实测结论）：
     0. 发现层：DDG html 端点裸抓 SERP（复用 fetcher 的 FetchDdgSerp 解析纯函数），
        查询词矩阵 `site:facebook.com/groups <关键词>`，解析出帖 permalink。
-       DDG 限流形态为 ~2 连查后 202，故查询间节奏强制 ≥60s、202 退避 180~240s。
+       DDG 限流形态为 ~2 连查后 202，故查询间节奏强制 ≥60s、202 退避 180~240s；
+       重试仍被限时走 Apify Google Search Scraper 付费兜底（$1.8~4.5/1K 页，
+       --apify-budget 控制本轮上限，缺省 $0.5，0 关闭）。
     1. CloakBrowser 匿名渲染群帖 permalink（纯 HTTP 会被 TLS 指纹 400，必须浏览器）
     2. 提取 og:description + DOM 正文，复用 fetcher 的 parse_post 正则分桶：
        - declared_wa  自声明 WA 号（wa.me 链接 / 紧邻 WhatsApp 标签）→ 默认不查，标记 declared
@@ -64,7 +66,8 @@ DDG_HTML = "https://html.duckduckgo.com/html/"
 DDG_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
           "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
 
-# 默认关键词矩阵（docs/channel-research/facebook-groups.md §7 的侦察矩阵）
+# 默认关键词矩阵（docs/channel-research/facebook-groups.md §7 的侦察矩阵
+# + 2026-08-10 扩词：原 10 词 SERP 结果被采干，新增细分品类/英文词扩新帖源）
 DEFAULT_KEYWORDS = [
     "外贸 whatsapp",
     "货代 whatsapp",
@@ -76,6 +79,29 @@ DEFAULT_KEYWORDS = [
     "外贸资源 whatsapp",
     "外贸 +86",
     "chat.whatsapp.com 外贸",
+    # ---- 扩词（第二轮起生效）----
+    "海运 whatsapp",
+    "双清包税 whatsapp",
+    "中东专线 whatsapp",
+    "非洲专线 whatsapp",
+    "海外仓 whatsapp",
+    "亚马逊测评 whatsapp",
+    "广交会 whatsapp",
+    "sourcing agent whatsapp",
+    "import from china whatsapp",
+    "dropshipping whatsapp",
+    # ---- 扩词（2026-08-10 第三轮：新能源/大型机械/汽车配件）----
+    "新能源 whatsapp",
+    "锂电池 whatsapp",
+    "光伏 whatsapp",
+    "solar panel whatsapp",
+    "ev charger whatsapp",
+    "大型机械 whatsapp",
+    "工程机械 whatsapp",
+    "heavy machinery whatsapp",
+    "汽车配件 whatsapp",
+    "auto parts whatsapp",
+    "汽配 微信",
 ]
 
 # ---- 匿名硬拦截特征（摘自 fetcher/sites/facebook/features.py，内联保持脚本独立）----
@@ -158,18 +184,165 @@ def ddg_query(query: str, page: int = 1, timeout: int = 30) -> tuple[int, str]:
         return -1, ""
 
 
+# ---- 发现层兜底：Apify Google Search Scraper（付费，DDG 限流时启用）----
+# 调研结论（docs/channel-research/facebook-summary.md §1）：发现层外包
+# Google SERP $1.8~4.5/1K 查询页，远低于抓取外包；按 $0.0045/页保守计费。
+APIFY_GS_ACTOR = "apify~google-search-scraper"
+APIFY_API = "https://api.apify.com/v2"
+APIFY_PAGE_COST = 0.0045
+
+
+def load_apify_token(db) -> str | None:
+    """从 providers 表读 apify token（db 为空时直开 SQLite 读）。"""
+    import sqlite3
+    try:
+        conn = db.conn if db is not None else sqlite3.connect(
+            str(REPO_ROOT / ".cache" / "1688.db"), timeout=30)
+        row = conn.execute(
+            "SELECT config_json FROM providers WHERE kind='apify' "
+            "OR name='apify' LIMIT 1").fetchone()
+        return json.loads(row[0]).get("api_token") if row else None
+    except Exception as e:  # noqa: BLE001
+        log(f"[!] 读 apify token 失败（{e}），兜底通道不可用")
+        return None
+
+
+def _apify_run(payload: dict, token: str, timeout: int) -> list[dict]:
+    """调 run-sync-get-dataset-items 返回原始 items。
+
+    传输层抖动（SSL EOF/重置/超时）自动重试一次再上抛，HTTP 错误
+    （4xx/5xx）原样上抛由调用方处置。注意 run-sync 端点硬上限 300s。
+    """
+    url = (f"{APIFY_API}/acts/{APIFY_GS_ACTOR}/run-sync-get-dataset-items"
+           f"?token={token}&timeout={timeout}")
+    for attempt in range(2):
+        req = urllib.request.Request(url, data=json.dumps(payload).encode(),
+                                     headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout + 60) as resp:
+                return json.loads(resp.read().decode())
+        except urllib.error.HTTPError:
+            raise                      # 业务错误（402/429 等）不重试
+        except (urllib.error.URLError, TimeoutError, OSError):
+            if attempt == 1:
+                raise
+            log("    Apify 请求网络抖动，20s 后重试…")
+            time.sleep(20)
+    return []
+
+
+def apify_google_query(query: str, max_pages: int, token: str,
+                       timeout: int = 180) -> list[dict]:
+    """同步调 Google Search Scraper，返回 [{"url","title"}...]（有机结果）。
+
+    一次调用抓 max_pages 页；resultsPerPage 实测给到 100 也只回 ~10 条/
+    页（2026-08-10 实测），召回量只能靠 maxPagesPerQuery。
+    """
+    payload = {"queries": query, "maxPagesPerQuery": max_pages,
+               "resultsPerPage": 10}
+    items = _apify_run(payload, token, timeout)
+    out: list[dict] = []
+    for it in items or []:
+        for r in it.get("organicResults") or []:
+            if r.get("url"):
+                out.append({"url": r["url"], "title": r.get("title") or ""})
+    return out
+
+
+def apify_google_batch(keywords: list[str], max_pages: int,
+                       token: str) -> dict[str, list[dict]]:
+    """一个 run 跑全部关键词（queries 换行分隔、actor 内 maxConcurrency 并行），
+    返回 {kw: [{"url","title"}...]}。按页计费与逐词拆 run 相同，但省掉
+    逐词 run 的启动与串行等待（31 词 × 1 页实测 ~1 分钟，2026-08-10）。
+    """
+    prefix = "site:facebook.com/groups "
+    payload = {"queries": "\n".join(prefix + kw for kw in keywords),
+               "maxPagesPerQuery": max_pages, "resultsPerPage": 10,
+               "maxConcurrency": 10}
+    items = _apify_run(payload, token, timeout=280)
+    out: dict[str, list[dict]] = {}
+    for it in items or []:
+        term = (it.get("searchQuery") or {}).get("term") or ""
+        kw = term[len(prefix):] if term.startswith(prefix) else term
+        for r in it.get("organicResults") or []:
+            if r.get("url"):
+                out.setdefault(kw, []).append(
+                    {"url": r["url"], "title": r.get("title") or ""})
+    return out
+
+
 def discover_post_urls(keywords: list[str], pages: int,
-                       seen: set[str], max_posts: int, db=None) -> list[dict]:
+                       seen: set[str], max_posts: int, db=None,
+                       apify_token: str | None = None,
+                       apify_budget: float = 0.0,
+                       apify_only: bool = False) -> list[dict]:
     """DDG 发现帖 permalink：关键词矩阵 × 页码，查询间 ≥60s、202 退避。
 
     返回 [{"url","group_id","group_name","keyword"}...]（去重，跳过 seen
     里已抓过的）。db 非空时每查一页就立即落 fb_posts（INSERT OR IGNORE
     幂等），进程中途崩也不丢已发现的帖。中途达到 max_posts 仍把当前
     查询页解析完再停。
+
+    混合模式：DDG 重试后仍非 200 且 apify_budget 有余额时，改用 Apify
+    Google Search Scraper 一次抓满该关键词全部 pages 页（记入账本，
+    同关键词后续页不再重复付费）；Apify 报 402/连续出错则本轮停用兜底。
+    apify_only=True 时完全不直连 DDG，且全部关键词合成一个 Apify run
+    批量发现（actor 内并行），预算不足时按序截断关键词。
     """
     found: list[dict] = []
     found_urls: set[str] = set()
+
+    def harvest(kw: str, serp: list[dict], source: str, tag: str) -> None:
+        """从一页/一词 SERP 结果里筛新帖、落 fb_posts、并入 found。"""
+        page_posts: list[dict] = []
+        for r in serp:
+            cls = classify_fb_url(r["url"])
+            if not cls or cls[0] != "post":
+                continue
+            url = r["url"]
+            if url in seen or url in found_urls:
+                continue
+            found_urls.add(url)
+            page_posts.append({"url": url, "group_id": cls[1],
+                               "group_name": r["title"], "keyword": kw})
+        found.extend(page_posts)
+        if db is not None and page_posts:
+            db.save_fb_posts(keyword=kw, source=source, posts=page_posts)
+        log(f"    「{kw}」{tag}[{source}]：{len(page_posts)} 个新帖"
+            f"（累计 {len(found)}）")
+
+    if apify_only:
+        # 批量发现：一次 run 抓满全部关键词 × pages 页，成本按页预付
+        per_kw = pages * APIFY_PAGE_COST
+        kws = keywords[:int(apify_budget // per_kw)] if per_kw > 0 else []
+        if len(kws) < len(keywords):
+            log(f"    [!] 预算 ${apify_budget:.2f} 只够 {len(kws)}/"
+                f"{len(keywords)} 个关键词，其余本轮跳过")
+        if not kws:
+            return []
+        try:
+            by_kw = apify_google_batch(kws, pages, apify_token)
+        except urllib.error.HTTPError as e:
+            log(f"    [!] Apify 批量发现失败（HTTP {e.code}），本轮发现层放弃")
+            return []
+        except Exception as e:  # noqa: BLE001
+            log(f"    [!] Apify 批量发现异常（{type(e).__name__}: {e}），"
+                f"本轮发现层放弃")
+            return []
+        apify_spent = len(kws) * per_kw
+        log(f"    Apify 批量发现：{len(kws)} 词 × {pages} 页，"
+            f"花费约 ${apify_spent:.3f}/${apify_budget:.2f}")
+        for kw in kws:
+            if len(found) >= max_posts:
+                break
+            harvest(kw, by_kw.get(kw, []), "apify_gs", f"{pages}页")
+        log(f"本轮 Apify 发现层花费约 ${apify_spent:.3f}")
+        return found[:max_posts]
+
     queries = [(kw, p) for kw in keywords for p in range(1, pages + 1)]
+    apify_spent = 0.0
+    apify_covered: set[str] = set()   # 已由 Apify 抓满全部页的关键词
+    apify_strikes = 0                 # 兜底通道连续出错计数（≥3 本轮停用）
     for i, (kw, page) in enumerate(queries):
         if len(found) >= max_posts:
             break
@@ -180,30 +353,46 @@ def discover_post_urls(keywords: list[str], pages: int,
             log(f"    DDG 限流（202），退避 {wait:.0f}s 后重试…")
             time.sleep(wait)
             status, html = ddg_query(q, page)
-        if status != 200:
-            log(f"    「{q}」第{page}页：HTTP {status}，跳过")
+        serp: list[dict] = []
+        source = "ddg"
+        if status == 200:
+            serp = parse_serp_results(html)
+        elif (apify_token and apify_budget > 0 and apify_strikes < 3
+                and kw not in apify_covered
+                and apify_spent + pages * APIFY_PAGE_COST <= apify_budget):
+            # DDG 此 IP 已被限死 → 付费兜底：一次抓满该关键词全部页
+            try:
+                serp = apify_google_query(q, pages, apify_token)
+                apify_covered.add(kw)
+                apify_spent += pages * APIFY_PAGE_COST
+                source = "apify_gs"
+                log(f"    「{q}」DDG HTTP {status} → Apify 兜底抓 "
+                    f"{pages} 页：{len(serp)} 条有机结果"
+                    f"（本轮已花 ${apify_spent:.3f}/{apify_budget:.2f}）")
+            except urllib.error.HTTPError as e:
+                if e.code == 402:
+                    apify_strikes = 3
+                    log("    [!] Apify 余额不足（402），本轮停用付费兜底")
+                else:
+                    apify_strikes += 1
+                    log(f"    Apify 兜底失败（HTTP {e.code}），"
+                        f"连续失败 {apify_strikes}/3")
+            except Exception as e:  # noqa: BLE001
+                apify_strikes += 1
+                log(f"    Apify 兜底异常（{type(e).__name__}: {e}），"
+                    f"连续失败 {apify_strikes}/3")
+        if status != 200 and not serp:
+            note = "（Apify 已覆盖该词全部页，跳过）" if kw in apify_covered else ""
+            log(f"    「{q}」第{page}页：HTTP {status}，跳过{note}")
         else:
-            page_posts: list[dict] = []
-            for r in parse_serp_results(html):
-                cls = classify_fb_url(r["url"])
-                if not cls or cls[0] != "post":
-                    continue
-                url = r["url"]
-                if url in seen or url in found_urls:
-                    continue
-                found_urls.add(url)
-                page_posts.append({"url": url, "group_id": cls[1],
-                                   "group_name": r["title"], "keyword": kw})
-            found.extend(page_posts)
-            if db is not None and page_posts:
-                db.save_fb_posts(keyword=kw, source="ddg", posts=page_posts)
-            log(f"    「{q}」第{page}页：{len(page_posts)} 个新帖"
-                f"（累计 {len(found)}）")
+            harvest(kw, serp, source, f"第{page}页")
         # 查询间节奏（最后一次查询后不必等）
         if i < len(queries) - 1 and len(found) < max_posts:
             wait = random.uniform(MIN_SAMPLE_FLOOR, MIN_SAMPLE_FLOOR + 20)
             log(f"    …查询间隔 {wait:.0f}s（DDG 防限流）")
             time.sleep(wait)
+    if apify_spent:
+        log(f"本轮 Apify 发现层花费约 ${apify_spent:.3f}")
     return found[:max_posts]
 
 
@@ -329,6 +518,12 @@ def main() -> int:
     ap.add_argument("--headed", action="store_true", help="有头运行（调试用）")
     ap.add_argument("--delay", type=float, nargs=2, metavar=("MIN", "MAX"),
                     default=(3.0, 6.0), help="帖间随机间隔秒（缺省 3~6）")
+    ap.add_argument("--apify-budget", type=float, default=0.5, metavar="USD",
+                    help="发现层 Apify Google SERP 兜底的本轮花费上限美元"
+                         "（缺省 0.5；0 = 关闭兜底纯 DDG）")
+    ap.add_argument("--apify-only", action="store_true",
+                    help="发现层完全不直连 DDG，全部走 Apify Google SERP"
+                         "（需 token，花费仍受 --apify-budget 限制）")
     args = ap.parse_args()
 
     urls = list(args.urls)
@@ -360,10 +555,24 @@ def main() -> int:
     meta: dict[str, dict] = {}   # url -> {"group_id","group_name","keyword"}
     if not urls:
         keywords = args.keywords or DEFAULT_KEYWORDS
+        apify_token = (load_apify_token(db)
+                       if args.apify_budget > 0 or args.apify_only else None)
+        if args.apify_only and not apify_token:
+            log("[!] --apify-only 需要 providers 表里的 apify token，未读到，退出")
+            return 1
+        if args.apify_only and args.apify_budget <= 0:
+            log("[!] --apify-only 下 --apify-budget 必须 > 0（否则发现层无可用通道）")
+            return 1
+        mode = "Apify-only（跳过 DDG 直连）" if args.apify_only else "DDG 节奏 ≥60s/查询"
         log(f"未发现帖子 URL，自动发现：{len(keywords)} 个关键词 × "
-            f"{args.pages} 页（DDG 节奏 ≥60s/查询，已抓过 {len(seen)} 帖跳过）")
+            f"{args.pages} 页（{mode}，已抓过 {len(seen)} 帖跳过"
+            f"；Apify 预算 ${args.apify_budget:.2f}"
+            f"{'，token 就绪' if apify_token else '，无 token 关闭'}）")
         found = discover_post_urls(keywords, args.pages, seen,
-                                   args.max_posts, db=db)
+                                   args.max_posts, db=db,
+                                   apify_token=apify_token,
+                                   apify_budget=args.apify_budget,
+                                   apify_only=args.apify_only)
         log(f"发现 {len(found)} 个新帖")
         if not found:
             log("[!] 没有发现新帖，结束")

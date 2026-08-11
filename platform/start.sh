@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# 采集平台一键启动：后端 uvicorn(8765) + 前端 vite dev(3000) + 调度器 daemon
+# 采集平台一键启动：后端 uvicorn(8765) + 前端 vite dev(3000)
+# 调度器 daemon 默认【不】启动（启动即消费队列/自喂补货，会立刻跑任务）；
+# 需要跑任务时显式开启：START_DAEMON=1 ./start.sh
 # 幂等：已在运行的服务会跳过。日志见 platform/logs/，pid 见 platform/run/。
 set -euo pipefail
 
@@ -24,10 +26,16 @@ DAEMON_ARGS=${DAEMON_ARGS:---workers 1}
 export WA_CHECK_ACCOUNTS=${WA_CHECK_ACCOUNTS:-xiaohao-4,xiaohao-5}
 
 # FB 群采集第三方 API key（fb_group 批次用；缺失时该群采集 FATAL → 批次 failed）
-# key 由部署方在启动 shell 环境提供（.env 已 gitignore，不入库）；daemon 继承该环境
-# （start.sh 的 nohup 子进程天然继承）。缺失时原子 FATAL 是既有行为，本期不新增凭证体系。
-export BRIGHTDATA_API_KEY="${BRIGHTDATA_API_KEY:-}"
-export APIFY_TOKEN="${APIFY_TOKEN:-}"
+# key 优先取 shell 环境；缺省时回退读 providers 表（kind=brightdata/apify，AGENTS.md 凭证约定），
+# daemon 继承该环境（start.sh 的 nohup 子进程天然继承）。缺失时原子 FATAL 是既有行为。
+_db_key() { # $1=kind
+  python3 -c "import sqlite3,json,sys
+con=sqlite3.connect('file:$DIR/../.cache/1688.db?mode=ro',uri=True)
+row=con.execute(\"SELECT config_json FROM providers WHERE kind='$1' AND enabled=1\").fetchone()
+print(json.loads(row[0]).get('api_key') or json.loads(row[0]).get('api_token') or '' if row else '')" 2>/dev/null || true
+}
+export BRIGHTDATA_API_KEY="${BRIGHTDATA_API_KEY:-$(_db_key brightdata)}"
+export APIFY_TOKEN="${APIFY_TOKEN:-$(_db_key apify)}"
 
 is_running() { # pidfile
   [[ -f "$1" ]] && kill -0 "$(cat "$1")" 2>/dev/null
@@ -78,7 +86,11 @@ start_daemon() {
 
 start_backend
 start_frontend
-start_daemon
+if [[ "${START_DAEMON:-0}" == "1" ]]; then
+  start_daemon
+else
+  echo "[跳过] 调度器 daemon 默认不启动（需要跑任务时：START_DAEMON=1 $0）"
+fi
 
 echo
 echo "已就绪："

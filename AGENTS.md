@@ -23,7 +23,18 @@ platform/         管理系统（前后端分离）
   start.sh        一键启动后端+前端；stop.sh 停止
 .cache/1688.db    SQLite 主库（WAL 模式）：shops / contacts / tasks / task_events /
                   providers / proxy_channels / task_templates / fb_posts / fb_contacts
-scraper/ util/    旧版脚本，**只读参考，禁止修改**（新代码一律进 fetcher/ 或 platform/）
+scraper/ util/    旧版脚本，**只读参考，禁止修改**（新代码一律进 fetcher/ 或 platform/）。
+                  例外（用户明确要求的独立快脚本）：scraper/fb_group_bd.py（**现役 FB 群
+                  采集管线**：Bright Data 群 feed 数据集按群抓最新帖 → parse_post 四桶
+                  分号落 fb_contacts，fb_groups 冷却轮抓，常驻看护循环）、
+                  scraper/fb_group_wa.py（旧管线：DDG+Apify 混合发现 → CloakBrowser
+                  渲染，已退役留档）、
+                  scraper/wa_check_apify.py（Apify 查 WhatsApp 注册态回写 fb_contacts）、
+                  scraper/fb_group_discover_bd.py（**群发现**：Bright Data Google SERP
+                  数据集查 `site:facebook.com/groups <关键词>` → 群落 fb_groups，
+                  source='bd_serp'，给 fb_group_bd.py 供群；常驻看护循环），
+                  现行方案与运行结论见 docs/channel-research/facebook-groups.md
+                  （2026-08-11 合并版，含 BD 接入坑位、降本机制、成本实测）
 docs/             flow-architecture.md（fetcher 框架设计）、scheduler-architecture.md（调度器设计：
                   队列+消费者池+跨站 IP 复用，跨任务编排以此为准）、service-architecture.md（旧方案，存档）
 ```
@@ -64,7 +75,7 @@ docs/             flow-architecture.md（fetcher 框架设计）、scheduler-arc
 - **subprocess 类**：`TASK_COMMANDS` 注册类型 → `build_command()` 拼 fetcher CLI → Popen，输出泵逐行写 task_events。现唯一 subprocess 类型为 yiwugo_search。
 - **批次类**：`BATCH_TYPES` 注册类型 → 入队 work_items 批次 → daemon dispatcher 消费；平台 sweeper 派生状态/聚合进度（1688/madeinchina 采集、wa_check、fb_post、
   fb_discover、fb_group 均走此模型）。
-- **daemon 纳管**：fetcher daemon 常驻（start.sh 拉起，stop.sh 优雅退出），队列+消费者池调度、跨站冷却填充，见 docs/scheduler-architecture.md。start.sh 默认导出 `WA_CHECK_ACCOUNTS=xiaohao-4,xiaohao-5`（wa_check 查号账号池，对应 vendor/wa-check/auth_info-<name>/；缺省 default 无登录态会空跑放弃）。
+- **daemon 纳管**：fetcher daemon 常驻（**start.sh 默认不启动**，需 `START_DAEMON=1 ./start.sh` 显式拉起——daemon 启动即消费队列+自喂补货会立刻跑任务；stop.sh 优雅退出），队列+消费者池调度、跨站冷却填充，见 docs/scheduler-architecture.md。start.sh 默认导出 `WA_CHECK_ACCOUNTS=xiaohao-4,xiaohao-5`（wa_check 查号账号池，对应 vendor/wa-check/auth_info-<name>/；缺省 default 无登录态会空跑放弃）。
 - 任务终态：`pending / running / done / failed / stopped`；停止先置 `stop_requested=1`；`repeat_interval>0` 走循环重启（Timer）。
 - 新增任务类型需同步：`runner.py` 注册 + `api/tasks.py` 的 `TaskParams` 字段 + 前端 `TaskFormDialog.tsx` 表单分支 + `task-ui.tsx` 的 `TASK_TYPE_OPTIONS`。
 

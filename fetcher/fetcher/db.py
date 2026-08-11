@@ -333,6 +333,15 @@ class ShopDB:
         if "wa_checked_at" not in c_cols:
             self.conn.execute(
                 "ALTER TABLE contacts ADD COLUMN wa_checked_at TEXT")
+        # fb_contacts 补 author_name（FB 发帖人名，BD 群 feed 记录自带）
+        # 与 wa_name（WA 昵称，预留：资料补全 actor 接入后回写）
+        fb_cols = {r[1] for r in self.conn.execute("PRAGMA table_info(fb_contacts)")}
+        if fb_cols and "author_name" not in fb_cols:
+            self.conn.execute(
+                "ALTER TABLE fb_contacts ADD COLUMN author_name TEXT")
+        if fb_cols and "wa_name" not in fb_cols:
+            self.conn.execute(
+                "ALTER TABLE fb_contacts ADD COLUMN wa_name TEXT")
         # cookies 表裸键按 domain→site 映射加前缀（P2 identity 升级：
         # identity 键从裸 IP 升级为 site:ip）。部署窗口：旧进程裸键读不到
         # 新前缀 Cookie → 白板重启一次（SPEC §3.4 运维注意）。
@@ -807,13 +816,14 @@ class ShopDB:
             raise
 
     def save_fb_contacts(self, post_url: str, group_id: str | None,
-                         phones: list[dict]) -> int:
+                         phones: list[dict], author: str | None = None) -> int:
         """帖子提取的号码分桶落 fb_contacts（INSERT OR IGNORE，按 number
         去重；同号后帖不覆盖 first_seen_at/post_url）。
 
         phones: parse_post 输出 [{"number","bucket","source"}, ...]。
         declared_wa 桶 → wa_source='declared'；cn_uncertain/overseas →
-        wa_source=NULL。返回本次实际新增行数。
+        wa_source=NULL。author（FB 发帖人名）仅补空不覆盖。
+        返回本次实际新增行数。
         """
         now = _now()
         inserted = 0
@@ -831,6 +841,11 @@ class ShopDB:
                  "declared" if bucket == "declared_wa" else None,
                  post_url, group_id, now))
             inserted += cur.rowcount
+        if author:
+            self.conn.execute(
+                "UPDATE fb_contacts SET author_name=?"
+                " WHERE post_url=? AND author_name IS NULL",
+                (author, post_url))
         self.conn.commit()
         return inserted
 

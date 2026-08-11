@@ -13,6 +13,17 @@ import { LoadingState, ErrorState, EmptyState } from '@/components/PageState'
 import { PaginationBar, showTime, useDebouncedValue } from './shared'
 
 function waBadge(item: FbContactItem) {
+  // 运营商/提供商拒绝的无效号（虚拟段等，永远查不出），单独标识，不再落入「未查」
+  if (item.wa_source === 'invalid') {
+    return (
+      <Badge
+        variant="outline"
+        className="border-destructive/40 bg-destructive/10 text-destructive"
+      >
+        无效
+      </Badge>
+    )
+  }
   if (item.wa_registered === 1) {
     return (
       <Badge
@@ -106,7 +117,6 @@ export function FbTab() {
             <SelectItem value="all">全部分桶</SelectItem>
             <SelectItem value="declared_wa">声明 WA</SelectItem>
             <SelectItem value="cn_uncertain">国内待查</SelectItem>
-            <SelectItem value="overseas">海外</SelectItem>
           </SelectContent>
         </Select>
         <Input
