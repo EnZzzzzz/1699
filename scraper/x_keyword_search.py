@@ -20,6 +20,13 @@ xquik/x-tweet-scraper（Apify，pay-per-result $0.15/千帖，免 X 登录）：
 （默认 1000 ≈ $0.15/天）即停，跨天自动清零。
 402/403 欠费按 wa_check_apify 口径记 quota_exhausted_at 并轮换账号。
 
+增量与回扫（2026-08-18）：pay-per-result 按交付行计费，跨 run 重拉旧帖
+照付，故每词记录上次成功抓取的 unix 时刻（state.kw_since），下次查询拼
+since_time:<ts> 只拉新帖，零重叠；--backfill-days N 开启历史回扫：每词
+每轮推进一个 since:/until: 日窗口（从 N 天前向今天推进，进度记
+state.kw_backfill），扫到昨天自动转入增量模式。回扫同样受日预算刹车，
+自然摊到多天完成。
+
 用法：
   python3 scraper/x_keyword_search.py --once --per-round 2 --daily-results 50  # 试跑
   python3 scraper/x_keyword_search.py                                          # 常驻
@@ -27,6 +34,7 @@ xquik/x-tweet-scraper（Apify，pay-per-result $0.15/千帖，免 X 登录）：
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import re
 import sys
@@ -99,16 +107,20 @@ class AccountError(Exception):
 # ---------------------------------------------------------------- 状态文件
 
 def load_state() -> dict:
-    """关键词轮转 offset + 按北京日期的当日用量（机器本地时区即北京）。"""
+    """关键词轮转 offset + 按北京日期的当日用量（机器本地时区即北京）
+    + kw_since 每词上次成功抓取的 unix 时刻（增量锚点）
+    + kw_backfill 每词历史回扫已推进到的日期（YYYY-MM-DD）。"""
     if STATE_PATH.exists():
         try:
             st = json.loads(STATE_PATH.read_text())
             st.setdefault("offset", 0)
             st.setdefault("daily", {})
+            st.setdefault("kw_since", {})
+            st.setdefault("kw_backfill", {})
             return st
         except Exception:
             pass
-    return {"offset": 0, "daily": {}}
+    return {"offset": 0, "daily": {}, "kw_since": {}, "kw_backfill": {}}
 
 
 def save_state(st: dict) -> None:
@@ -122,11 +134,12 @@ def today_usage(st: dict) -> dict:
 
 # ---------------------------------------------------------------- xquik 搜索
 
-def x_search(conn, accounts: list, kw: str, max_items: int) -> list[dict]:
-    """异步 run + 轮询跑一个关键词（Latest 排序），返回 dataset items。
+def x_search(conn, accounts: list, kw: str, max_items: int) -> list[dict] | None:
+    """异步 run + 轮询跑一个查询词（Latest 排序），返回 dataset items。
+    kw 可带 X 高级搜索语法（since:/until:/since_time: 等），原样透传。
     402/403 欠费记 quota_exhausted_at 并从 accounts 就地移除后换号重试；
     run 超时/FAILED 重试且 maxItems 逐次减半（大词拉全量慢，降量保底），
-    仍失败返回 []（留到下轮）。"""
+    仍失败返回 None（区别于成功但零结果的 []），调用方不得推进增量进度。"""
     mi = max_items
     for attempt in range(3):
         body = json.dumps({"searchTerms": [kw], "maxItems": mi,
@@ -194,7 +207,7 @@ def x_search(conn, accounts: list, kw: str, max_items: int) -> list[dict]:
         except Exception as e:  # noqa: BLE001
             log(f"  xquik 取结果异常「{kw}」（第{attempt + 1}/3次）: {e}")
     log(f"  xquik「{kw}」3 次均失败，留到下轮")
-    return []
+    return None
 
 
 # ---------------------------------------------------------------- 落库
@@ -255,6 +268,48 @@ def harvest_tweets(db, items: list[dict]) -> tuple[int, int]:
 
 # ---------------------------------------------------------------- 主流程
 
+def _ymd(days_ago: int = 0) -> str:
+    """北京日期（机器本地时区）往前推 days_ago 天的 YYYY-MM-DD。"""
+    return time.strftime("%Y-%m-%d",
+                         time.localtime(time.time() - days_ago * 86400))
+
+
+def build_query(st: dict, kw: str, backfill_days: int) -> tuple[str, str]:
+    """构造该词本轮的 X 搜索查询（带增量/回扫时间窗），返回 (查询词, 模式)。
+    回扫优先：kw_backfill 未到昨天时每轮推一个 since:/until: 日窗口；
+    否则走增量：kw_since 有锚点拼 since_time:<ts> 只拉锚点后的新帖，
+    无锚点则全量首拉（记录锚点后下轮起增量）。"""
+    if backfill_days > 0:
+        cur = st["kw_backfill"].get(kw) or _ymd(backfill_days)
+        if cur != "done" and cur < _ymd(0):  # 回扫还没覆盖到昨天（含昨天窗口）
+            nxt = (datetime.date.fromisoformat(cur)
+                   + datetime.timedelta(days=1)).isoformat()
+            return f"{kw} since:{cur} until:{nxt}", f"回扫{cur}"
+    ts = st["kw_since"].get(kw)
+    if ts:
+        return f"{kw} since_time:{ts}", "增量"
+    return kw, "全量首拉"
+
+
+def advance(st: dict, kw: str, backfill_days: int, mode: str) -> None:
+    """查询成功后推进该词进度（失败/None 时调用方跳过，进度不动）。
+    回扫：推进一个日窗口，昨天窗口扫完即置 done 标记（回扫为一次性，
+    不随日期漂移重扫；想重扫删 state.kw_backfill 对应键）并把增量锚点
+    定在当前（回扫逐日窗口已覆盖 [起始日, 今天)，无空洞）；
+    增量/全量：锚点直接推到当前时刻。"""
+    if mode.startswith("回扫"):
+        cur = st["kw_backfill"].get(kw) or _ymd(backfill_days)
+        nxt = (datetime.date.fromisoformat(cur)
+               + datetime.timedelta(days=1)).isoformat()
+        if nxt >= _ymd(0):
+            st["kw_backfill"][kw] = "done"
+            st["kw_since"][kw] = int(time.time())
+        else:
+            st["kw_backfill"][kw] = nxt
+    else:
+        st["kw_since"][kw] = int(time.time())
+
+
 def run_round(db, accounts: list, keywords: list[str], args, st: dict) -> dict:
     """跑一轮：从 offset 取 per-round 个词逐词搜索挖号。"""
     usage = today_usage(st)
@@ -272,15 +327,20 @@ def run_round(db, accounts: list, keywords: list[str], args, st: dict) -> dict:
             break
         # 预算刹车粒度：单词 maxItems 不超过当日剩余额度
         max_items = min(args.max_items, args.daily_results - usage["x_results"])
-        items = x_search(conn=db.conn, accounts=accounts, kw=kw,
+        term, mode = build_query(st, kw, args.backfill_days)
+        items = x_search(conn=db.conn, accounts=accounts, kw=term,
                          max_items=max_items)
+        if items is None:  # run 失败：进度不推进，下轮重试该词同一窗口
+            time.sleep(args.delay)
+            continue
+        advance(st, kw, args.backfill_days, mode)
         usage["x_results"] += len(items)
         stats["results"] += len(items)
         save_state(st)
         n_posts, n_new = harvest_tweets(db, items)
         stats["posts"] += n_posts
         stats["new"] += n_new
-        log(f"  [x]「{kw}」: 帖 {n_posts}，新号 +{n_new}"
+        log(f"  [x][{mode}]「{kw}」: 帖 {n_posts}，新号 +{n_new}"
             f"（当日 {usage['x_results']}/{args.daily_results}）")
         time.sleep(args.delay)
     return stats
@@ -295,6 +355,9 @@ def main() -> int:
     ap.add_argument("--daily-results", type=int, default=1000,
                     help="当日结果数上限（缺省 1000 ≈ $0.15/天）")
     ap.add_argument("--max-items", type=int, default=40, help="每词 maxItems")
+    ap.add_argument("--backfill-days", type=int, default=0,
+                    help="历史回扫天数：>0 时每词每轮推一个日窗口从 N 天前"
+                         "扫到昨天，扫完自动转增量（受日预算刹车限速）")
     ap.add_argument("--delay", type=float, default=5, help="查询间隔秒数")
     ap.add_argument("--once", action="store_true", help="跑一轮即退出")
     args = ap.parse_args()
