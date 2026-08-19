@@ -8,14 +8,25 @@
 
 - 群来源：fb_groups 表（612 群已由 fb_posts 回填；discover_fb 会持续补充），
   按 last_crawled_at 冷却轮抓（默认 24h），never-crawled 优先。
+- 两段式群质量筛选（2026-08-11 定案）：首采只画像 --probe-posts 帖（默认
+  1 帖，~2.9 credits/群）——BD 记录自带 group_members/真实群名/最新帖
+  日期，回填 fb_groups.members + last_post_at；--min-members（默认 100）
+  跳过已知低成员小群，--max-stale-days（默认 30）跳过死群（NULL=未知
+  不过滤），过关群重抓轮才按 --posts 增量捞帖。首采画像顺带挖最新帖的号。
 - 增量抓取（降本核心）：重抓群带 start_date=上次采集日期，BD 只返回
-  该日期后的新帖，旧帖不计费；首次采的群全量拉 --posts 帖。
+  该日期后的新帖，旧帖不计费（无新帖的群返回 dead_page 错误记录）。
   日期格式默认 MM-DD-YYYY（BD 官方文档），不生效可 --date-format iso 切换。
 - 零产出群淘汰：历史零号码的群冷却 ×--zero-cooldown-factor（默认 3 倍），
   预算集中到产号群（靠 fb_contacts.group_id 计数判断，不改表结构）。
-- 并发：同时挂 --conc 个 trigger，轮询收割（BD 侧异步，本地零浏览器）。
-- 费用：按成功交付帖数计费（$1.5/千条），免费 5000 条/月；
-  控量靠增量抓取 + 零产出淘汰 + --posts / --cooldown-hours。
+- 批量 trigger（2026-08-11 改造）：一次 trigger 塞 --batch-size 个群 URL
+  （官方上限 5000/批、输入 1GB；官方 429 排障建议即「合并大批次」），
+  同批记录混在一个 snapshot，按帖 permalink 的 /groups/{gid} 段归群；
+  同时挂 --conc 个批次轮询收割。计费口径不变：按交付帖数算，与
+  trigger 次数无关（官方 FAQ "you only pay for what you get"），
+  批量只省请求/轮询开销，不省钱。
+- 费用：按成功交付帖数计费（实测 ~2.9 credits/帖 ≈ $2.5/千帖），
+  免费 5000 credits/月；控量靠增量抓取 + 零产出淘汰 + --posts /
+  --cooldown-hours。
 - 私密群匿名抓不到，BD 快照会给 error 记录，跳过并计 fail。
 
 用法：
@@ -41,7 +52,7 @@ from fetcher.sites.facebook.post import parse_post  # noqa: E402
 BD_API = "https://api.brightdata.com/datasets/v3"
 BD_DATASET_GROUP_POSTS = "gd_lz11l67o2cb3r0lkj3"  # FB posts by group URL
 POLL_INTERVAL = 10
-SNAPSHOT_TIMEOUT = 900  # 单群快照轮询上限（并发高时 BD 侧排队，给足余量）
+BATCH_TIMEOUT = 1800  # 批次快照轮询上限（批次进度按最慢的群算，给足余量）
 
 
 def log(msg: str) -> None:
@@ -69,24 +80,22 @@ class BDClient:
         except Exception as e:  # noqa: BLE001
             return -1, str(e)[:200]
 
-    def trigger(self, group_url: str, num_posts: int,
-                start_date: str | None = None) -> str | None:
-        # start_date：增量抓取，BD 只回该日期后的新帖（旧帖不计费）
-        item = {"url": group_url, "num_of_posts": num_posts}
-        if start_date:
-            item["start_date"] = start_date
+    def trigger(self, items: list[dict]) -> str | None:
+        # items：一批群各带各的 url/num_of_posts/start_date（官方示例支持
+        # 每 URL 独立参数）；start_date 增量抓取，BD 只回该日期后的新帖
+        # （旧帖不计费）。一批一个 snapshot，结果混回、按帖 URL 归群。
         for attempt in range(3):
             s, body = self._http(
                 "POST", f"{BD_API}/trigger?dataset_id={BD_DATASET_GROUP_POSTS}"
                         f"&include_errors=true",
-                [item])
+                items)
             if s // 100 == 2:
                 return (body or {}).get("snapshot_id")
             # 传输层瞬断（SSL EOF 等）重试，HTTP 错误不重试
             if s == -1 and attempt < 2:
                 time.sleep(5)
                 continue
-            log(f"  trigger 失败 {group_url}: HTTP {s} {body}")
+            log(f"  trigger 失败（{len(items)} 群批次）: HTTP {s} {body}")
             # 账号级错误（停用/欠费/鉴权）抛异常让整轮中止，避免全部群被误标 failed
             msg = str(body).lower()
             if s in (401, 402, 403) or "not active" in msg or "balance" in msg:
@@ -118,26 +127,35 @@ class BDClient:
 
 
 def due_groups(db, cooldown_hours: float, max_groups: int,
-               zero_factor: float) -> list[tuple[str, str, str | None]]:
+               zero_factor: float, min_members: int = 0,
+               max_stale_days: float = 0) -> list[tuple[str, str, str | None]]:
     """到期待抓群：(url, group_id, last_crawled_at)，never-crawled 优先，再按最久未抓。
     零产出群（历史零号码且已采过）冷却 ×zero_factor，把预算集中到产号群。
+    min_members>0 时跳过已知成员数不足的小群；max_stale_days>0 时跳过最新帖
+    早于该天数的死群（members/last_post_at 来自 BD 记录回填，NULL=未知不过滤）。
     last_crawled_at 是北京时间字符串，cutoff 同样按北京时间拼。"""
     import datetime
     def cutoff(hours: float) -> str:
         return (datetime.datetime.now()
                 - datetime.timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
-    rows = db.conn.execute(
+    sql = (
         "SELECT url, group_id, last_crawled_at FROM ("
-        "  SELECT g.url, g.group_id, g.last_crawled_at,"
+        "  SELECT g.url, g.group_id, g.last_crawled_at, g.members, g.last_post_at,"
         "    (SELECT COUNT(*) FROM fb_contacts c WHERE c.group_id = g.group_id)"
         "      AS n_contacts"
         "  FROM fb_groups g WHERE g.status != 'in_progress')"
-        " WHERE last_crawled_at IS NULL"
+        " WHERE (last_crawled_at IS NULL"
         "    OR (n_contacts > 0 AND last_crawled_at < ?)"
-        "    OR (n_contacts = 0 AND last_crawled_at < ?)"
-        " ORDER BY last_crawled_at IS NOT NULL, last_crawled_at",
-        (cutoff(cooldown_hours), cutoff(cooldown_hours * zero_factor))
-    ).fetchall()
+        "    OR (n_contacts = 0 AND last_crawled_at < ?))")
+    params: list = [cutoff(cooldown_hours), cutoff(cooldown_hours * zero_factor)]
+    if min_members > 0:
+        sql += " AND (members IS NULL OR members >= ?)"
+        params.append(min_members)
+    if max_stale_days > 0:
+        sql += " AND (last_post_at IS NULL OR last_post_at >= ?)"
+        params.append(cutoff(max_stale_days * 24))
+    sql += " ORDER BY last_crawled_at IS NOT NULL, last_crawled_at"
+    rows = db.conn.execute(sql, params).fetchall()
     if max_groups > 0:
         rows = rows[:max_groups]
     return [(r[0], r[1], r[2]) for r in rows]
@@ -178,72 +196,153 @@ def harvest_records(db, gid: str, records: list[dict]) -> tuple[int, int]:
     return n_posts, n_new
 
 
+def _to_beijing(iso_utc: str) -> str | None:
+    """BD date_posted（ISO UTC，如 2026-08-11T04:03:11.000Z）→ 北京时间字符串。"""
+    import datetime
+    try:
+        dt = datetime.datetime.fromisoformat(iso_utc.replace("Z", "+00:00"))
+        return (dt + datetime.timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
+    except (ValueError, AttributeError):
+        return None
+
+
+def harvest_batch(db, batch: list[tuple[str, str]], records: list[dict],
+                  stats: dict) -> None:
+    """一批群的混合快照记录 → 按帖 permalink 的 /groups/{gid} 段归群，逐群
+    分桶落号并 mark done。BD 对批次内每个输入 URL 都会给记录（数据或
+    error），error-only 的群（私密/无新帖 dead_page，不计费）记 0 帖 done。
+    batch: [(url, gid), ...]"""
+    by_gid: dict[str, list[dict]] = {gid: [] for _, gid in batch}
+    for rec in records:
+        if not isinstance(rec, dict):
+            continue
+        m = re.search(r"/groups/([^/?#]+)", rec.get("url") or "")
+        if m and m.group(1) in by_gid:
+            by_gid[m.group(1)].append(rec)
+        elif not rec.get("error"):
+            # 有效帖却无法归群（如 vanity 群名被 BD 归一成数字 ID），丢号要告警
+            log(f"  ⚠ 记录无法归群: {(rec.get('url') or '?')[:100]}")
+    for url, gid in batch:
+        recs = by_gid[gid]
+        # BD 记录自带群元数据（group_name/group_members/date_posted），顺手
+        # 回填：members 供 --min-members 精确过滤，last_post_at 供死群过滤
+        meta = next((r for r in recs
+                     if isinstance(r, dict) and r.get("group_members") is not None),
+                    None)
+        dates = [d for r in recs if isinstance(r, dict)
+                 for d in [_to_beijing(r.get("date_posted") or "")] if d]
+        if meta or dates:
+            db.update_fb_group_meta(
+                url,
+                name=meta.get("group_name") if meta else None,
+                members=meta.get("group_members") if meta else None,
+                last_post_at=max(dates) if dates else None)
+        n_posts, n_new = harvest_records(db, gid, recs)
+        db.mark_fb_group_done(url, n_posts, 1 if n_new else 0)
+        stats["groups"] += 1
+        stats["posts"] += n_posts
+        stats["new"] += n_new
+        log(f"  ✓ {url.rsplit('/', 1)[-1]}: {n_posts} 帖, 新增 {n_new} 号"
+            f"（累计 {stats['new']}）")
+
+
 def run_pass(db, bd: BDClient, args) -> dict:
     groups = due_groups(db, args.cooldown_hours, args.max_groups,
-                        args.zero_cooldown_factor)
+                        args.zero_cooldown_factor, args.min_members,
+                        args.max_stale_days)
     if not groups:
         return {"groups": 0}
     n_delta = sum(1 for _, _, lc in groups if lc)
-    log(f"本轮到期群 {len(groups)} 个（每群 {args.posts} 帖；"
-        f"增量 {n_delta} 群 / 首次全量 {len(groups) - n_delta} 群）")
+    batches = [groups[i:i + args.batch_size]
+               for i in range(0, len(groups), args.batch_size)]
+    log(f"本轮到期群 {len(groups)} 个（画像 {len(groups) - n_delta} 群 × "
+        f"{min(args.posts, args.probe_posts)} 帖 / 增量 {n_delta} 群 × "
+        f"{args.posts} 帖；{len(batches)} 批 × ≤{args.batch_size} 群）")
     stats = {"groups": 0, "fail": 0, "posts": 0, "new": 0}
-    i = 0
-    while i < len(groups):
-        # 1) 挂起一批 trigger
-        in_flight: dict[str, tuple[str, str, float]] = {}  # sid -> (url, gid, t0)
-        while i < len(groups) and len(in_flight) < args.conc:
-            url, gid, lc = groups[i]
-            i += 1
-            sid = bd.trigger(url, args.posts, to_start_date(lc, args.date_format))
+
+    def fire(batch) -> str | None:
+        items = []
+        for url, _gid, lc in batch:
+            # 两段式（2026-08-11 定案）：首采只画像 probe_posts 帖（默认 1，
+            # 拿 group_members/last_post_at + 顺带挖最新帖的号），members/
+            # 死群过滤后，过关群重抓轮才按 --posts 增量捞帖
+            n_posts = args.posts if lc else min(args.posts, args.probe_posts)
+            item = {"url": url, "num_of_posts": n_posts}
+            sd = to_start_date(lc, args.date_format)
+            if sd:
+                item["start_date"] = sd
+            items.append(item)
+        return bd.trigger(items)
+
+    bi = 0
+    while bi < len(batches):
+        # 1) 挂起一批 trigger（一个批次 = 一次 trigger = 一个 snapshot）
+        in_flight: dict[str, tuple[list, float]] = {}  # sid -> (batch, t0)
+        while bi < len(batches) and len(in_flight) < args.conc:
+            batch = batches[bi]
+            bi += 1
+            sid = fire(batch)
             if sid:
-                in_flight[sid] = (url, gid, time.time())
+                in_flight[sid] = (batch, time.time())
             else:
-                stats["fail"] += 1
-                db.mark_fb_group_failed(url)
+                stats["fail"] += len(batch)
+                for url, _gid, _lc in batch:
+                    db.mark_fb_group_failed(url)
         # 2) 轮询收割，边收边补触发
         while in_flight:
             time.sleep(POLL_INTERVAL)
             for sid in list(in_flight):
-                url, gid, t0 = in_flight[sid]
+                batch, t0 = in_flight[sid]
                 st = bd.poll(sid)
                 if st == "ready":
                     recs = bd.download(sid)
-                    n_posts, n_new = harvest_records(db, gid, recs)
-                    db.mark_fb_group_done(url, n_posts, 1 if n_new else 0)
-                    stats["groups"] += 1
-                    stats["posts"] += n_posts
-                    stats["new"] += n_new
-                    log(f"  ✓ {url.rsplit('/', 1)[-1]}: {n_posts} 帖, 新增 {n_new} 号"
-                        f"（累计 {stats['new']}）")
+                    log(f"  批次快照就绪：{len(batch)} 群 / {len(recs)} 条记录")
+                    harvest_batch(db, [(u, g) for u, g, _ in batch], recs, stats)
                     del in_flight[sid]
                 elif st in ("failed", "dead") \
-                        or time.time() - t0 > SNAPSHOT_TIMEOUT:
-                    log(f"  ✗ {url}: snapshot {st}")
-                    db.mark_fb_group_failed(url)
-                    stats["fail"] += 1
+                        or time.time() - t0 > args.batch_timeout:
+                    log(f"  ✗ 批次（{len(batch)} 群）snapshot {st or 'timeout'}，"
+                        f"整批置 failed 下轮重试")
+                    for url, _gid, _lc in batch:
+                        db.mark_fb_group_failed(url)
+                    stats["fail"] += len(batch)
                     del in_flight[sid]
             # 补触发保持满并发
-            while i < len(groups) and len(in_flight) < args.conc:
-                url, gid, lc = groups[i]
-                i += 1
-                sid = bd.trigger(url, args.posts,
-                                 to_start_date(lc, args.date_format))
+            while bi < len(batches) and len(in_flight) < args.conc:
+                batch = batches[bi]
+                bi += 1
+                sid = fire(batch)
                 if sid:
-                    in_flight[sid] = (url, gid, time.time())
+                    in_flight[sid] = (batch, time.time())
                 else:
-                    stats["fail"] += 1
-                    db.mark_fb_group_failed(url)
+                    stats["fail"] += len(batch)
+                    for url, _gid, _lc in batch:
+                        db.mark_fb_group_failed(url)
     return stats
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="FB 群采集（Bright Data 群 feed）")
-    ap.add_argument("--posts", type=int, default=15, help="每群抓最新帖数")
+    ap.add_argument("--posts", type=int, default=15, help="增量重抓每群抓最新帖数")
+    ap.add_argument("--probe-posts", type=int, default=1,
+                    help="首采画像帖数（默认 1：拿 group_members/last_post_at + "
+                         "顺带挖最新帖的号；过关群重抓轮才按 --posts 增量捞）")
+    ap.add_argument("--min-members", type=int, default=100,
+                    help="跳过已知成员数低于此值的群（members 来自 BD 记录回填/"
+                         "SERP 解析；NULL=未知不过滤；0=关闭过滤）")
+    ap.add_argument("--max-stale-days", type=float, default=30,
+                    help="跳过最新帖早于该天数的死群（last_post_at 来自 BD 回填；"
+                         "NULL=未知不过滤；0=关闭过滤）")
     ap.add_argument("--cooldown-hours", type=float, default=24,
                     help="同一群重抓间隔（小时）")
     ap.add_argument("--max-groups", type=int, default=0,
                     help="每轮最多抓多少群（0=不限）")
-    ap.add_argument("--conc", type=int, default=10, help="并发 trigger 数")
+    ap.add_argument("--conc", type=int, default=2, help="并发批次数（在飞 snapshot 数）")
+    ap.add_argument("--batch-size", type=int, default=50,
+                    help="一次 trigger 塞多少群（官方上限 5000/批；"
+                         "批次进度按最慢的群算，别贪大）")
+    ap.add_argument("--batch-timeout", type=int, default=BATCH_TIMEOUT,
+                    help="批次快照轮询超时秒数（超时整批置 failed 下轮重试）")
     ap.add_argument("--zero-cooldown-factor", type=float, default=3.0,
                     help="零产出群冷却倍数（1=不淘汰）")
     ap.add_argument("--date-format", choices=["us", "iso"], default="us",

@@ -240,6 +240,8 @@ CREATE TABLE IF NOT EXISTS fb_groups (
     status          TEXT NOT NULL DEFAULT 'pending', -- pending/in_progress/done/failed
     post_count      INTEGER,                  -- 已采帖数（fb_group on_success 回写）
     has_contact     INTEGER,                  -- 是否提到联系方式（fb_group 回写）
+    members         INTEGER,                  -- 群成员数（BD 记录回填为主，SERP 解析补充；NULL=未知）
+    last_post_at    TEXT,                     -- 群内最新帖时间（BD 记录回填，死群过滤用；NULL=未知）
     first_seen_at   TEXT NOT NULL,            -- 北京时间字符串
     last_crawled_at TEXT
 );
@@ -342,6 +344,15 @@ class ShopDB:
         if fb_cols and "wa_name" not in fb_cols:
             self.conn.execute(
                 "ALTER TABLE fb_contacts ADD COLUMN wa_name TEXT")
+        # fb_groups 补 members（群成员数，SERP description 解析；NULL=未知。
+        # 采集侧 --min-members 过滤低成员群，2026-08-11 群质量筛选）
+        g_cols = {r[1] for r in self.conn.execute("PRAGMA table_info(fb_groups)")}
+        if g_cols and "members" not in g_cols:
+            self.conn.execute(
+                "ALTER TABLE fb_groups ADD COLUMN members INTEGER")
+        if g_cols and "last_post_at" not in g_cols:
+            self.conn.execute(
+                "ALTER TABLE fb_groups ADD COLUMN last_post_at TEXT")
         # cookies 表裸键按 domain→site 映射加前缀（P2 identity 升级：
         # identity 键从裸 IP 升级为 site:ip）。部署窗口：旧进程裸键读不到
         # 新前缀 Cookie → 白板重启一次（SPEC §3.4 运维注意）。
@@ -889,6 +900,23 @@ class ShopDB:
             "UPDATE fb_groups SET status='failed' WHERE url=?", (url,))
         self.conn.commit()
 
+    def update_fb_group_meta(self, url: str, name: str | None = None,
+                             members: int | None = None,
+                             last_post_at: str | None = None) -> None:
+        """BD 群 feed 记录自带的群元数据回填（group_name/group_members/
+        date_posted 每条记录都有；只更新提供的字段）。"""
+        if name is not None:
+            self.conn.execute(
+                "UPDATE fb_groups SET name=? WHERE url=?", (name, url))
+        if members is not None:
+            self.conn.execute(
+                "UPDATE fb_groups SET members=? WHERE url=?", (members, url))
+        if last_post_at is not None:
+            self.conn.execute(
+                "UPDATE fb_groups SET last_post_at=? WHERE url=?",
+                (last_post_at, url))
+        self.conn.commit()
+
     def reset_fb_groups_in_progress(self) -> int:
         """fb_groups 的 in_progress 重置回 pending（进程中断残留的认领，
         FbGroupTask.prepare 启动时调用——reset_daemon_state 只认
@@ -925,9 +953,10 @@ class ShopDB:
         """发现/帖派生的群条目落 fb_groups（INSERT OR IGNORE，url UNIQUE
         去重；已存在行不动 status/name，保持采集进度）。
 
-        groups: [{"url", "group_id", "name", "source"?}, ...]，source 仅在
-        key 不存在或 None 时缺省 'ddg'（FbDiscoverTask 不带 source 键；
-        FbPostTask 传 'fb_post'）。返回本次实际新增行数。
+        groups: [{"url", "group_id", "name", "source"?, "members"?}, ...]，
+        source 仅在 key 不存在或 None 时缺省 'ddg'（FbDiscoverTask 不带 source 键；
+        FbPostTask 传 'fb_post'）。members（群成员数）提供时总是刷新
+        （成员数会变，以最新 SERP 信息为准）。返回本次实际新增行数。
         """
         now = _now()
         inserted = 0
@@ -941,6 +970,10 @@ class ShopDB:
                 " source, first_seen_at) VALUES (?, ?, ?, ?, ?)",
                 (url, g.get("group_id"), g.get("name"), source, now))
             inserted += cur.rowcount
+            if g.get("members") is not None:
+                self.conn.execute(
+                    "UPDATE fb_groups SET members=? WHERE url=?",
+                    (g["members"], url))
         self.conn.commit()
         return inserted
 

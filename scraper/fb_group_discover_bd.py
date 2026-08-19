@@ -6,8 +6,12 @@
 群发现端点；改用 BD Google SERP 数据集 gd_mfz5x93lmsjjjylob 查询
 `site:facebook.com/groups <关键词>`（一次返回最多 100 条有机结果），
 复用 fetcher classify_fb_url 提取群主页/帖派生群，落 fb_groups
-（url UNIQUE 幂等，source='bd_serp'）。
+（url UNIQUE 幂等，source='bd_serp'）；SERP description 解析群成员数
+落 fb_groups.members（采集侧 --min-members 过滤低成员群）。
 
+- 预览挖号（零边际成本）：发现查询词带 whatsapp/微信，SERP 标题/摘要
+  常直接含中国号（存量标题实测 10% 带号、63% 是新号）——记录已为
+  群发现付费，顺手 parse_post 分桶落 fb_contacts，不替代群采集。
 - 关键词：--keywords 指定（自动补 site: 前缀）；缺省复用 work_items
   (discover_fb) 的历史查询词（已带 site: 前缀，直接用）。
 - 调用：sync /scrape 单查询一次一条记录（SERP 按记录计费，费用极低），
@@ -24,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 import urllib.error
@@ -36,6 +41,10 @@ sys.path.insert(0, str(REPO_ROOT / "fetcher"))
 
 from fetcher.atoms.facebook_discover import classify_fb_url  # noqa: E402
 from fetcher.sites.facebook.discover_task import _clean_title  # noqa: E402
+from fetcher.sites.facebook.post import parse_post  # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from fb_group_bd import is_cn_number  # noqa: E402
 
 BD_API = "https://api.brightdata.com/datasets/v3"
 BD_DATASET_GOOGLE_SERP = "gd_mfz5x93lmsjjjylob"  # Google SERP 100 results
@@ -44,6 +53,22 @@ SCRAPE_TIMEOUT = 120  # sync scrape 上限（BD 侧 1 分钟内返回，留余�
 
 # 群 id 黑名单：groups/ 下的功能页不是群
 _NON_GROUP_GIDS = {"feed", "discover", "search", "join", "create", "recommended"}
+
+# SERP description 里的成员数（FB 群主页 meta 描述常见格式）：
+# "Public group · 12K members" / "5,234 members" / "1.2 万位成员" / "86 位成员"
+_MEMBERS_RE = re.compile(
+    r"([\d,.]+)\s*([KkMm万])?\s*(?:members|位成员|名成员|个成员)", re.I)
+_MEMBERS_MULT = {"k": 1_000, "m": 1_000_000, "万": 10_000}
+
+
+def parse_members(text: str) -> int | None:
+    """SERP description → 群成员数（取第一个匹配，解析不出返回 None）。"""
+    m = _MEMBERS_RE.search(text or "")
+    if not m:
+        return None
+    num = float(m.group(1).replace(",", ""))
+    mult = _MEMBERS_MULT.get((m.group(2) or "").lower(), 1)
+    return int(num * mult)
 
 
 def log(msg: str) -> None:
@@ -114,13 +139,39 @@ def extract_groups(records: list[dict]) -> list[dict]:
             seen.setdefault(group_url, {
                 "url": group_url, "group_id": gid,
                 "name": _clean_title(item.get("title")),
+                "members": parse_members(item.get("description")),
                 "source": "bd_serp",
             })
     return list(seen.values())
 
 
+def harvest_serp_contacts(db, records: list[dict]) -> int:
+    """SERP 预览（标题+摘要）直接挖中国号：发现查询词带 whatsapp/微信，
+    Google 索引的帖摘要常含联系方式——这些记录已为群发现付过费，
+    挖掘是零边际成本（2026-08-11：存量标题实测 10% 带号，63% 是新号）。
+    摘要截断导致的残号靠 wa_check 查号环节自然筛掉。返回新增号码数。"""
+    n_new = 0
+    for rec in records:
+        if not isinstance(rec, dict) or rec.get("error"):
+            continue
+        for item in rec.get("organic") or []:
+            link = item.get("link") or ""
+            cls = classify_fb_url(link)
+            if cls is None:
+                continue
+            _, gid, _group_url = cls
+            if gid in _NON_GROUP_GIDS:
+                continue
+            text = f"{item.get('title') or ''}\n{item.get('description') or ''}"
+            info = parse_post(text, text)
+            phones = [p for p in info["phones"] if is_cn_number(p.get("number"))]
+            if phones:
+                n_new += db.save_fb_contacts(link, gid, phones)
+    return n_new
+
+
 def run_pass(db, bd: BDClient, queries: list[str], args) -> dict:
-    stats = {"queries": 0, "groups_found": 0, "groups_new": 0}
+    stats = {"queries": 0, "groups_found": 0, "groups_new": 0, "contacts": 0}
     for qi, query in enumerate(queries):
         for page in range(1, args.pages + 1):
             records = bd.scrape_serp(query, page, num=100)
@@ -129,10 +180,15 @@ def run_pass(db, bd: BDClient, queries: list[str], args) -> dict:
                 break  # 空页/失败不再翻页
             groups = extract_groups(records)
             n_new = db.upsert_fb_groups(groups) if groups else 0
+            n_members = sum(1 for g in groups if g.get("members") is not None)
+            n_contacts = harvest_serp_contacts(db, records)
             stats["groups_found"] += len(groups)
             stats["groups_new"] += n_new
+            stats["contacts"] += n_contacts
             log(f"  「{query}」第{page}页: {len(groups)} 群（新增 {n_new}，"
-                f"累计新增 {stats['groups_new']}）")
+                f"成员数识别 {n_members}/{len(groups)}），"
+                f"预览挖号 +{n_contacts}（累计群 {stats['groups_new']}，"
+                f"累计号 {stats['contacts']}）")
             if qi < len(queries) - 1 or page < args.pages:
                 time.sleep(args.delay)
     return stats
@@ -188,7 +244,8 @@ def main() -> int:
             continue
         total_new += stats["groups_new"]
         log(f"本轮：查询 {stats['queries']} 次，发现群 {stats['groups_found']}，"
-            f"新增 {stats['groups_new']}（累计新增 {total_new}）")
+            f"新增 {stats['groups_new']}（累计新增 {total_new}），"
+            f"预览挖号 {stats['contacts']}")
         if args.once:
             break
         time.sleep(args.interval)

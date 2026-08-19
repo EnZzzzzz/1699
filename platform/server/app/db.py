@@ -69,6 +69,14 @@ def migrate() -> None:
             "enabled INTEGER NOT NULL DEFAULT 1, "
             "created_at TEXT NOT NULL, "
             "updated_at TEXT NOT NULL)")
+        # 额度耗尽时间（如 Apify 月硬顶），查号脚本据此跳过并估算恢复日（约 30 天账期）
+        prov_cols = {r[1] for r in conn.execute("PRAGMA table_info(providers)")}
+        if "quota_exhausted_at" not in prov_cols:
+            conn.execute(
+                "ALTER TABLE providers ADD COLUMN quota_exhausted_at TEXT")
+        # 账号邮箱（区分同 kind 多账号，如 Apify 免费号）
+        if "email" not in prov_cols:
+            conn.execute("ALTER TABLE providers ADD COLUMN email TEXT")
         conn.execute(
             "CREATE TABLE IF NOT EXISTS proxy_channels ("
             "id INTEGER PRIMARY KEY AUTOINCREMENT, "
