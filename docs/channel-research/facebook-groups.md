@@ -1,38 +1,53 @@
 # Facebook 群组采集 — 现行方案与运行结论
 
-> 2026-08-11 合并版：整合原 `facebook-groups.md`（可行性调研）、
-> `facebook-runtime-conclusions.md`（运行结论）、`facebook-summary.md`（选型经济账），
-> 只保留**现行方案**与仍有效的实测结论；被取代路线的过程叙述已删（git 历史可查）。
+> 2026-08-12 更新：新增**关键词直搜管线**（不通过群，§5），现为产号主力；
+> 群 feed 采集暂停留作备用。2026-08-11 合并版：整合原 `facebook-groups.md`
+> （可行性调研）、`facebook-runtime-conclusions.md`（运行结论）、
+> `facebook-summary.md`（选型经济账），只保留**现行方案**与仍有效的实测结论；
+> 被取代路线的过程叙述已删（git 历史可查）。
 > 业务目标：采集中国外贸从业者的 WhatsApp 联系方式（只要中国号）。
 
-## 1. 现行管线（三个常驻脚本）
+## 1. 现行管线（常驻脚本）
 
 ```
-BD Google SERP 数据集                BD 群 feed 数据集                 Apify 查号 actor
-site:facebook.com/groups <词>   →    按群 URL 抓最新 15 帖       →     批量验证注册态
-fb_group_discover_bd.py              fb_group_bd.py                    wa_check_apify.py
-        ↓ fb_groups                        ↓ fb_contacts（四桶）            ↓ wa_registered / wa_source
+BD SERP 帖导向查询 + Apify memo23 FB 原生搜索 → fb_contacts → Apify 查号
+fb_keyword_search.py（关键词直搜，主力）          wa_check_apify.py
+BD SERP site:facebook.com/groups <词> → fb_groups → BD 群 feed（暂停备用）
+fb_group_discover_bd.py               fb_group_bd.py
 ```
 
 | 脚本 | 职责 | 平台 | 关键参数（默认） |
 |---|---|---|---|
-| `scraper/fb_group_discover_bd.py` | 群发现：BD SERP 查 `site:facebook.com/groups <关键词>`，群落 `fb_groups`（source='bd_serp'） | Bright Data | `--keywords` 16 词（外贸/货代/跨境电商/亚马逊卖家/china sourcing + 新能源/锂电池/光伏/solar panel + 工程机械/挖掘机/重型机械/machinery + 汽车配件/汽配/auto parts × whatsapp/微信），`--pages 1`，`--interval 3600` 每小时一轮 |
-| `scraper/fb_group_bd.py` | 联系人采集：BD 群 feed 数据集按群抓帖，`parse_post` 四桶分号落 `fb_contacts` | Bright Data | `--posts 15`、`--cooldown-hours 24`、`--conc 25`、`--interval 300` |
+| `scraper/fb_keyword_search.py` | **关键词直搜**（2026-08-12 起主力）：双源共用 270 词库（两次组合扩容，见 §5）——① BD SERP 查 `site:facebook.com "whatsapp" <词>`（Google+Bing 各 1 页），标题/摘要免费挖号；② Apify memo23 FB 原生搜索取全量帖正文挖号。关键词轮转 + 日预算刹车，详见 §5 | BD + Apify | `--per-round 10`（词/轮）、`--memo23-daily-results 2000`（≈$3.8/天）、`--serp-daily-queries 800`、`--interval 600` |
+| `scraper/fb_group_discover_bd.py` | 群发现：BD SERP 查 `site:facebook.com/groups <关键词>`，群落 `fb_groups`（source='bd_serp'）；**预览挖号**：SERP 标题/摘要直接 parse_post 落 `fb_contacts`（零边际成本，见下）；description 解析成员数落 `fb_groups.members` | Bright Data | `--keywords` 16 词（外贸/货代/跨境电商/亚马逊卖家/china sourcing + 新能源/锂电池/光伏/solar panel + 工程机械/挖掘机/重型机械/machinery + 汽车配件/汽配/auto parts × whatsapp/微信），`--pages 1`，`--interval 3600` 每小时一轮 |
+| `scraper/fb_group_bd.py` | 联系人采集（**2026-08-12 暂停**，边际递减，可恢复）：BD 群 feed 数据集按群抓帖（**批量 trigger**：一次请求塞 `--batch-size` 个群，记录按帖 permalink 归群），`parse_post` 四桶分号落 `fb_contacts`；**两段式**：首采画像 → 过滤 → 过关群增量捞帖 | Bright Data | 暂停前实跑：`--posts 15`、`--probe-posts 15`（首采直接 15 帖公平判定）、`--min-members 100`、`--max-stale-days 0`（不卡活跃度）、`--cooldown-hours 2`、`--max-groups 30`、`--zero-cooldown-factor 720`（零产出群≈拉黑）、`--interval 900` |
 | `scraper/wa_check_apify.py` | WA 注册态验证，回写 `wa_registered` / `wa_source` | Apify | `--bucket declared_wa,cn_uncertain --min-batch 100`（攒够 100 个才开火），循环间隔 10 分钟 |
 
-三个脚本都是常驻看护循环；BD 报 `Customer is not active`（欠费）时自动 10 分钟重试，
+各脚本都是常驻看护循环；BD 报 `Customer is not active`（欠费）时自动 10 分钟重试，
 充值后无需重启即可自愈。凭证存 SQLite `providers` 表（kind='brightdata' / 'apify'，
-apify 一行一账号、402 自动轮换），代码里不写死。
+apify 一行一账号、402/403 自动轮换），代码里不写死。
 
-### 采集端的两个降本机制（2026-08-11 落地）
+### 采集端的降本机制（2026-08-11 落地）
 
 - **增量抓取**：重抓群时 trigger 带 `start_date`=该群 last_crawled_at 日期
   （MM-DD-YYYY 官方格式，`--date-format iso` 可切换）。无新帖的群 BD 返回
-  `dead_page` 错误记录**不计费**；首次采的群仍全量拉 15 帖。
+  `dead_page` 错误记录**不计费**。
+- **两段式群质量筛选（2026-08-11 定案，C 方案）**：首采只画像 `--probe-posts`
+  （默认 1）帖，~2.9 credits/群——BD 记录自带 `group_members`/真实群名/最新帖
+  日期（§3），回填 `fb_groups.members` + `last_post_at`；`--min-members`
+  （默认 100）跳过已知低成员小群，`--max-stale-days`（默认 30）跳过死群
+  （NULL=未知不过滤），过关群重抓轮才按 `--posts` 增量捞帖。
+  首采画像顺带挖最新帖的号；SERP description 解析成员数作为补充来源。
+- **预览挖号（零边际成本）**：发现查询词本身带 whatsapp/微信，SERP
+  标题/摘要常直接含中国号（存量 1447 条标题实测 **10% 带号**，103 个
+  去重号中 63 个不在 fb_contacts）——SERP 记录已为群发现付费，
+  discover 顺手 `parse_post` 分桶落 fb_contacts；摘要截断残号由
+  wa_check 环节筛掉。不替代群采集（只碰到 Google 恰好索引且摘要含号的帖）。
 - **零产出群淘汰**：`due_groups` 按 `fb_contacts.group_id` 子查询计数，
   零产出且已采过的群冷却 ×`--zero-cooldown-factor`（默认 3），不重复烧钱。
   实测 1103 已采群中 623 个零产出被降频。
-- 注意：两个机制只对**重抓轮**生效，首次全量扫新群的成本不变。
+- 注意：批量 trigger / 增量 / 零产出淘汰只对**重抓轮**生效；
+  首采成本靠 1 帖画像 + members/死群前置过滤压低。
 
 ## 2. 路线为什么长这样（仍有效的底层结论）
 
@@ -56,10 +71,22 @@ apify 一行一账号、402 自动轮换），代码里不写死。
 - 群帖发现**只能异步** `POST /datasets/v3/trigger`（dataset_id=
   `gd_lz11l67o2cb3r0lkj3`）；误用同步 `/scrape` 会报误导性错误
   `Customer is not active`（账号本身正常）。请求体是**裸数组** `[{"url":...}]`。
+- **批量 trigger（2026-08-11 落地）**：一次 trigger 可塞多群（官方上限 5000 URL/批、
+  输入 1GB），每个 URL 各带各的 `start_date`/`num_of_posts`（官方示例即如此）；
+  全批记录混在一个 snapshot，按帖 permalink 的 `/groups/{gid}` 段归群。
+  **计费按交付帖数与 trigger 次数无关**（官方 FAQ "you only pay for what you get"），
+  批量只省请求/轮询开销不省钱；但**输入错误（无效 URL）导致的失败记录仍计费**，
+  批次进度按最慢的群算。脚本 `--batch-size 50` × `--conc 2`。
 - 逐帖 collect-by-URL 数据集（gd_lkaxegm826bjpoo9m5）对群帖全部 dead_page，
   不可用——只能按群 URL 抓 feed。
-- trigger→progress→snapshot 三段式，单群 ~30s，高并发排队时**轮询超时要给到
-  900s**（300s 实测会误判失败）。
+- trigger→progress→snapshot 三段式，单群 ~30s（50 群批次 ~1 分钟），
+  高并发排队时**轮询超时要给到 900s**（300s 实测会误判失败）。
+- **实际返回字段远多于官方示例的 7 个**（2026-08-11 实测 38 个字段）：
+  除 content/url/date_posted 外，每条记录自带群元数据 **`group_members`
+  （精确成员数）/ `group_name`（真实群名）/ `group_category`（Public group）
+  / `group_created_at`**，以及 num_comments/num_shares/attachments 等；
+  管线已用其回填 `fb_groups.members` + 真实群名（比 SERP 标题/解析精确），
+  重抓轮即可享受 `--min-members` 精确过滤。
 - **扣费实测 ~2.9 credits/帖**（非文档的 $1.5/1K 条口径，全量校正后实际单价
   ~$2.5/千帖）；免费 5000 credits/月 ≈ 1700 帖。真欠费时也报
   `HTTP 400 Customer is not active`，与同步误报同形，注意区分。
@@ -74,10 +101,62 @@ apify 一行一账号、402 自动轮换），代码里不写死。
 - `status=invalid`（虚拟段/运营商拒收）永远查不出，落库标 `wa_source='invalid'`
   且 `wa_checked_at` 置位，免疫重查不浪费额度。
 - 中国号库内可能存裸 11 位或带 86，匹配做 86 前缀双向兼容。
-- 多账号：`providers` 表 kind='apify' 一行一账号，402 欠费自动轮换。
+- 多账号：`providers` 表 kind='apify' 一行一账号，402/403 欠费自动轮换；`email` 列
+  区分账号。**月 $5 硬顶报 403 `platform-feature-disabled`（不是 402）**，脚本记录
+  `providers.quota_exhausted_at`（北京时间），30 天账期内启动时跳过并提示预计恢复日
+  （2026-08-12 三账号全耗尽，预计 09-11 恢复——memo23 与 wa_check 共用账号额度，
+  试点跑量时两边一起烧，注意额度分配）。
 - Baileys 小号协议查号（xiaohao-4/5）已被 WA 403 封死，查号全走 Apify。
 
-## 5. 成本与产能实测
+## 5. 关键词直搜管线（2026-08-12 起，不通过群）
+
+动机：群 feed 闭眼抓整版帖，联系方式稀疏（实测单号 $0.041-0.055，且英文关键词带出大量
+不相关海外群）。关键词路线在**查询时就预过滤联系方式密度**——搜 `whatsapp 货源` 出来的
+帖天然高概率带号。`scraper/fb_keyword_search.py` 双源共用一个词库，互不依赖、互为补充：
+
+- **Apify memo23 FB 原生搜索**（actor `memo23/facebook-search-scraper`）：调 FB 搜索
+  posts tab 同源端点（guest token 免登录，灰色途径、有 ToS 风险），**$0.0019/结果**，
+  全量正文返回、不依赖搜索引擎收录；帖新鲜度好（试点 95 帖中 52 帖当月发布）。
+  要点：**用中文词**（全文匹配下英文词混入大量海外卖家帖）；单关键词结果浅
+  （5-33 帖/词），放量靠词库广度而非单词深挖；调用用**异步 run + 轮询**（sync 端点
+  实测会瞬断）；偶发 run SUCCEEDED 但 0 帖的抖动，暂不重试。
+- **BD SERP 帖导向查询**：`site:facebook.com "whatsapp" <品类词>`，Google+Bing 双引擎
+  各 1 页（num=100），**只从标题/摘要挖号**（号码本就在摘要里，不再付费取帖正文），
+  实测 ~$0.001/号。局限是只吃搜索引擎索引的那部分 FB 内容（覆盖率是瓶颈，但 FB 通过
+  150+ 群帖 sitemap 主动喂 Google/Bing，时效小时~天级；两引擎 robots.txt 同权，Yandex
+  被 FB 全站封禁不用试）。Bing 同词去重后仍有 +33% 增量，保留作补充源；弃用
+  `site:facebook.com/posts` 路径操作符（两引擎均 0 结果）。
+- **搜法规律**（2026-08-12 三行业 18 词双源实测）：产品具体词（锂电池/挖掘机/汽配）
+  > 泛行业词（新能源/机械）> 纯中文语境词（`新能源 微信`，两源都弱）；memo23 用中文
+  词、SERP 中英文皆可。高效词示例：`whatsapp 工程机械`（memo23 97% 帖含号）、
+  `whatsapp 汽配`（SERP 双引擎 90 条含号，全场最高）、`whatsapp 挖掘机`、
+  `whatsapp 光伏`（memo23 67% 命中）。
+- **词库与预算**：词库两次扩容 41 → 183（2026-08-12 晚）→ 270（2026-08-14 凌晨补
+  二级组合：30 产业带×优势行业 + 30 产品长尾词 + 15 微信产业带词 + 12 英文产品词）。
+  扩容依据：翻页深度试点实测单词 FB 链接封顶 ~100-120（第 2 页仅 +20-30 新链接，
+  第 3 页起≈0），**总量靠词数线性扩，不靠页深**；SERP 源同词第二圈结果集重合
+  （第二圈均产仅为第一圈 1/4），新词=新矿脉。183 词结构：41 策展词 + 48 行业
+  × whatsapp + 12 英文行业词 + 14 产业带城市 ×2 + 24 微信行业词 + 20/13 通用外贸词
+  × whatsapp/微信，合并去重。
+  `--per-round 10` 轮转（offset 存 `.cache/fb_keyword_search_state.json`）；日预算刹车
+  memo23 2000 结果/天、SERP 800 查询/天（≈$2.9/天），状态文件按北京日期记账，到顶
+  跳过该源。`--keywords-file` 可追加词库。当前实跑 `--interval 600`（2026-08-12 晚
+  由 3600 压到 600，观察产出提升中）。
+- **证伪/排除**：SocialCrawl 无 FB 关键词搜帖端点（只有 events/marketplace/adlibrary
+  搜索；其 `group/posts` 1cr/群但无分页只有最新一屏，可作备选增量源，未实施）；
+  BD 无 FB 关键词搜帖数据集（FB 系全是给 URL 取内容型）；Data365 €300/月起排除；
+  国内平台（Thordata 等）无此能力；Telegram `t.me/s/<channel>` 匿名可读是候选新渠道
+  （联系方式密度未知，未试点）。
+
+**试点实测（2026-08-12，均已落 fb_contacts）**
+
+| 渠道 | 花费 | 新号 | 单号成本 |
+|---|---|---|---|
+| SERP 帖导向 28 查询（G+B 各 14 词） | ~$0.1 | 89 | ~$0.001 |
+| memo23 7 词 95 帖 | $0.22 | 29 | $0.0076 |
+| 三行业 18 词双源 | $0.47 | 314 | ~$0.0015 |
+
+## 6. 成本与产能实测
 
 **首日全量（2026-08-10，612 存量群 × 15 帖）**
 
@@ -101,7 +180,27 @@ apify 一行一账号、402 自动轮换），代码里不写死。
 大量海外群（零产出率 72% vs 历史 56%）；SERP 发现另分走 ~13% 花费。
 关键词质量直接决定单产，增量抓取+零产出淘汰的收益在重抓轮才体现。
 
-## 6. 退役路线（一句话存档）
+**$10 观察轮（2026-08-11 14:58–19:09，含 1576 群一次性画像 ~$3.7）**
+
+| 指标 | 数值 |
+|---|---|
+| 花费 | $11.09（采集 $9.87 + 查号 $1.22） |
+| 新增号码 | 268（单号成本 $0.041；验证注册 142，注册率 46.6%，单个注册号 $0.078） |
+| 画像过滤 | 1526 群画像成功：92% 群 7 天内有新帖、62% 是万人群；拦 39 小群 + 104 死群 |
+
+**$20 轮（2026-08-11 23:08–08-12 11:02，零产出群拉黑 60 天 + 冷却 2h + 放开死群）**
+
+| 指标 | 数值 |
+|---|---|
+| BD 花费 | ~$20.5（8136 帖） |
+| 新增号码 | 368（单号成本 **$0.055**，不降反升） |
+| 验证 | 421 号：注册率 50.4% |
+
+教训：零产出群拉黑后只剩 ~200 个产号群轮转，2h 冷却反复捞同一批群，
+新帖越捞越少但每帖照付费——**产号边际递减是群路线的结构性天花板**，
+这直接催生了 §5 关键词直搜路线（试点单号成本 $0.001-0.008，低一个量级）。
+
+## 7. 退役路线（一句话存档）
 
 - **CloakBrowser 本地渲染 permalink**（`scraper/fb_group_wa.py`，留档）：慢、
   占 license 席位 → 2026-08-10 被 BD 群 feed 全面取代。
@@ -110,9 +209,9 @@ apify 一行一账号、402 自动轮换），代码里不写死。
 - **Apify Groups Scraper 采群帖**：$5/1K 帖，比 BD 贵 3 倍，未采用。
 - **青果代理出海**：通道是给国内站设计的，DDG/FB 都在墙外，用不上。
 - **fetcher 平台侧 fb 链路**（atoms/daemon 队列/平台批次）：仍连通，留作备用；
-  现役生产链路是上述三个 scraper 常驻脚本。
+  现役生产链路是 §1 的 scraper 常驻脚本（关键词直搜为主力）。
 
-## 7. 深入调研存档
+## 8. 深入调研存档
 
 - 官方渠道（Graph API / Ad Library / 网页版广告库 / Meta Content Library）：
   `facebook-apis/README.md`、`facebook-apis/AD_LIBRARY.md`。

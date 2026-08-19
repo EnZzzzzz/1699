@@ -25,14 +25,40 @@ platform/         管理系统（前后端分离）
                   providers / proxy_channels / task_templates / fb_posts / fb_contacts
 scraper/ util/    旧版脚本，**只读参考，禁止修改**（新代码一律进 fetcher/ 或 platform/）。
                   例外（用户明确要求的独立快脚本）：scraper/fb_group_bd.py（**现役 FB 群
-                  采集管线**：Bright Data 群 feed 数据集按群抓最新帖 → parse_post 四桶
-                  分号落 fb_contacts，fb_groups 冷却轮抓，常驻看护循环）、
+                  采集管线**：Bright Data 群 feed 数据集**批量 trigger**（一次请求塞
+                  --batch-size 个群，按帖 permalink 归群）→ parse_post 四桶
+                  分号落 fb_contacts，fb_groups 冷却轮抓，**两段式**（首采 1 帖画像
+                  回填 members/last_post_at → --min-members/死群过滤 → 过关群
+                  增量捞帖），常驻看护循环）、
                   scraper/fb_group_wa.py（旧管线：DDG+Apify 混合发现 → CloakBrowser
                   渲染，已退役留档）、
-                  scraper/wa_check_apify.py（Apify 查 WhatsApp 注册态回写 fb_contacts）、
+                  scraper/wa_check_apify.py（Apify 查 WhatsApp 注册态回写 fb_contacts；
+                  402/403 欠费记 providers.quota_exhausted_at（北京时间）并自动轮换
+                  下一账号，30 天账期内的耗尽账号启动时跳过并提示预计恢复日）、
                   scraper/fb_group_discover_bd.py（**群发现**：Bright Data Google SERP
                   数据集查 `site:facebook.com/groups <关键词>` → 群落 fb_groups，
-                  source='bd_serp'，给 fb_group_bd.py 供群；常驻看护循环），
+                  source='bd_serp'，SERP description 解析群成员数落 fb_groups.members，
+                  **预览挖号**：SERP 标题/摘要直接 parse_post 落 fb_contacts（零边际成本），
+                  给 fb_group_bd.py 供群；常驻看护循环）、
+                  scraper/fb_keyword_search.py（**关键词直搜采号**：memo23 FB 原生
+                  搜索（Apify 异步 run，$0.0019/结果）+ BD SERP（Google+Bing）双源
+                  共用关键词库，--per-round 轮转（offset 与当日用量记
+                  .cache/fb_keyword_search_state.json），--memo23-daily-results /
+                  --serp-daily-queries 预算刹车，apify 账号轮换复用
+                  wa_check_apify.load_accounts/mark_exhausted；常驻循环）、
+                  scraper/x_keyword_search.py（**X 关键词直搜采号**：
+                  xquik/x-tweet-scraper（Apify，$0.15/千帖）单源，X 专属词库；
+                  --backfill-days N 深度优先历史回扫：未完成词排每轮最前，
+                  since_time:/until_time: 自适应切窗（截断顶满 maxItems 则
+                  窗长对半拆、下限 5 分钟，进度记
+                  .cache/x_keyword_search_state.json 的 kw_backfill
+                  {"cursor","win"}），扫完转 since_time 增量；
+                  --total-budget-usd 总预算刹车（累计行数耗尽即停机）+
+                  --daily-results 日刹车，账号轮换同 fb_keyword_search；
+                  常驻循环）、
+                  scraper/inspect_stats.py（**巡检统计只读脚本**：模式一
+                  --since 累计+增量、--window N 逐小时；模式二 --from/--to
+                  范围增量；北京时间字符串直接比较，巡检 cron 专用），
                   现行方案与运行结论见 docs/channel-research/facebook-groups.md
                   （2026-08-11 合并版，含 BD 接入坑位、降本机制、成本实测）
 docs/             flow-architecture.md（fetcher 框架设计）、scheduler-architecture.md（调度器设计：
