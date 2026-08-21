@@ -1,2 +1,0 @@
-PROD BASELINE cookies: (18095, 637)
-PROD BASELINE cookies with colon: 0

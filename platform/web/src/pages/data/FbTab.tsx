@@ -1,7 +1,9 @@
-// Facebook 联系方式 Tab：筛选（wa 状态 / 分桶 / 关键词防抖）+ 表格 + 分页
+// FB / X 联系方式 Tab：筛选（来源 / wa 状态 / 分桶 / 关键词防抖）+ 导出 + 表格 + 分页
 import { useCallback, useEffect, useState } from 'react'
+import { Download } from 'lucide-react'
 import { dataApi, type FbBucket, type FbContactItem, type Paged, type WaFilter } from '@/lib/api-data'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -10,6 +12,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
 import { LoadingState, ErrorState, EmptyState } from '@/components/PageState'
+import { FbExportDialog } from './FbExportDialog'
 import { PaginationBar, showTime, useDebouncedValue } from './shared'
 
 function waBadge(item: FbContactItem) {
@@ -55,9 +58,21 @@ function bucketBadge(bucket: string) {
   return <Badge variant="secondary">{label}</Badge>
 }
 
+// X 来源判定与后端/看板同口径（post_url 含 x.com/twitter.com）
+function isX(postUrl: string) {
+  return postUrl.includes('x.com') || postUrl.includes('twitter.com')
+}
+
+function sourceBadge(postUrl: string) {
+  return isX(postUrl)
+    ? <Badge variant="outline" className="text-foreground">X</Badge>
+    : <Badge variant="outline" className="text-muted-foreground">FB</Badge>
+}
+
 export function FbTab() {
   const [wa, setWa] = useState<WaFilter | 'all'>('all')
   const [bucket, setBucket] = useState<FbBucket | 'all'>('all')
+  const [source, setSource] = useState<'fb' | 'x' | 'all'>('all')
   const [keyword, setKeyword] = useState('')
   const [page, setPage] = useState(1)
   const [size, setSize] = useState(20)
@@ -66,11 +81,12 @@ export function FbTab() {
   const [data, setData] = useState<Paged<FbContactItem> | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [exportOpen, setExportOpen] = useState(false)
 
   // 筛选条件变化时回到第 1 页
   useEffect(() => {
     setPage(1)
-  }, [wa, bucket, q])
+  }, [wa, bucket, source, q])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -78,6 +94,7 @@ export function FbTab() {
       const result = await dataApi.fbContacts({
         wa: wa === 'all' ? '' : wa,
         bucket: bucket === 'all' ? '' : bucket,
+        source: source === 'all' ? '' : source,
         q,
         page,
         size,
@@ -89,7 +106,7 @@ export function FbTab() {
     } finally {
       setLoading(false)
     }
-  }, [wa, bucket, q, page, size])
+  }, [wa, bucket, source, q, page, size])
 
   useEffect(() => {
     load()
@@ -98,6 +115,16 @@ export function FbTab() {
   return (
     <div className="space-y-4 pt-4">
       <div className="flex flex-wrap items-center gap-4">
+        <Select value={source} onValueChange={(v) => setSource(v as 'fb' | 'x' | 'all')}>
+          <SelectTrigger className="w-36">
+            <SelectValue placeholder="来源" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">全部来源</SelectItem>
+            <SelectItem value="fb">Facebook</SelectItem>
+            <SelectItem value="x">X</SelectItem>
+          </SelectContent>
+        </Select>
         <Select value={wa} onValueChange={(v) => setWa(v as WaFilter | 'all')}>
           <SelectTrigger className="w-36">
             <SelectValue placeholder="WhatsApp 状态" />
@@ -125,20 +152,41 @@ export function FbTab() {
           value={keyword}
           onChange={(e) => setKeyword(e.target.value)}
         />
+        <Button
+          variant="outline"
+          size="sm"
+          className="ml-auto"
+          onClick={() => setExportOpen(true)}
+        >
+          <Download className="mr-1.5 h-4 w-4" />
+          导出
+        </Button>
       </div>
+
+      <FbExportDialog
+        open={exportOpen}
+        onOpenChange={setExportOpen}
+        filters={{
+          wa: wa === 'all' ? '' : wa,
+          bucket: bucket === 'all' ? '' : bucket,
+          source: source === 'all' ? '' : source,
+          q,
+        }}
+      />
 
       {loading && !data ? (
         <LoadingState />
       ) : error ? (
         <ErrorState message={error} onRetry={load} />
       ) : !data || data.items.length === 0 ? (
-        <EmptyState text="没有符合条件的 Facebook 联系方式" />
+        <EmptyState text="没有符合条件的联系方式" />
       ) : (
         <>
           <div className="rounded-lg border border-border">
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead>来源</TableHead>
                   <TableHead>号码</TableHead>
                   <TableHead>分桶</TableHead>
                   <TableHead>WhatsApp</TableHead>
@@ -151,6 +199,7 @@ export function FbTab() {
               <TableBody>
                 {data.items.map((c) => (
                   <TableRow key={c.id}>
+                    <TableCell>{sourceBadge(c.post_url)}</TableCell>
                     <TableCell className="font-mono text-sm font-medium">{c.number}</TableCell>
                     <TableCell>{bucketBadge(c.bucket)}</TableCell>
                     <TableCell>{waBadge(c)}</TableCell>

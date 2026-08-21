@@ -24,7 +24,7 @@ Token 分组：
 | shadcn 语义色 | `--background` / `--foreground` / `--card` / `--primary` / `--muted` / `--accent` / `--border` / `--input` / `--ring` 等 | 全局基础色，role 与 role-foreground 配对 |
 | 业务状态色 | `--status-{success\|warning\|info\|danger\|neutral}` 及 `-foreground` | 状态徽标、提示 |
 | 积压高亮 | `--backlog` / `--backlog-foreground` | 积压任务卡片、徽标 |
-| 图表色 | `--chart-{collected\|consumed\|grid\|axis\|tooltip-bg\|tooltip-border}` | Dashboard recharts 专用 |
+| 图表色 | `--chart-{collected\|consumed\|fb\|x\|grid\|axis\|tooltip-bg\|tooltip-border}` | Dashboard recharts 专用 |
 | 布局尺寸 | `--sidebar-width`、`--radius` | 双主题共用，仅 `:root` 定义 |
 
 ## 3. 圆角与阴影
@@ -45,6 +45,7 @@ Token 分组：
 
 - 工具栏 / 分页条内统一用 `variant="outline" size="sm"`：`h-8`、`text-sm font-medium`、图标 `h-4 w-4` 间距 `gap-1.5`。
 - 主操作才用 `default` 变体，危险操作用 `destructive`。
+- **Button 必须保持 `forwardRef`**（本项目 React 18，ref 不能作为普通 prop 透传）：`asChild` 场景（Popover/Tooltip 触发器等）依赖 ref 注册锚点，去掉 forwardRef 会导致浮层定位失败。
 
 ### 下拉（Select）
 

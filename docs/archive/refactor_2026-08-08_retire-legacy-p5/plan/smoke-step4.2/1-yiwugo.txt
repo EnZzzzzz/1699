@@ -1,6 +1,0 @@
-===== [1] yiwugo_search subprocess 链路（保留面回归）=====
-create: {"id":75,"type":"yiwugo_search","params_json":{"batch_num":null,"max_batches":null,"limit":1,"workers":1,"channels":null,"batch_rest":null,"sample_min":null,"sample_max":null,"rest_every":null,"rest_min":null,"rest_max":null,"stagger_min":null,"stagger_max":null,"ip_retry":null,"net_retry":null,"max_consecutive_fail":null,"block_rest_min":null,"block_rest_max":null,"use_proxy":null,"headless":null,"auto_solve":null,"retry_failed":null,"accounts":null,"repeat_interval":null},"status":"pending","progress_json":null,"stop_requested":0,"error":null,"created_at":"2026-08-09 02:04:54","started_at":null,"finished_at":null,"next_restart_at":null}
-task_id=75
-status: running | error: None
-data: {"id": 25742, "task_id": 75, "ts": "2026-08-09 02:04:54", "level": "info", "message": "进程已启动 pid=79023 命令=/Volumes/DataDrive/proj/public/1699/platform/server/.venv/bin/python -m fetcher yiwugo search --limit 1 --workers 1", "data": {"pid": 79023, "cmd": ["/Volumes/DataDrive/proj/--- stop ---
-{"detail":"当前状态 'done' 不可停止（仅 running 或循环等待中）"}status after stop: done

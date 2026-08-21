@@ -1,4 +1,4 @@
-// 数据浏览页：联系方式 / 店铺 / Facebook 三个 Tab 的只读分页浏览
+// 数据浏览页：联系方式 / 店铺 / FB·X 三个 Tab 的只读分页浏览
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { PageHeader } from '@/components/PageState'
 import { ContactsTab } from './data/ContactsTab'
@@ -13,7 +13,7 @@ export function DataPage() {
         <TabsList>
           <TabsTrigger value="contacts">联系方式</TabsTrigger>
           <TabsTrigger value="shops">店铺</TabsTrigger>
-          <TabsTrigger value="facebook">Facebook</TabsTrigger>
+          <TabsTrigger value="facebook">FB / X</TabsTrigger>
         </TabsList>
         <TabsContent value="contacts">
           <ContactsTab />

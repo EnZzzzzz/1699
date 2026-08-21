@@ -273,7 +273,9 @@ def harvest_tweets(db, items: list[dict]) -> tuple[int, int]:
         seen_urls.add(url)
         n_posts += 1
         info = parse_post(text, text)
-        phones = [p for p in info["phones"] if is_cn_number(p.get("number"))]
+        phones = [p for p in info["phones"]
+                  if p.get("bucket") != "overseas"
+                  and is_cn_number(p.get("number"), p.get("source"))]
         if not phones:
             continue
         phones = filter_known_numbers(db.conn, phones)
@@ -353,7 +355,10 @@ def advance(st: dict, kw: str, args, mode: str,
     窗长翻倍（上限 1 天）。cursor 越过回扫终点即置 done 并把增量锚点定在
     回扫终点 end（即今天零点，而不是当前时刻——定在当前会把
     [今天零点, 完成时刻) 的帖子永久漏掉，2026-08-19 修复此覆盖空洞）。
-    增量/全量：锚点直接推到当前时刻。想重扫删 state.kw_backfill 对应键。"""
+    增量/全量：锚点推到当前时刻再回拨 1 小时重叠带——X 搜索有索引延迟，
+    发布后未及时入索引的帖会被 since_time 永久跳过，重叠带的重复帖靠
+    落库号码去重消化（2026-08-19 实测诊断确认此漏检）。
+    想重扫删 state.kw_backfill 对应键。"""
     if mode.startswith("回扫"):
         bf = get_backfill(st, kw, args.backfill_days)
         win = bf["win"]
@@ -371,7 +376,7 @@ def advance(st: dict, kw: str, args, mode: str,
         st["kw_backfill"][kw] = {"cursor": end,
                                  "win": min(win * 2, MAX_WINDOW_SEC)}
         return None
-    st["kw_since"][kw] = int(time.time())
+    st["kw_since"][kw] = int(time.time()) - 3600  # 1 小时重叠带，抗索引延迟
     return None
 
 

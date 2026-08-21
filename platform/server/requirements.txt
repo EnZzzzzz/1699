@@ -1,14 +1,4 @@
 # 采集平台后端依赖（platform/server）
-# ------------------------------------------------------------------
-# ⚠️ venv 重建后的坑：fetcher（../../fetcher）把 cloakbrowser 声明为
-#    optional extra，直接 `pip install -e ../../fetcher` 不会装上它，
-#    而 server 的抓取链路运行时依赖 cloakbrowser。
-#    因此重建虚拟环境后必须按以下顺序安装：
-#      pip install -r requirements.txt
-#      pip install --no-deps -e ../../fetcher
-#    （--no-deps 避免 fetcher 拉入其可选的重型浏览器依赖；
-#      cloakbrowser 由本文件显式锁定版本。）
-# ------------------------------------------------------------------
 fastapi
 uvicorn
 requests

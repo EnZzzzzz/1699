@@ -12,7 +12,6 @@ import { PageHeader, LoadingState, ErrorState, EmptyState } from '@/components/P
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Activity, Loader2, Network, Pencil, Plus, RefreshCw } from 'lucide-react'
 import { ProviderFormDialog } from './providers/ProviderFormDialog'
-import WaAccounts from './WaAccounts'
 
 // 有代理通道概念的供应商类型；其他类型（如 apify 查号 API）不显示通道相关 UI
 const PROXY_KINDS = new Set(['qingguo'])
@@ -247,13 +246,12 @@ export default function Providers() {
 
   return (
     <div className="p-6">
-      <PageHeader title="供应商" desc="代理池、第三方 API 与 WhatsApp 账号池管理" />
+      <PageHeader title="供应商" desc="代理池与第三方 API 凭证管理" />
 
       <Tabs defaultValue="proxy">
         <TabsList>
           <TabsTrigger value="proxy">代理池</TabsTrigger>
           <TabsTrigger value="api">第三方 API</TabsTrigger>
-          <TabsTrigger value="wa">WhatsApp 账号池</TabsTrigger>
         </TabsList>
 
         <TabsContent value="proxy" className="mt-4 space-y-4">
@@ -280,10 +278,6 @@ export default function Providers() {
             </Button>
           </div>
           {renderCards(apiProviders, '暂无第三方 API 供应商，点击右上角「添加供应商」开始')}
-        </TabsContent>
-
-        <TabsContent value="wa" className="mt-4">
-          <WaAccounts />
         </TabsContent>
       </Tabs>
 

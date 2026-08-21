@@ -63,6 +63,8 @@ module.exports = {
         chart: {
           collected: "hsl(var(--chart-collected) / <alpha-value>)",
           consumed: "hsl(var(--chart-consumed) / <alpha-value>)",
+          fb: "hsl(var(--chart-fb) / <alpha-value>)",
+          x: "hsl(var(--chart-x) / <alpha-value>)",
           grid: "hsl(var(--chart-grid) / <alpha-value>)",
           axis: "hsl(var(--chart-axis) / <alpha-value>)",
           "tooltip-bg": "hsl(var(--chart-tooltip-bg) / <alpha-value>)",

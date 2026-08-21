@@ -38,7 +38,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "fetcher"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from fetcher.atoms.facebook_discover import classify_fb_url  # noqa: E402
+from fetcher.sites.facebook.discover import classify_fb_url  # noqa: E402
 from fetcher.sites.facebook.post import parse_post  # noqa: E402
 from fb_group_bd import is_cn_number  # noqa: E402
 from wa_check_apify import load_accounts, mark_exhausted  # noqa: E402
@@ -272,7 +272,9 @@ def harvest_serp(db, records: list[dict]) -> int:
                 continue
             text = f"{item.get('title') or ''}\n{item.get('description') or ''}"
             info = parse_post(text, text)
-            phones = [p for p in info["phones"] if is_cn_number(p.get("number"))]
+            phones = [p for p in info["phones"]
+                      if p.get("bucket") != "overseas"
+                      and is_cn_number(p.get("number"), p.get("source"))]
             if not phones:
                 continue
             gid = None
@@ -362,7 +364,9 @@ def harvest_memo23(db, items: list[dict]) -> int:
             continue
         seen_urls.add(url)
         info = parse_post(text, text)
-        phones = [p for p in info["phones"] if is_cn_number(p.get("number"))]
+        phones = [p for p in info["phones"]
+                  if p.get("bucket") != "overseas"
+                  and is_cn_number(p.get("number"), p.get("source"))]
         if phones:
             n_new += db.save_fb_contacts(url, None, phones,
                                          author=it.get("authorName"))

@@ -96,9 +96,24 @@ export type FbBucket = 'declared_wa' | 'cn_uncertain' | 'overseas'
 export interface FbContactsQuery {
   wa?: WaFilter | ''
   bucket?: FbBucket | ''
+  source?: 'fb' | 'x' | ''
   q?: string
   page?: number
   size?: number
+}
+
+export interface FbExportQuery {
+  wa?: WaFilter | ''
+  bucket?: FbBucket | ''
+  source?: 'fb' | 'x' | ''
+  q?: string
+  fields: string[]
+  format: 'csv' | 'xlsx'
+  /** 发现时间范围（YYYY-MM-DD，含首尾日），空串为不限 */
+  dateFrom?: string
+  dateTo?: string
+  /** first=仅未导出过的（默认）；repeat=含已导出过的 */
+  mode?: 'first' | 'repeat'
 }
 
 function qs(params: Record<string, string | number | undefined>): string {
@@ -119,7 +134,41 @@ export const dataApi = {
   contacts: ({ wa, has_mobile, q, page = 1, size = 20 }: ContactsQuery) =>
     request<Paged<ContactItem>>(
       `/data/contacts${qs({ wa: wa || undefined, has_mobile: has_mobile ? '1' : undefined, q, page, size })}`),
-  fbContacts: ({ wa, bucket, q, page = 1, size = 20 }: FbContactsQuery) =>
+  fbContacts: ({ wa, bucket, source, q, page = 1, size = 20 }: FbContactsQuery) =>
     request<Paged<FbContactItem>>(
-      `/data/fb-contacts${qs({ wa: wa || undefined, bucket: bucket || undefined, q, page, size })}`),
+      `/data/fb-contacts${qs({ wa: wa || undefined, bucket: bucket || undefined, source: source || undefined, q, page, size })}`),
+  // 导出 FB/X 联系方式（blob 下载，非 JSON，不走 request()），返回文件名与条数
+  exportFbContacts: async ({ wa, bucket, source, q, fields, format, dateFrom, dateTo, mode }: FbExportQuery): Promise<{ filename: string; count: number }> => {
+    const path = `/data/fb-contacts/export${qs({
+      wa: wa || undefined,
+      bucket: bucket || undefined,
+      source: source || undefined,
+      q,
+      fields: fields.join(','),
+      format,
+      date_from: dateFrom || undefined,
+      date_to: dateTo || undefined,
+      mode: mode || undefined,
+    })}`
+    let res: Response
+    try {
+      res = await fetch(`${BASE}${path}`)
+    } catch {
+      throw new ApiDataError('无法连接后端服务（http://127.0.0.1:8765）')
+    }
+    if (!res.ok) {
+      throw new ApiDataError(`请求失败：${res.status} ${res.statusText}`, res.status)
+    }
+    const blob = await res.blob()
+    const m = /filename="?([^";]+)"?/.exec(res.headers.get('Content-Disposition') ?? '')
+    const filename = m?.[1] ?? `contacts.${format}`
+    const count = Number(res.headers.get('X-Exported-Count') ?? 0)
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    a.click()
+    URL.revokeObjectURL(url)
+    return { filename, count }
+  },
 }

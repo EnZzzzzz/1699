@@ -39,7 +39,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "fetcher"))
 
-from fetcher.atoms.facebook_discover import classify_fb_url  # noqa: E402
+from fetcher.sites.facebook.discover import classify_fb_url  # noqa: E402
 from fetcher.sites.facebook.discover_task import _clean_title  # noqa: E402
 from fetcher.sites.facebook.post import parse_post  # noqa: E402
 

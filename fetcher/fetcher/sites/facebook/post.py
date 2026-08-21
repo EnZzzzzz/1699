@@ -6,7 +6,10 @@
 facebook-groups.md §8）分桶的联系方式：
 
     declared_wa    自声明 WA 号：wa.me/<号> 或紧邻 WhatsApp/ws 标签的号码
-    cn_uncertain   其余中国手机号（裸号/微信标签，需过 wa_check）
+                   （标签后显式 +CC 且非 +86 的除外——那是海外号，归
+                   overseas/source=wa_label_intl，避免剥壳后 11 位 1 开头
+                   被误判成中国手机号）
+    cn_uncertain   其余中国手机号（裸号/微信标签/+86/0086，需过 wa_check）
     overseas       其余国际号（非 +86，独立分桶暂缓查号）
 
 号码口径：中国手机号存裸 11 位（与 1688 contacts 一致，86 由 wa 链路补）；
@@ -78,13 +81,22 @@ def parse_post(og_desc: str, body_text: str) -> dict:
 
     # ---- 1. 自声明 WA 号（wa.me 链接 + WA 标签邻近号）----
     declared: list[tuple[str, str]] = []   # (digits, source)
+    wa_label_intl: list[str] = []          # WhatsApp 标签后显式 +CC 的非中国号
     for m in RE_WA_ME.finditer(text):
         d = _digits(m.group(1))
         if 8 <= len(d) <= 15:
             declared.append((d, "wa_me"))
     for m in RE_WA_LABELED.finditer(text):
-        d = _digits(m.group(1))
-        if 8 <= len(d) <= 15:
+        raw = m.group(1)
+        d = _digits(raw)
+        if not (8 <= len(d) <= 15):
+            continue
+        # 显式 +CC 且非 +86（如 WhatsApp: +1 307 390 9977）：剥壳后可能恰好
+        # 11 位 1 开头被误判成中国手机号，直接归 overseas（wa_label_intl）
+        dd = d[2:] if d.startswith("00") else d
+        if "+" in raw and not (dd.startswith("86") and len(dd) == 13):
+            wa_label_intl.append(d)
+        else:
             declared.append((d, "wa_label"))
     declared_keys = {_last11(d) for d, _ in declared}
 
@@ -100,14 +112,17 @@ def parse_post(og_desc: str, body_text: str) -> dict:
 
     for d, src in declared:
         _add(d, BUCKET_DECLARED_WA, src)
+    for d in wa_label_intl:
+        _add(d, BUCKET_OVERSEAS, "wa_label_intl")
 
-    # ---- 2. 国际号：+86 归中国桶（取裸 11 位），其余归海外桶 ----
+    # ---- 2. 国际号：+86/0086 归中国桶（取裸 11 位），其余归海外桶 ----
     for m in RE_INTL.finditer(text):
         d = _digits(m.group(1))
         if not (8 <= len(d) <= 15) or _last11(d) in declared_keys:
             continue
-        if d.startswith("86") and len(d) == 13:
-            _add(d[2:], BUCKET_CN_UNCERTAIN, "intl_cc86")
+        dd = d[2:] if d.startswith("00") else d
+        if dd.startswith("86") and len(dd) == 13:
+            _add(dd[2:], BUCKET_CN_UNCERTAIN, "intl_cc86")
         else:
             _add(d, BUCKET_OVERSEAS, "intl")
 

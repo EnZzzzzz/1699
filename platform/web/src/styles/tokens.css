@@ -7,7 +7,7 @@
  *      与 tailwind.config.js 中 hsl(var(--xxx)) 的用法配套。
  *   2. 业务状态色：--status-{success|warning|info|danger|neutral} 及 -foreground 配对。
  *   3. 积压高亮：--backlog / --backlog-foreground（用于积压任务卡片、徽标等）。
- *   4. 图表色：--chart-{collected|consumed|grid|axis|tooltip-bg|tooltip-border}，
+ *   4. 图表色：--chart-{collected|consumed|fb|x|grid|axis|tooltip-bg|tooltip-border}，
  *      供 recharts 通过 var() 读取（Dashboard 图表专用）。
  *   5. 布局尺寸：--{region}-{property}，如 --sidebar-width；--radius 为全局圆角基准。
  *   6. 双主题：:root 为 light，.dark 为 dark；两组 token 必须一一对应、成对新增。
@@ -66,6 +66,8 @@
   /* ---------- 图表色（light） ---------- */
   --chart-collected: 199 89% 48%;
   --chart-consumed: 160 84% 39%;
+  --chart-fb: 221 83% 53%;
+  --chart-x: 262 83% 58%;
   --chart-grid: 240 6% 90%;
   --chart-axis: 240 4% 46%;
   --chart-tooltip-bg: 0 0% 100%;
@@ -126,6 +128,8 @@
   /* ---------- 图表色（dark） ---------- */
   --chart-collected: 199 93% 60%;
   --chart-consumed: 158 64% 52%;
+  --chart-fb: 217 91% 65%;
+  --chart-x: 263 85% 70%;
   --chart-grid: 240 4% 16%;
   --chart-axis: 240 5% 65%;
   --chart-tooltip-bg: 240 10% 6%;

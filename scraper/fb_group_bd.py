@@ -170,10 +170,20 @@ def to_start_date(last_crawled_at: str | None, date_format: str) -> str | None:
     return f"{y}-{m}-{d}" if date_format == "iso" else f"{m}-{d}-{y}"
 
 
-def is_cn_number(digits: str) -> bool:
-    """中国号判定：裸 11 位 1 开头，或 86/0086 + 11 位（用户只要中国联系方式）。"""
+def is_cn_number(digits: str, source: str | None = None) -> bool:
+    """中国号判定：裸 11 位手机号段 1[3-9]，或 86/0086 + 11 位（用户只要中国联系方式）。
+
+    source 为 parse_post 的提取来源。intl / wa_me / wa_label_intl 形态的号码
+    原文带显式国家码（wa.me 强制带国家码），此时剥壳后 11 位 1 开头的实为
+    +1 北美号（如 +1 307 390 9977 → 13073909977），一律不算中国号。
+    """
     d = re.sub(r"\D+", "", digits or "")
-    return bool(re.fullmatch(r"1\d{10}", d) or re.fullmatch(r"(?:00)?861\d{10}", d))
+    dd = d[2:] if d.startswith("00") else d
+    if re.fullmatch(r"861[3-9]\d{9}", dd):
+        return True
+    if source in ("intl", "wa_me", "wa_label_intl"):
+        return False
+    return bool(re.fullmatch(r"1[3-9]\d{9}", d))
 
 
 def harvest_records(db, gid: str, records: list[dict]) -> tuple[int, int]:
@@ -189,7 +199,9 @@ def harvest_records(db, gid: str, records: list[dict]) -> tuple[int, int]:
         author = (rec.get("user_username_raw")
                   or (rec.get("original_post") or {}).get("user_name"))
         info = parse_post(text, text)
-        phones = [p for p in info["phones"] if is_cn_number(p.get("number"))]
+        phones = [p for p in info["phones"]
+                  if p.get("bucket") != "overseas"
+                  and is_cn_number(p.get("number"), p.get("source"))]
         if phones:
             n_new += db.save_fb_contacts(rec.get("url") or "", gid,
                                          phones, author=author)

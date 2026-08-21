@@ -48,7 +48,6 @@ export interface Overview {
   ts: string
   shops: { pending: number; done: number; no_contact: number; failed: number; total: number }
   contacts: { total: number; with_mobile: number; wa_registered: number; wa_unregistered: number; wa_unchecked: number }
-  tasks: { running: number; pending: number; done: number; failed: number }
 }
 
 export interface Pipeline {
@@ -59,123 +58,18 @@ export interface Pipeline {
   buckets: { label: string; collected: number; consumed: number }[]
 }
 
-export type PipelinePeriod = '12h' | 'today' | 'yesterday' | '7d' | '30d' | 'custom'
-
-export interface Task {
-  id: number
-  type: string
-  status: string
-  params: Record<string, unknown>
-  progress: Record<string, unknown> | null
-  error: string | null
-  created_at: string
-  started_at: string | null
-  finished_at: string | null
-  // 循环模式轮间等待期的下次自动重启时间（"YYYY-MM-DD HH:MM:SS"），非等待态为 null
-  next_restart_at: string | null
+// FB/X 采号管道（fb_contacts）：first_seen_at 采集量分 FB/X，wa_checked_at 查号分注册/未注册；snapshot 为全表口径总数
+export interface FbPipeline {
+  window: { start: string; end: string; bucket: 'hour' | 'day' }
+  totals: { fb: number; x: number; wa_registered: number; wa_unregistered: number; fb_wa_registered: number; fb_wa_unregistered: number; x_wa_registered: number; x_wa_unregistered: number; fb_pending: number; x_pending: number }
+  snapshot: { fb_total: number; x_total: number; fb_registered: number; x_registered: number; pending: number; fb_pending: number; x_pending: number; reg_rate: number | null }
+  rates: { unit: string; fb: number; x: number; wa_check: number }
+  // 窗口成本估算（USD）：FB/X 采集 + WA 校验；cost_records 缺失时为 null
+  costs: { fb: number; x: number; wa: number; total: number; per_registered: number | null; fb_per: number | null; x_per: number | null; wa_per: number | null; currency: string } | null
+  buckets: { label: string; fb: number; x: number; wa_registered: number; wa_unregistered: number }[]
 }
 
-export type TaskType =
-  | '1688_shop'
-  | '1688_company'
-  | '1688_contact'
-  | 'madeinchina_contact'
-  | 'madeinchina_shop'
-  | 'yiwugo_search'
-  | 'wa_check'
-  | 'fb_post'
-  | 'fb_discover'
-  | 'fb_group'
-
-// 采集类参数全量可选键：留空即不传，由 CLI 默认值生效。
-// 批次类型（1688/madeinchina 采集 + wa_check）只读 limit / repeat_interval /
-// accounts，其余 daemon 级参数（workers/proxy/节奏等）已收敛到 daemon 启动，
-// 逐任务覆盖取消（SPEC §3.2 用户可见变化）；旧模板多余字段后端忽略。
-// wa_check 只使用 limit / accounts；旧模板多余字段后端忽略（加载时忽略未知键）。
-export interface TaskParams {
-  batch_num?: number
-  limit?: number
-  max_batches?: number
-  workers?: number
-  channels?: number
-  batch_rest?: number
-  sample_min?: number
-  sample_max?: number
-  rest_every?: number
-  rest_min?: number
-  rest_max?: number
-  stagger_min?: number
-  stagger_max?: number
-  ip_retry?: number
-  net_retry?: number
-  max_consecutive_fail?: number
-  block_rest_min?: number
-  block_rest_max?: number
-  use_proxy?: boolean
-  headless?: boolean
-  auto_solve?: boolean
-  retry_failed?: boolean // 仅 1688_contact；已不映射 CLI（build_command 分支已删），表单开关遗留
-  // 任务结束后自动重启的间隔（秒）；0 或不传 = 不循环
-  repeat_interval?: number
-  // wa_check 专用
-  accounts?: string[]
-  // fb_discover / fb_group 专用
-  keywords?: string // 换行分隔的搜索原文
-  pages?: number
-  provider?: string
-  posts_per_group?: number
-}
-
-export interface CreateTaskRequest {
-  type: TaskType
-  params: TaskParams
-}
-
-export interface TaskPreview {
-  cmd: string[] | null // 批次类型（含 wa_check）返回 null
-  cmdline: string // cmd 拼接的命令行，或批次类型的说明文案
-}
-
-export interface TaskTemplate {
-  id: number
-  name: string
-  type: TaskType
-  params: TaskParams
-  created_at: string
-}
-
-export interface CreateTaskTemplateRequest {
-  name: string
-  type: TaskType
-  params: TaskParams
-}
-
-export interface TaskBatchResult {
-  ok: number
-  failed: number
-  results: { id: number; ok: boolean; detail: string }[]
-}
-
-export interface StartTaskResult {
-  ok: boolean
-  pid: number
-}
-
-export type TaskEventLevel = 'info' | 'success' | 'warning' | 'error'
-
-export interface TaskEvent {
-  id: number
-  ts: string
-  level: TaskEventLevel
-  message: string
-  data?: { worker?: number | string } & Record<string, unknown> | null
-}
-
-export interface TaskStatusEvent {
-  status: string
-  finished_at: string | null
-  next_restart_at?: string | null
-}
+export type PipelinePeriod = '1h' | '3h' | '12h' | 'today' | 'yesterday' | '7d' | '30d' | 'custom'
 
 export interface ProviderChannel {
   id: number
@@ -233,56 +127,6 @@ export interface ProviderConfigSchemaResponse {
   tunnel_cache_structure?: Record<string, unknown> | null
 }
 
-export interface WaAccount {
-  name: string
-  auth_dir: string
-  logged_in: boolean
-  phone: string | null
-}
-
-export type WaLoginState = 'waiting_scan' | 'connected' | 'failed' | 'expired'
-
-export type WaLoginMethod = 'qr' | 'pairing'
-
-export interface WaAccountCreateResult {
-  ok: boolean
-  name: string
-  state: WaLoginState
-  method?: WaLoginMethod
-}
-
-export interface WaLoginStatus {
-  name: string
-  state: WaLoginState
-  method?: WaLoginMethod | null
-  pairing_code?: string | null
-  qr_url: string | null
-  qr_mtime: number | null
-}
-
-// ---------- 调度器可观测（P4 看板） ----------
-
-// GET /api/dispatcher/status：daemon 存活 + 队列深度 + 今日完成
-export interface DispatcherStatus {
-  daemon_alive: boolean
-  queue_depth: Record<string, Record<string, number>>
-  today_done: number
-}
-
-// GET /api/dispatcher/consumers：消费者状态行 + offline 标记
-export interface DispatcherConsumer {
-  consumer_id: string
-  kind: string
-  tunnel: string | null
-  exit_ip: string | null
-  current_queue: string | null
-  current_item_id: number | null
-  current_batch_id: number | null
-  cooldowns: Record<string, number>
-  updated_at: string
-  offline: boolean
-}
-
 // ---------- 接口方法 ----------
 
 // 后端 provider 原始结构（config_json / proxy_channels）归一化为前端
@@ -296,53 +140,27 @@ function normalizeProvider(p: any): Provider {
   }
 }
 
-// 后端 task 原始结构（params_json / progress_json）归一化为前端契约
-// （params / progress），单点适配。
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function normalizeTask(t: any): Task {
-  return {
-    ...t,
-    params: t.params ?? t.params_json ?? {},
-    progress: t.progress ?? t.progress_json ?? null,
-  }
-}
-
 export const api = {
   health: () => request<{ ok: boolean }>('/health'),
   overview: () => request<Overview>('/dashboard/overview'),
   pipeline: (period: PipelinePeriod = '12h', start?: string, end?: string) => {
     let qs: string
-    if (period === '12h') qs = 'hours=12'
+    if (period === '1h') qs = 'hours=1'
+    else if (period === '3h') qs = 'hours=3'
+    else if (period === '12h') qs = 'hours=12'
     else if (period === 'custom') qs = `period=custom&start=${encodeURIComponent(start ?? '')}&end=${encodeURIComponent(end ?? '')}`
     else qs = `period=${period}`
     return request<Pipeline>(`/dashboard/pipeline?${qs}`)
   },
-  tasks: async () => (await request<unknown[]>('/tasks')).map(normalizeTask),
-  createTask: async (body: CreateTaskRequest) =>
-    normalizeTask(await request<unknown>('/tasks', { method: 'POST', body: JSON.stringify(body) })),
-  previewTask: (body: CreateTaskRequest) =>
-    request<TaskPreview>('/tasks/preview', { method: 'POST', body: JSON.stringify(body) }),
-  putTask: async (id: number, params: TaskParams) =>
-    normalizeTask(
-      await request<unknown>(`/tasks/${id}`, { method: 'PUT', body: JSON.stringify({ params }) })),
-  getTask: async (id: number) => normalizeTask(await request<unknown>(`/tasks/${id}`)),
-  startTask: (id: number) => request<StartTaskResult>(`/tasks/${id}/start`, { method: 'POST' }),
-  stopTask: (id: number) => request<{ ok: boolean }>(`/tasks/${id}/stop`, { method: 'POST' }),
-  deleteTask: (id: number) => request<{ ok: boolean }>(`/tasks/${id}`, { method: 'DELETE' }),
-  batchTasks: (action: 'start' | 'stop' | 'delete', ids: number[]) =>
-    request<TaskBatchResult>('/tasks/batch', {
-      method: 'POST',
-      body: JSON.stringify({ action, ids }),
-    }),
-  // 任务模板：params 字段兼容后端 params_json 命名
-  getTaskTemplates: async () =>
-    ((await request<unknown[]>('/task-templates')) as (TaskTemplate & { params_json?: TaskParams })[]).map(
-      (t) => ({ ...t, params: t.params ?? t.params_json ?? {} }),
-    ),
-  createTaskTemplate: (body: CreateTaskTemplateRequest) =>
-    request<TaskTemplate>('/task-templates', { method: 'POST', body: JSON.stringify(body) }),
-  deleteTaskTemplate: (id: number) =>
-    request<{ ok: boolean }>(`/task-templates/${id}`, { method: 'DELETE' }),
+  fbPipeline: (period: PipelinePeriod = '12h', start?: string, end?: string) => {
+    let qs: string
+    if (period === '1h') qs = 'hours=1'
+    else if (period === '3h') qs = 'hours=3'
+    else if (period === '12h') qs = 'hours=12'
+    else if (period === 'custom') qs = `period=custom&start=${encodeURIComponent(start ?? '')}&end=${encodeURIComponent(end ?? '')}`
+    else qs = `period=${period}`
+    return request<FbPipeline>(`/dashboard/fb-pipeline?${qs}`)
+  },
   providers: async () => (await request<unknown[]>('/providers')).map(normalizeProvider),
   createProvider: async (body: CreateProviderRequest) =>
     normalizeProvider(
@@ -357,18 +175,6 @@ export const api = {
   providerConfigSchema: (kind?: string) =>
     request<ProviderConfigSchemaResponse>(
       `/providers/config-schema${kind ? `?kind=${encodeURIComponent(kind)}` : ''}`),
-  waAccounts: () => request<WaAccount[]>('/wa/accounts'),
-  dispatcherStatus: () => request<DispatcherStatus>('/dispatcher/status'),
-  dispatcherConsumers: () => request<DispatcherConsumer[]>('/dispatcher/consumers'),
-  createWaAccount: (name: string, method: WaLoginMethod = 'qr', phone?: string) =>
-    request<WaAccountCreateResult>('/wa/accounts', {
-      method: 'POST',
-      body: JSON.stringify({ name, method, phone: phone ?? null }),
-    }),
-  waAccountLogin: (name: string) =>
-    request<WaLoginStatus>(`/wa/accounts/${encodeURIComponent(name)}/login`),
-  deleteWaAccount: (name: string) =>
-    request<{ ok: boolean }>(`/wa/accounts/${encodeURIComponent(name)}`, { method: 'DELETE' }),
 }
 
 // ---------- 通用数据加载 Hook（加载态 / 错误态 / 自动刷新） ----------
@@ -427,15 +233,4 @@ export function formatTime(iso: string | null): string {
   if (Number.isNaN(d.getTime())) return iso
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
-}
-
-export function formatDuration(start: string | null, end: string | null): string {
-  if (!start) return '—'
-  const s = new Date(start).getTime()
-  const e = end ? new Date(end).getTime() : Date.now()
-  if (Number.isNaN(s) || Number.isNaN(e) || e < s) return '—'
-  const sec = Math.round((e - s) / 1000)
-  if (sec < 60) return `${sec}s`
-  if (sec < 3600) return `${Math.floor(sec / 60)}m ${sec % 60}s`
-  return `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`
 }

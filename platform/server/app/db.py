@@ -61,8 +61,7 @@ def migrate() -> None:
         # 供应商与代理通道表（历史手工建表，补进幂等迁移；
         # 结构以 docs/service-architecture.md 与实际库为准）
         conn.execute(
-            "CREATE TABLE IF NOT EXISTS providers ("
-            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "CREATE TABLE IF NOT EXISTS providers ("            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
             "kind TEXT NOT NULL, "
             "name TEXT NOT NULL, "
             "config_json TEXT NOT NULL, "
@@ -97,10 +96,36 @@ def migrate() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_channels_task"
             " ON proxy_channels(used_by_task)")
+        # 费用记账表（costs.py 同步写入）：
+        # - date 口径：Apify real 行存原始 UTC 账单日期（与 Apify 控制台对账），
+        #   estimate 行存北京日期（state JSON 的 daily key 即北京日期）
+        # - source：real=官方账单 API；estimate=单价折算
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS cost_records ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "date TEXT NOT NULL, "
+            "provider TEXT NOT NULL, "
+            "channel TEXT NOT NULL, "
+            "service TEXT, "  # Apify 服务项；估算行存 ''（SQLite UNIQUE 中 NULL 互不相等，不能用 NULL）
+            "source TEXT NOT NULL, "
+            "quantity REAL, "
+            "unit TEXT, "
+            "usd REAL NOT NULL, "
+            "detail_json TEXT, "
+            "synced_at TEXT NOT NULL, "
+            "UNIQUE(date, provider, channel, service, source))")
         # P4：work_items 批次索引（生产库表由 fetcher 建，平台只补索引不建表；
         # 探测式——表不存在则跳过，防御性）
         tables = {r[0] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'")}
+        # fb_contacts 导出标记列（表由 fetcher 建，缺表跳过）：
+        # exported_at TEXT NULL：导出时间（北京时间），NULL=从未导出
+        if "fb_contacts" in tables:
+            fb_cols = {r[1] for r in conn.execute(
+                "PRAGMA table_info(fb_contacts)")}
+            if "exported_at" not in fb_cols:
+                conn.execute(
+                    "ALTER TABLE fb_contacts ADD COLUMN exported_at TEXT")
         if "work_items" in tables:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_work_items_batch"
@@ -497,6 +522,35 @@ def enqueue_wa_batch(batch_id: int, accounts: list[str],
                  json.dumps(payload, ensure_ascii=False),
                  '["local"]', now))
             n += 1
+        conn.commit()
+        return n
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def mark_fb_contacts_exported(ids: list[int]) -> int:
+    """把导出的 fb_contacts 行标记为已导出（exported_at=北京时间）。
+
+    短事务 + busy_timeout；ids 分块（SQLite 变量上限 999，取 500 一块）。
+    返回更新行数。ids 为空直接返回 0。
+    """
+    if not ids:
+        return 0
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        conn.execute("PRAGMA busy_timeout = 30000")
+        now = _bj_now()
+        n = 0
+        for i in range(0, len(ids), 500):
+            chunk = ids[i:i + 500]
+            q = ",".join("?" * len(chunk))
+            cur = conn.execute(
+                f"UPDATE fb_contacts SET exported_at=? WHERE id IN ({q})",
+                [now] + list(chunk))
+            n += cur.rowcount
         conn.commit()
         return n
     except Exception:

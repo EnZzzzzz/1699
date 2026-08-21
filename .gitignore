@@ -24,11 +24,14 @@ logs/
 *.mov
 *.jpg
 
-# wa-check（WhatsApp 查号）：会话凭证与本地产物
-fetcher/vendor/wa-check/auth_info/
-fetcher/vendor/wa-check/auth_info-*/
-fetcher/vendor/wa-check/tmp/
-fetcher/vendor/wa-check/results.json
+# wa-check（WhatsApp 登录态存档）：会话凭证与本地产物
+wa-check/auth_info/
+wa-check/auth_info-*/
+wa-check/tmp/
+wa-check/results.json
+
+# pytest 缓存
+.pytest_cache/
 
 # 管理平台运行时
 platform/run/
