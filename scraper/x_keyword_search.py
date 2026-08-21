@@ -1,13 +1,23 @@
 #!/usr/bin/env python3
-# X(Twitter) 关键词直搜采号常驻脚本：xquik/x-tweet-scraper（Apify）单源，内置 X 专属词库。
-"""X 关键词直搜采号（常驻快脚本）。
+# X(Twitter) 关键词直搜采号常驻脚本：xquik/x-tweet-scraper（Apify）单源。
+"""X 关键词直搜采号（常驻，「牧场」模型，2026-08-22 重写）。
 
-模式照搬 fb_keyword_search.py（memo23 源），数据源换成
-xquik/x-tweet-scraper（Apify，pay-per-result $0.15/千帖，免 X 登录）：
-关键词（内置 X_KEYWORDS 专属词库，英文为主 + 西/阿语；X 上英文词是深矿，
-实测「whatsapp supplier」maxItems=2000 顶满返回，中文词只有几十帖）
-→ X 高级搜索 Latest → 帖正文 parse_post 挖中国号 →
-跨源查重（fb_contacts 已有号码跳过，86 前缀/裸 11 位兼容）→ 落 fb_contacts。
+老版（回扫/增量双模式、自适应切窗）已废弃删除——历史回扫烧预算采一堆
+早就被泛词采过的旧帖，性价比极低。新版策略极简，所有词一视同仁：
+
+  每个词到期（距上次采集 ≥ SCAN_INTERVAL_DAYS 天，默认 3 天）就开一次
+  采集会话：先刺探最新 PROBE_ITEMS(50) 帖（Latest 排序）：
+  - 首批 50 帖挖到新号 → 按 until_time 往历史翻页续挖（每批 50），
+    直到某批新号 +0 / 帖空 / 批数到顶 MAX_BATCHES_PER_WORD(20) 才换词；
+  - 整会话一个新号都没有 → 连击 +1；
+  - 连续 RETIRE_STRIKES(3) 次会话无新号（≈9 天没长出新帖）→ 判枯竭
+    退役，记 state.kw_retired 永久移出轮转（词库文件不动，留 3 天间隔
+    就是给词「长新帖」的时间）。
+  运营方式：持续往词库加验证过的新词（AGENTS.md 换词流程），之后全自动。
+
+数据源：xquik/x-tweet-scraper（Apify，pay-per-result $0.15/千帖，免 X 登录）
+→ 帖正文 parse_post 挖中国号 → 跨源查重（fb_contacts 已有号码跳过，
+86 前缀/裸 11 位兼容）→ 落 fb_contacts。
 
 落库说明：fb_contacts 无渠道 source 列，bucket 是 parse_post 按号码类型
 分的（declared_wa/cn_uncertain/overseas），X 来源靠 post_url=推文链接标识。
@@ -15,41 +25,28 @@ xquik/x-tweet-scraper（Apify，pay-per-result $0.15/千帖，免 X 登录）：
 但 FB 侧同号可能存 86 前缀形态、X 侧解析成裸 11 位（或反之），精确匹配
 挡不住，故落库前先 SELECT 查重（后 11 位对齐），命中即跳过。
 
-关键词轮转：--per-round 个/轮，offset 持久化 .cache/x_keyword_search_state.json
-（与 FB 的 state 文件互相独立）。预算刹车：当日结果数到 --daily-results
-（默认 1000 ≈ $0.15/天）即停，跨天自动清零。
+成本量级：每词每次 ≤50 帖 ≈ $0.0075；276 词每 3 天一轮 ≈ 92 次/天，
+顶格 ≈ $0.7/天。预算刹车：当日结果数到 --daily-results 即停（跨天自动
+清零）；总预算 --total-budget-usd 耗尽即停机。
 402/403 欠费按 wa_check_apify 口径记 quota_exhausted_at 并轮换账号。
 
-深度优先回扫（2026-08-22 倒序+提前收工版）：未完成回扫的词排在每轮
-最前（深度优先，榨干一词再下一词），每词每轮连续扫 --windows-per-word
-个窗口。窗口用 since_time:/until_time: unix 秒窗，初长 1 天，**从今天
-零点倒着往历史扫**（甜区先吃）：结果顶满 maxItems 视为截断 → 窗长减半
-（下限 5 分钟）原地重扫，未顶满 → 往历史推进一窗并翻倍窗长；连续
-DUP_STOP_WINDOWS(5) 窗「有帖但新号 +0」或连续 EMPTY_STOP_WINDOWS(10)
-窗无帖即提前收工（前者是深历史全是泛词/早期波次采过的重复帖，后者是
-词已死，都不再花钱买），扫到 --backfill-days 深度下限也收工；收工后转 since_time 增量，锚点定在开工上沿 top（跨天无空洞）。
-回扫进度记 state.kw_backfill[kw]={"cursor","win","dup","floor","top"}，
-旧版格式（正序游标/日期字符串）读取时废弃重来。
-总预算刹车：--total-budget-usd（默认 30，按 $0.15/千帖折算行数上限），
-累计用量记 state.total_results，耗尽即停机；累计新号记 state.total_new。
-回扫与增量同样受 --daily-results 日预算刹车，自然摊到多天完成。
-
-词退役（2026-08-22 起）：增量/全量首拉连续 RETIRE_ZP_SCANS(3) 轮帖 0
-→ 判真枯竭，记 state.kw_retired 并移出轮转（词库文件不动；退役词减少
-后轮转周期自动缩短，活词扫得更勤）。生命周期：回扫连续 10 空窗收工
-换下一个词 → 之后每轮轮到仍帖 0 记一击 → 连续 3 轮帖 0 退役。
-误判复活：删 state.kw_retired 对应键即可，下轮恢复扫描。
+状态文件 .cache/x_keyword_search_state.json（与 FB 的 state 互相独立）：
+  offset        轮转游标（取词起点，扫过的词 3 天内自然不再到期）
+  daily         按北京日期的当日结果数（机器本地时区即北京）
+  total_results / total_new  累计行数（总预算记账）/ 累计新号
+  kw_stats      每词 q/posts/new/first_at/last_q_at/last_new_at/zero_streak
+                （zero_streak=连续无新号次数，满 3 退役；kw_stats.py 报表用）
+  kw_retired    已退役词 {词: {at, strikes, q}}；误判复活：删对应键即可
+  （老版 kw_since/kw_backfill 键残留无害，不再读取）
 
 用法：
-  python3 scraper/x_keyword_search.py --once --per-round 1 --windows-per-word 3 \
-      --max-items 500 --backfill-days 365 --daily-results 2000   # 试跑
-  python3 scraper/x_keyword_search.py --backfill-days 365 --max-items 2000 \
-      --daily-results 20000                                       # 常驻深扫
+  python3 scraper/x_keyword_search.py --once                 # 试跑一轮
+  python3 scraper/x_keyword_search.py --keywords-file .cache/x_keywords_all.txt \
+      --per-round 5 --interval 600 --delay 3 --daily-results 5000   # 常驻
 """
 from __future__ import annotations
 
 import argparse
-import datetime
 import json
 import re
 import sys
@@ -69,14 +66,16 @@ from wa_check_apify import load_accounts, mark_exhausted  # noqa: E402
 
 STATE_PATH = REPO_ROOT / ".cache" / "x_keyword_search_state.json"
 
+# ---------------------------------------------------------------- 策略参数
+SCAN_INTERVAL_SEC = 3 * 86400  # 每词最小采集间隔：给词 3 天长新帖
+RETIRE_STRIKES = 3             # 连续 3 次（≈9 天）无新号 → 退役
+PROBE_ITEMS = 50               # 每批取 50 帖：首批刺探，有新号就往历史翻页
+MAX_BATCHES_PER_WORD = 20      # 单词单次会话最多 20 批（≈1000 帖 ≈ $0.15 封顶）
+
 # ---------------------------------------------------------------- X 专属词库
-# 内置关键词库（2026-08-18 全量实测策展版）：原 195 词（含第七/八波）经
-# WebBridge 真实浏览器逐词验证（X 搜索 Latest，慢节奏复测排除软限流空
-# 渲染），只保留实测含中国号（C>0）的 73 词 + wa.me 86（两轮 H=100%，号
-# 码藏 wa.me 短链，parse_post 可从 URL 提号）。西/阿语词、无锚点角色×品
-# 质词、vendor 矩阵大部分实测零产出一并清除（原 _BLOCKED 黑名单机制随之
-# 废弃）。2026-08-19 按实测含号量降序重排（深度优先回扫先吃高产词），
-# wa.me 86 居首。实测数据
+# 内置关键词库（2026-08-18 全量实测策展版）：经 WebBridge 真实浏览器逐词
+# 验证（X 搜索 Latest），只保留实测含中国号的 73 词 + wa.me 86（号码藏
+# wa.me 短链，parse_post 可从 URL 提号）。实测数据
 # docs/channel-research/kw-verify-2026-08-18/x_*.jsonl + x_retest.jsonl
 X_KEYWORDS: list[str] = [
     "wa.me 86", "whatsapp +86 furniture", "whatsapp +86 wholesale",
@@ -111,11 +110,7 @@ X_ACTOR = "xquik~x-tweet-scraper"
 APIFY_API = "https://api.apify.com/v2"
 X_COST_PER_RESULT = 0.00015  # $0.15/千帖，按交付行计费（重复帖 actor 侧已去重）
 RUN_POLL_SECS = 10
-RUN_TIMEOUT_SECS = 420  # 正常 run 5 分钟上下；超时的基本是死 run，别傻等
-
-# ---- 回扫自适应切窗 ----
-MIN_WINDOW_SEC = 300    # 窗口下限（5 分钟）
-MAX_WINDOW_SEC = 86400  # 窗口上限/初长（1 天）
+RUN_TIMEOUT_SECS = 120  # 50 帖刺探正常 20 秒内返回，超 2 分钟基本是死 run，早掐早重试
 
 
 def log(msg: str) -> None:
@@ -129,46 +124,32 @@ class AccountError(Exception):
 # ---------------------------------------------------------------- 状态文件
 
 def load_state() -> dict:
-    """关键词轮转 offset + 按北京日期的当日用量（机器本地时区即北京）
-    + kw_since 每词增量锚点（上次成功抓取的 unix 时刻）
-    + kw_backfill 每词回扫窗口进度（"done" 或倒序游标
-      {"cursor","win","dup","floor","top"}，语义见 get_backfill）
-    + total_results / total_new 累计行数 / 累计新号（总预算记账）
-    + kw_stats 每词采集表现（q/posts/new/first_at/last_q_at/last_new_at/
-      zero_streak/zp/zp_since，kw_stats.py 报表据此推导老化状态）
-    + kw_retired 已退役词（增量长期帖 0 判真枯竭，移出轮转不再扫，
-      复活：删该键即可）。"""
+    """读 state JSON，缺键补默认值；老版残留键（kw_since/kw_backfill）
+    原样保留但不读取。一次性迁移：旧连击是高频扫描时代累计的，与现行
+    3 天 cadence 语义不同，首次加载清零 zero_streak（probe_v2 旗标）。"""
+    st: dict = {}
     if STATE_PATH.exists():
         try:
             st = json.loads(STATE_PATH.read_text())
-            st.setdefault("offset", 0)
-            st.setdefault("daily", {})
-            st.setdefault("kw_since", {})
-            st.setdefault("kw_backfill", {})
-            st.setdefault("total_results", 0)
-            st.setdefault("total_new", 0)
-            st.setdefault("kw_stats", {})
-            st.setdefault("kw_retired", {})
-            return st
         except Exception:
-            pass
-    return {"offset": 0, "daily": {}, "kw_since": {}, "kw_backfill": {},
-            "total_results": 0, "total_new": 0, "kw_stats": {},
-            "kw_retired": {}}
+            st = {}
+    st.setdefault("offset", 0)
+    st.setdefault("daily", {})
+    st.setdefault("total_results", 0)
+    st.setdefault("total_new", 0)
+    st.setdefault("kw_stats", {})
+    st.setdefault("kw_retired", {})
+    if not st.get("probe_v2"):
+        for s in st["kw_stats"].values():
+            s["zero_streak"] = 0
+        st["probe_v2"] = True
+    return st
 
 
-# 词退役判据：非回扫查询（增量/全量首拉）连续 RETIRE_ZP_SCANS 轮帖 0
-# → 判真枯竭，移入 state.kw_retired 退出轮转。词库 276 词时每轮间隔
-# ~9 小时，3 轮 ≈ 1 天多，死词一天出头即淘汰。
-RETIRE_ZP_SCANS = 3
-
-
-def record_kw_stat(st: dict, kw: str, n_posts: int, n_new: int,
-                   mode: str) -> None:
-    """每词每次查询后记账：累计查询/帖/新号，维护 last_new_at 与连续+0
-    次数（zero_streak，出新号即清零）；非回扫查询另维护连续帖0连击
-    （zp/zp_since），满退役判据则移入 kw_retired 退出轮转。
-    时间戳为北京时间字符串。"""
+def record_kw_stat(st: dict, kw: str, n_posts: int, n_new: int) -> None:
+    """每词每次采集后记账：累计查询/帖/新号，维护 last_new_at 与连击
+    （zero_streak=连续无新号次数）；连击满 RETIRE_STRIKES 移入
+    kw_retired 退出轮转。时间戳为北京时间字符串。"""
     now = time.strftime("%Y-%m-%d %H:%M:%S")
     s = st["kw_stats"].setdefault(kw, {"q": 0, "posts": 0, "new": 0,
                                        "first_at": now, "last_q_at": None,
@@ -180,22 +161,13 @@ def record_kw_stat(st: dict, kw: str, n_posts: int, n_new: int,
     if n_new > 0:
         s["last_new_at"] = now
         s["zero_streak"] = 0
-    else:
-        s["zero_streak"] += 1
-    if mode.startswith("回扫"):  # 回扫空窗正常（老时间段本就没帖），不计
         return
-    if n_posts > 0:
-        s["zp"] = 0
-        s["zp_since"] = None
-        s["last_post_at"] = now
-        return
-    s["zp"] = s.get("zp", 0) + 1
-    if not s.get("zp_since"):
-        s["zp_since"] = now
+    s["zero_streak"] += 1
     retired = st.setdefault("kw_retired", {})
-    if s["zp"] >= RETIRE_ZP_SCANS and kw not in retired:
-        retired[kw] = {"at": now, "zp": s["zp"], "q": s["q"]}
-        log(f"  ☠「{kw}」连续 {s['zp']} 轮增量帖 0，"
+    if s["zero_streak"] >= RETIRE_STRIKES and kw not in retired:
+        retired[kw] = {"at": now, "strikes": s["zero_streak"], "q": s["q"]}
+        log(f"  ☠「{kw}」连续 {s['zero_streak']} 次无新号"
+            f"（≈{s['zero_streak'] * SCAN_INTERVAL_SEC // 86400} 天无产出），"
             f"判定枯竭退役，移出轮转")
 
 
@@ -210,14 +182,12 @@ def today_usage(st: dict) -> dict:
 
 # ---------------------------------------------------------------- xquik 搜索
 
-def x_search(conn, accounts: list, kw: str, max_items: int) -> tuple[list[dict], int] | None:
-    """异步 run + 轮询跑一个查询词（Latest 排序），返回 (dataset items, 实际生效的
-    maxItems)。kw 可带 X 高级搜索语法（since:/until:/since_time:/until_time:
-    等），原样透传。402/403 欠费记 quota_exhausted_at 并从 accounts 就地移除
-    后换号重试；run 超时/FAILED 重试且 maxItems 逐次减半（大词拉全量慢，降量
-    保底）——返回值第二元是最终生效的 maxItems，调用方用它判截断（重试降量
-    后返回数会小于原始 maxItems，用原值判会把截断窗误判为扫完）。仍失败返回
-    None，调用方不得推进窗口进度。"""
+def x_search(conn, accounts: list, kw: str,
+             max_items: int) -> list[dict] | None:
+    """异步 run + 轮询跑一个查询词（Latest 排序），返回 dataset items。
+    kw 原样透传（可带 X 高级搜索语法）。402/403 欠费记 quota_exhausted_at
+    并从 accounts 就地移除后换号重试；run 超时/FAILED 重试且 maxItems
+    逐次减半保底。仍失败返回 None，调用方不记账、该词下轮仍是到期状态。"""
     mi = max_items
     for attempt in range(3):
         body = json.dumps({"searchTerms": [kw], "maxItems": mi,
@@ -272,7 +242,7 @@ def x_search(conn, accounts: list, kw: str, max_items: int) -> tuple[list[dict],
                 pass
         if status != "SUCCEEDED":
             old = mi
-            mi = max(100, mi // 2)  # 降量重试：大词全量拉不动就少拉点
+            mi = max(10, mi // 2)  # 降量重试保底
             log(f"  xquik run「{kw}」状态 {status}（第{attempt + 1}/3次），"
                 f"maxItems {old}→{mi} 重试")
             continue
@@ -281,7 +251,7 @@ def x_search(conn, accounts: list, kw: str, max_items: int) -> tuple[list[dict],
                     f"{APIFY_API}/datasets/{ds_id}/items?token={token}",
                     timeout=60) as r:
                 items = json.loads(r.read().decode())
-            return (items if isinstance(items, list) else []), mi
+            return items if isinstance(items, list) else []
         except Exception as e:  # noqa: BLE001
             log(f"  xquik 取结果异常「{kw}」（第{attempt + 1}/3次）: {e}")
     log(f"  xquik「{kw}」3 次均失败，留到下轮")
@@ -317,11 +287,14 @@ def filter_known_numbers(conn, phones: list[dict]) -> list[dict]:
     return fresh
 
 
-def harvest_tweets(db, items: list[dict]) -> tuple[int, int]:
+def harvest_tweets(db, items: list[dict],
+                   seen_urls: set[str] | None = None) -> tuple[int, int]:
     """tweet 正文 parse_post 挖中国号落 fb_contacts（group_id=NULL）。
-    返回 (有效帖数, 新增号码数)。诊断行（resultType=diagnostic）跳过。"""
+    返回 (有效帖数, 新增号码数)。诊断行（resultType=diagnostic）跳过。
+    seen_urls 可跨批传入（深挖翻页时 until_time 边界帖会重复出现）。"""
+    if seen_urls is None:
+        seen_urls = set()
     n_posts = n_new = 0
-    seen_urls: set[str] = set()
     for it in items:
         if not isinstance(it, dict) or it.get("resultType") == "diagnostic":
             continue
@@ -348,245 +321,145 @@ def harvest_tweets(db, items: list[dict]) -> tuple[int, int]:
 
 # ---------------------------------------------------------------- 主流程
 
-def _ymd(days_ago: int = 0) -> str:
-    """北京日期（机器本地时区）往前推 days_ago 天的 YYYY-MM-DD。"""
-    return time.strftime("%Y-%m-%d",
-                         time.localtime(time.time() - days_ago * 86400))
+def pick_due(st: dict, keywords: list[str], limit: int) -> list[str]:
+    """从轮转游标起扫一圈，挑出到期词（未退役 且 从未采集或距上次
+    ≥ SCAN_INTERVAL_SEC），最多 limit 个；游标推进到最后一个入选词
+    之后（一圈都没选到则游标不动）。"""
+    n = len(keywords)
+    retired = st["kw_retired"]
+    now = time.time()
+    due, last_i = [], -1
+    for i in range(n):
+        kw = keywords[(st["offset"] + i) % n]
+        if kw in retired:
+            continue
+        last_q = st["kw_stats"].get(kw, {}).get("last_q_at")
+        last_ts = 0.0
+        if last_q:
+            try:
+                last_ts = time.mktime(
+                    time.strptime(last_q, "%Y-%m-%d %H:%M:%S"))
+            except ValueError:
+                last_ts = 0.0
+        if now - last_ts < SCAN_INTERVAL_SEC:
+            continue
+        due.append(kw)
+        last_i = i
+        if len(due) >= limit:
+            break
+    if last_i >= 0:
+        st["offset"] = (st["offset"] + last_i + 1) % n
+    return due
 
 
-def backfill_end_ts() -> int:
-    """回扫终点：今天 00:00（本地/北京时区）的 unix 时刻。今日内的新帖
-    由增量模式（since_time 锚点）负责，回扫只覆盖 [起点, 今天零点)。"""
-    lt = time.localtime()
-    return int(time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday,
-                            0, 0, 0, 0, 0, -1)))
-
-
-def get_backfill(st: dict, kw: str, backfill_days: int) -> dict | str:
-    """该词回扫状态："done" 或 {"cursor","win","dup","floor","top"}——
-    倒序回扫：cursor=下一待扫窗口终点 unix 时刻（从今天零点往历史扫），
-    floor=深度下限（N 天前零点，扫到即完成），top=开工上沿（收工后增量
-    锚点定在这里，跨天回扫也不会留空洞），dup=连续「有帖但新号+0」窗数、
-    emp=连续空窗数（任一连击满阈值即提前收工，见 advance）。
-    未开始的词现场生成；旧版格式（正序游标 dict / 日期字符串）语义已
-    废弃，一律按全新倒序回扫重新开始（已扫过的多为空窗，重扫成本极低）。"""
-    v = st["kw_backfill"].get(kw)
-    if v == "done":
-        return "done"
-    if isinstance(v, dict) and "dup" in v:
-        return v
-    d = datetime.date.fromisoformat(_ymd(backfill_days))
-    top = backfill_end_ts()
-    return {"cursor": top, "win": MAX_WINDOW_SEC, "dup": 0, "emp": 0,
-            "floor": int(time.mktime(d.timetuple())), "top": top}
-
-
-def _fmt_span(sec: int) -> str:
-    if sec >= 86400 and sec % 86400 == 0:
-        return f"{sec // 86400}d"
-    if sec >= 3600 and sec % 3600 == 0:
-        return f"{sec // 3600}h"
-    return f"{sec // 60}m"
-
-
-def build_query(st: dict, kw: str, args) -> tuple[str, str, int | None, int | None]:
-    """构造该词本次查询，返回 (查询词, 模式, start, end)（增量模式后两者
-    为 None）。回扫优先：kw_backfill 非 done 时扫 since_time:/until_time:
-    窗口 [cursor-win, cursor)，从今天零点倒着往历史扫（甜区先吃，
-    连续有帖无新号即提前收工，见 advance）；否则走增量：有锚点拼
-    since_time:<ts> 只拉新帖，无锚点全量首拉。"""
-    if args.backfill_days > 0:
-        bf = get_backfill(st, kw, args.backfill_days)
-        if bf != "done":
-            end = bf["cursor"]
-            start = max(end - bf["win"], bf["floor"])
-            mode = (f"回扫{_fmt_span(end - start)}@"
-                    f"{time.strftime('%m-%d %H:%M', time.localtime(start))}")
-            return f"{kw} since_time:{start} until_time:{end}", mode, start, end
-    ts = st["kw_since"].get(kw)
-    if ts:
-        return f"{kw} since_time:{ts}", "增量", None, None
-    return kw, "全量首拉", None, None
-
-
-# 倒序回扫提前收工阈值：连续 N 个窗口有帖但新号 +0，视为深历史全是
-# 已被泛词/早期波次采过的重复帖，不再花钱买（词保留在增量轮转里）
-DUP_STOP_WINDOWS = 5
-# 连续空窗（帖 0）也要收工：窗口最长 1 天，10 连空 ≈ 最近 10 天无帖，
-# 再往深挖大概率也是空的——死词不该白扫几十个空窗磨到 floor
-EMPTY_STOP_WINDOWS = 10
-
-
-def advance(st: dict, kw: str, args, mode: str,
-            start: int | None, end: int | None,
-            n_items: int, mi_used: int, n_posts: int, n_new: int) -> str | None:
-    """查询成功后推进进度，返回备注（截断缩窗/回扫完成/提前收工/None）。
-    回扫（倒序，窗口 [start, end)）：返回数顶满实际生效 maxItems 视为截断
-    → 窗长减半、end 原地不动重扫（已到下限仍顶满则有损前进并告警）；
-    未顶满 → 下一窗往历史推进（end=start）、窗长翻倍（上限 1 天），并按
-    n_posts/n_new 维护连击：有帖无新号 dup+1、空窗 emp+1、出新号双清。
-    dup 满 DUP_STOP_WINDOWS 或 emp 满 EMPTY_STOP_WINDOWS 或扫到 floor
-    即置 done，增量锚点定在开工上沿 top（不是收工时刻——回扫可能跨天，
-    [top, 收工时刻) 的帖子由增量覆盖，2026-08-19 空洞修复的语义在倒序
-    下由 top 承担）。
-    增量/全量：锚点推到当前时刻再回拨 1 小时重叠带——X 搜索有索引延迟，
-    发布后未及时入索引的帖会被 since_time 永久跳过，重叠带的重复帖靠
-    落库号码去重消化（2026-08-19 实测诊断确认此漏检）。
-    想重扫删 state.kw_backfill 对应键。"""
-    if mode.startswith("回扫"):
-        bf = get_backfill(st, kw, args.backfill_days)
-        win, dup = bf["win"], bf.get("dup", 0)
-        emp = bf.get("emp", 0)
-        floor, top = bf["floor"], bf["top"]
-        if n_items >= mi_used:
-            if win > MIN_WINDOW_SEC:
-                new_win = max(win // 2, MIN_WINDOW_SEC)
-                st["kw_backfill"][kw] = {"cursor": end, "win": new_win,
-                                         "dup": dup, "emp": emp,
-                                         "floor": floor, "top": top}
-                return f"截断缩窗 {_fmt_span(win)}→{_fmt_span(new_win)}"
-            st["kw_backfill"][kw] = {"cursor": start, "win": MIN_WINDOW_SEC,
-                                     "dup": dup, "emp": emp,
-                                     "floor": floor, "top": top}
-            return f"最小窗仍顶满 {n_items}，有损前进"
-        if n_new > 0:
-            dup, emp = 0, 0
-        elif n_posts > 0:
-            dup += 1
-            emp = 0
-        else:
-            emp += 1
-        if dup >= DUP_STOP_WINDOWS:
-            st["kw_backfill"][kw] = "done"
-            st["kw_since"][kw] = top
-            return f"回扫提前收工：连续 {dup} 窗有帖无新号"
-        if emp >= EMPTY_STOP_WINDOWS:
-            st["kw_backfill"][kw] = "done"
-            st["kw_since"][kw] = top
-            return f"回扫提前收工：连续 {emp} 窗无帖"
-        if start <= floor:
-            st["kw_backfill"][kw] = "done"
-            st["kw_since"][kw] = top
-            return "回扫完成"
-        st["kw_backfill"][kw] = {"cursor": start,
-                                 "win": min(win * 2, MAX_WINDOW_SEC),
-                                 "dup": dup, "emp": emp,
-                                 "floor": floor, "top": top}
-        return None
-    st["kw_since"][kw] = int(time.time()) - 3600  # 1 小时重叠带，抗索引延迟
-    return None
-
-
-def count_out_of_window(items: list[dict], cursor: int, end: int) -> tuple[int, int]:
-    """校验返回帖 createdAt 是否落在 [cursor, end) 内（防 until_time 静默
-    失效：一旦失效 Latest 排序返回的是全站新帖，窗口会被错误标完成）。
-    返回 (可解析时间戳的帖数, 窗外帖数)。"""
-    n_ts = n_out = 0
+def _oldest_ts(items: list[dict]) -> int | None:
+    """本批帖子里最老的 createdAt（unix 秒），作下一批 until_time 翻页锚点。"""
+    oldest = None
     for it in items:
-        if not isinstance(it, dict) or it.get("resultType") == "diagnostic":
+        if not isinstance(it, dict):
             continue
         ca = it.get("createdAt")
         if not ca:
             continue
         try:
-            ts = parsedate_to_datetime(ca).timestamp()
+            t = int(parsedate_to_datetime(ca).timestamp())
         except Exception:  # noqa: BLE001
             continue
-        n_ts += 1
-        if not (cursor <= ts < end):
-            n_out += 1
-    return n_ts, n_out
+        oldest = t if oldest is None else min(oldest, t)
+    return oldest
+
+
+def dig_word(db, accounts: list, kw: str, args, st: dict,
+             usage: dict, stats: dict) -> bool | None:
+    """到期词的完整采集会话：先刺探最新 50 帖；挖到新号就按 until_time
+    往历史翻页续挖（每批 50），直到某批新号 +0 / 帖空 / 批数到顶才换词。
+    返回 True=会话完成（已记账），None=首批 run 失败（不记账，下轮重试）。
+    会话按整体记账：有新号则连击清零，整会话 +0 才记一击。"""
+    seen_urls: set[str] = set()
+    until: int | None = None
+    n_posts = n_new = 0
+    for batch_no in range(1, MAX_BATCHES_PER_WORD + 1):
+        if not accounts:
+            raise AccountError("全部 apify 账号额度耗尽")
+        if batch_no > 1:  # 首批预算由 run_round 把关；翻页途中到顶即中止
+            if usage["x_results"] >= args.daily_results:
+                log(f"  当日结果达顶 {args.daily_results}，「{kw}」深挖中止")
+                break
+            if st["total_results"] >= args.total_rows_cap:
+                stats["budget_out"] = True
+                break
+        term = f"{kw} until_time:{until}" if until else kw
+        items = x_search(db.conn, accounts, term, PROBE_ITEMS)
+        if items is None:  # 首批失败整词不算；翻页中断则已采部分照记
+            return None if batch_no == 1 else True
+        p, n = harvest_tweets(db, items, seen_urls)
+        usage["x_results"] += len(items)
+        st["total_results"] += len(items)
+        st["total_new"] += n
+        stats["results"] += len(items)
+        stats["posts"] += p
+        stats["new"] += n
+        n_posts += p
+        n_new += n
+        tag = "刺探" if batch_no == 1 else f"深翻{batch_no}"
+        log(f"  [x][{tag}]「{kw}」: 帖 {p}，新号 +{n}"
+            f"（当日 {usage['x_results']}/{args.daily_results}）")
+        if n == 0 or not items:
+            break  # 这批没挖到新号（或帖空）：挖干了，换下一个词
+        nxt = _oldest_ts(items)
+        if nxt is None or (until is not None and nxt >= until):
+            break  # 拿不到更早的时间锚点，无法继续翻页
+        until = nxt
+        time.sleep(args.delay)
+    else:
+        log(f"  「{kw}」深挖达批数上限 {MAX_BATCHES_PER_WORD}，"
+            f"剩余历史留到下周期")
+    record_kw_stat(st, kw, n_posts, n_new)
+    save_state(st)
+    log(f"  [x]「{kw}」会话结束：帖 {n_posts}，新号 +{n_new}，"
+        f"连击 {st['kw_stats'][kw]['zero_streak']}/{RETIRE_STRIKES}")
+    return True
 
 
 def run_round(db, accounts: list, keywords: list[str], args, st: dict) -> dict:
-    """跑一轮。深度优先：回扫未完成的词按词库顺序排最前（每轮只取前
-    per-round 个，榨干一词再轮到下一词），每词连续扫 windows-per-word
-    个窗口；全部词回扫完成后退化为原轮转增量维护。stats["budget_out"]
-    为 True 表示总预算耗尽，调用方应停机。"""
+    """跑一轮：取最多 per-round 个到期词，逐词开采集会话（刺探+深挖）。
+    stats["budget_out"] 为 True 表示总预算耗尽，调用方应停机。"""
     usage = today_usage(st)
-    retired = st.get("kw_retired", {})
-    if retired:  # 退役词移出轮转：少扫死词，轮转周期随之缩短
-        keywords = [kw for kw in keywords if kw not in retired]
-    n = len(keywords)
     stats = {"results": 0, "posts": 0, "new": 0, "budget_out": False}
-    if not keywords:
-        log("  词库全部退役，无词可扫")
+    batch = pick_due(st, keywords, args.per_round)
+    if not batch:
         return stats
 
-    pending = []
-    if args.backfill_days > 0:
-        pending = [kw for kw in keywords
-                   if get_backfill(st, kw, args.backfill_days) != "done"]
-    if pending:
-        batch = pending[:args.per_round]
-        backfilling = True
-    else:
-        batch = [keywords[(st["offset"] + i) % n] for i in range(args.per_round)]
-        st["offset"] = (st["offset"] + args.per_round) % n
-        save_state(st)
-        backfilling = False
-
     for kw in batch:
-        for _ in range(args.windows_per_word if backfilling else 1):
-            if not accounts:
-                raise AccountError("全部 apify 账号额度耗尽")
-            if usage["x_results"] >= args.daily_results:
-                log(f"  当日结果达顶 {args.daily_results}，本轮提前结束")
-                return stats
-            if st["total_results"] >= args.total_rows_cap:
-                log(f"  总预算耗尽（累计 {st['total_results']} 行 ≈ "
-                    f"${st['total_results'] * X_COST_PER_RESULT:.2f}）")
-                stats["budget_out"] = True
-                return stats
-            term, mode, start, end = build_query(st, kw, args)
-            got = x_search(conn=db.conn, accounts=accounts, kw=term,
-                           max_items=args.max_items)
-            if got is None:  # run 失败：进度不推进，下轮重试该词同一窗口
-                time.sleep(args.delay)
-                break
-            items, mi_used = got
-            n_posts, n_new = harvest_tweets(db, items)
-            note = advance(st, kw, args, mode, start, end,
-                           len(items), mi_used, n_posts, n_new)
-            usage["x_results"] += len(items)
-            st["total_results"] += len(items)
-            stats["results"] += len(items)
-            st["total_new"] += n_new
-            stats["posts"] += n_posts
-            stats["new"] += n_new
-            record_kw_stat(st, kw, n_posts, n_new, mode)
-            save_state(st)
-            if start is not None:
-                n_ts, n_out = count_out_of_window(items, start, end)
-                if n_ts and n_out / n_ts > 0.2:
-                    log(f"  ⚠「{kw}」{n_out}/{n_ts} 帖在窗口外，"
-                        f"until_time 可能未生效，请人工核查")
-            log(f"  [x][{mode}]「{kw}」: 帖 {n_posts}，新号 +{n_new}"
-                f"{('，' + note) if note else ''}"
-                f"（当日 {usage['x_results']}/{args.daily_results}）")
-            if note and note.startswith(("回扫完成", "回扫提前收工")):
-                break
+        if usage["x_results"] >= args.daily_results:
+            log(f"  当日结果达顶 {args.daily_results}，本轮提前结束")
+            return stats
+        if st["total_results"] >= args.total_rows_cap:
+            stats["budget_out"] = True
+        ok = dig_word(db, accounts, kw, args, st, usage, stats)
+        if ok is None:  # run 失败：不记账，该词下轮仍到期重试
             time.sleep(args.delay)
+            continue
+        if stats["budget_out"]:
+            log(f"  总预算耗尽（累计 {st['total_results']} 行 ≈ "
+                f"${st['total_results'] * X_COST_PER_RESULT:.2f}）")
+            return stats
+        time.sleep(args.delay)
     return stats
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="X 关键词直搜采号（xquik/x-tweet-scraper 常驻）")
+    ap = argparse.ArgumentParser(
+        description="X 关键词直搜采号（xquik/x-tweet-scraper 常驻，刺探模式）")
     ap.add_argument("--keywords-file",
                     help="覆盖内置 X_KEYWORDS 词库（一行一个关键词）")
     ap.add_argument("--per-round", type=int, default=5,
-                    help="每轮关键词数（深度优先：回扫期取词库前 N 个未完成词）")
+                    help="每轮最多采集几个到期词")
     ap.add_argument("--interval", type=int, default=600, help="两轮间隔秒数")
-    ap.add_argument("--daily-results", type=int, default=1000,
-                    help="当日结果数上限（缺省 1000 ≈ $0.15/天）")
+    ap.add_argument("--daily-results", type=int, default=5000,
+                    help="当日结果数上限（缺省 5000 ≈ $0.75/天，远用不满）")
     ap.add_argument("--total-budget-usd", type=float, default=30,
                     help="总预算美元（缺省 30 ≈ 20 万行），累计到顶即停机")
-    ap.add_argument("--max-items", type=int, default=40, help="每词 maxItems")
-    ap.add_argument("--windows-per-word", type=int, default=10,
-                    help="回扫期每词每轮最多连续扫几个窗口")
-    ap.add_argument("--backfill-days", type=int, default=0,
-                    help="历史回扫天数：>0 时每词从 N 天前自适应切窗扫到"
-                         "今天零点（截断窗自动对半拆分），扫完自动转增量")
     ap.add_argument("--delay", type=float, default=5, help="查询间隔秒数")
     ap.add_argument("--once", action="store_true", help="跑一轮即退出")
     args = ap.parse_args()
@@ -598,7 +471,8 @@ def main() -> int:
         log(f"使用 --keywords-file 覆盖词库：{len(keywords)} 个")
     else:
         keywords = list(X_KEYWORDS)
-    log(f"关键词库 {len(keywords)} 个，每轮 {args.per_round} 个轮转")
+    log(f"关键词库 {len(keywords)} 个，每词间隔 "
+        f"{SCAN_INTERVAL_SEC // 86400} 天，每轮最多 {args.per_round} 个到期词")
 
     from fetcher.db import ShopDB  # 延迟导入（WAL + busy_timeout 30s）
     db = ShopDB()
@@ -618,16 +492,15 @@ def main() -> int:
         f"已用 {st['total_results']} 行 ≈ "
         f"${st['total_results'] * X_COST_PER_RESULT:.2f}，"
         f"累计新号 {st['total_new']}")
+    if st["kw_retired"]:
+        log(f"已退役词 {len(st['kw_retired'])} 个（state.kw_retired），"
+            f"不参与轮转")
     if st["total_results"] >= args.total_rows_cap:
         log("总预算已耗尽，直接退出")
         return 0
-    # 词库换代后旧 offset 可能越界：对 len(keywords) 取模归一（run_round
-    # 取词时也有 % n，这里双保险，避免 state 里残留大 offset 值）
+    # 词库换代后旧 offset 可能越界：对 len(keywords) 取模归一
     if keywords:
         st["offset"] %= len(keywords)
-    if st.get("kw_retired"):
-        log(f"已退役词 {len(st['kw_retired'])} 个（state.kw_retired），"
-            f"不参与轮转")
     while True:
         try:
             stats = run_round(db, accounts, keywords, args, st)
@@ -643,12 +516,13 @@ def main() -> int:
                 return 1
             time.sleep(args.interval)
             continue
-        log(f"本轮：{args.per_round} 词，结果 {stats['results']} 条"
-            f"（有效帖 {stats['posts']}），新号 +{stats['new']}，"
-            f"当日用量 {today_usage(st)['x_results']}/{args.daily_results}；"
-            f"累计 {st['total_results']}/{args.total_rows_cap} 行 ≈ "
-            f"${st['total_results'] * X_COST_PER_RESULT:.2f}，"
-            f"累计新号 {st['total_new']}")
+        if stats["results"] or stats["new"]:
+            log(f"本轮：{args.per_round} 词，结果 {stats['results']} 条"
+                f"（有效帖 {stats['posts']}），新号 +{stats['new']}，"
+                f"当日用量 {today_usage(st)['x_results']}/{args.daily_results}；"
+                f"累计 {st['total_results']}/{args.total_rows_cap} 行 ≈ "
+                f"${st['total_results'] * X_COST_PER_RESULT:.2f}，"
+                f"累计新号 {st['total_new']}")
         if stats.get("budget_out"):
             log("总预算耗尽，停机")
             return 0

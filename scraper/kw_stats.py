@@ -5,10 +5,10 @@
 #   python3 scraper/kw_stats.py            # FB/X 两张表，枯竭在前
 #   python3 scraper/kw_stats.py --aging    # 只列枯竭/老化词（换词候选）
 #   python3 scraper/kw_stats.py --top 20   # 按累计新号产量排序
-# 状态判据：退役（X 脚本判真枯竭已移出轮转，见 state.kw_retired）>
-# 回扫中（X 回扫未完成）> 枯竭（>7 天无新号且查询≥5）>
-# 老化（3~7 天无新号或连续+0≥10）> 活跃（3 天内出过新号）>
-# 观察（查询 <5 次还没出过新号）> 未启用（词库里有但没查过）。
+# 状态判据：退役（X/FB 脚本判真枯竭已移出轮转，见 state.kw_retired）>
+# 枯竭（>7 天无新号且查询≥5）> 老化（3~7 天无新号或连续+0≥10）>
+# 活跃（3 天内出过新号）> 观察（查询 <5 次还没出过新号）>
+# 未启用（词库里有但没查过）。
 import argparse
 import json
 import sys
@@ -26,8 +26,8 @@ CACHE = REPO_ROOT / ".cache"
 FMT = "%Y-%m-%d %H:%M:%S"
 
 # 状态排序权重（越小越靠前）
-SEVERITY = {"退役": 0, "枯竭": 1, "老化": 2, "回扫中": 3, "观察": 4,
-            "活跃": 5, "未启用": 6}
+SEVERITY = {"退役": 0, "枯竭": 1, "老化": 2, "观察": 3, "活跃": 4,
+            "未启用": 5}
 
 
 def load_json(name: str) -> dict:
@@ -63,16 +63,10 @@ def parse_time(s: str | None) -> datetime | None:
         return None
 
 
-def kw_status(channel: str, kw: str, s: dict | None, backfill: dict,
-              now: datetime, backfill_active: bool = False,
+def kw_status(kw: str, s: dict | None, now: datetime,
               retired: dict | None = None) -> str:
     if retired and kw in retired:
         return "退役"
-    if channel == "x":
-        bf = backfill.get(kw)
-        # 有明确回扫进度，或回扫期刚开始、该词还没排上（无记录）都算回扫中
-        if bf not in (None, "done") or (bf is None and backfill_active):
-            return "回扫中"
     if s is None:
         return "未启用"
     ln = parse_time(s.get("last_new_at"))
@@ -86,11 +80,8 @@ def kw_status(channel: str, kw: str, s: dict | None, backfill: dict,
     return "老化"
 
 
-def build_rows(channel: str, words: list[str], kw_stats: dict,
-               backfill: dict, now: datetime,
+def build_rows(words: list[str], kw_stats: dict, now: datetime,
                retired: dict | None = None) -> list[dict]:
-    # 回扫期是否进行中（存在未完成进度记录）：进行中时，X 词无记录视为待扫
-    backfill_active = any(v != "done" for v in backfill.values())
     rows = []
     for kw in words:
         s = kw_stats.get(kw)
@@ -101,8 +92,7 @@ def build_rows(channel: str, words: list[str], kw_stats: dict,
             "new": s.get("new", 0) if s else 0,
             "last_new": (s.get("last_new_at") or "—") if s else "—",
             "zero": s.get("zero_streak", 0) if s else 0,
-            "status": kw_status(channel, kw, s, backfill, now,
-                                backfill_active, retired),
+            "status": kw_status(kw, s, now, retired),
         })
     return rows
 
@@ -144,10 +134,9 @@ def main() -> int:
     fb_words = load_words("fb_keywords_extra.txt", FB_BUILTIN, override=False)
     x_words = load_words("x_keywords_all.txt", X_BUILTIN, override=True)
 
-    render("fb", build_rows("fb", fb_words, fb_st.get("kw_stats", {}), {},
-                            now), args)
-    render("x", build_rows("x", x_words, x_st.get("kw_stats", {}),
-                           x_st.get("kw_backfill", {}), now,
+    render("fb", build_rows(fb_words, fb_st.get("kw_stats", {}), now,
+                            fb_st.get("kw_retired", {})), args)
+    render("x", build_rows(x_words, x_st.get("kw_stats", {}), now,
                            x_st.get("kw_retired", {})), args)
     return 0
 
