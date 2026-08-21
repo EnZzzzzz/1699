@@ -5,7 +5,8 @@
 #   python3 scraper/kw_stats.py            # FB/X 两张表，枯竭在前
 #   python3 scraper/kw_stats.py --aging    # 只列枯竭/老化词（换词候选）
 #   python3 scraper/kw_stats.py --top 20   # 按累计新号产量排序
-# 状态判据：回扫中（X 回扫未完成）> 枯竭（>7 天无新号且查询≥5）>
+# 状态判据：退役（X 脚本判真枯竭已移出轮转，见 state.kw_retired）>
+# 回扫中（X 回扫未完成）> 枯竭（>7 天无新号且查询≥5）>
 # 老化（3~7 天无新号或连续+0≥10）> 活跃（3 天内出过新号）>
 # 观察（查询 <5 次还没出过新号）> 未启用（词库里有但没查过）。
 import argparse
@@ -25,7 +26,8 @@ CACHE = REPO_ROOT / ".cache"
 FMT = "%Y-%m-%d %H:%M:%S"
 
 # 状态排序权重（越小越靠前）
-SEVERITY = {"枯竭": 0, "老化": 1, "回扫中": 2, "观察": 3, "活跃": 4, "未启用": 5}
+SEVERITY = {"退役": 0, "枯竭": 1, "老化": 2, "回扫中": 3, "观察": 4,
+            "活跃": 5, "未启用": 6}
 
 
 def load_json(name: str) -> dict:
@@ -62,7 +64,10 @@ def parse_time(s: str | None) -> datetime | None:
 
 
 def kw_status(channel: str, kw: str, s: dict | None, backfill: dict,
-              now: datetime, backfill_active: bool = False) -> str:
+              now: datetime, backfill_active: bool = False,
+              retired: dict | None = None) -> str:
+    if retired and kw in retired:
+        return "退役"
     if channel == "x":
         bf = backfill.get(kw)
         # 有明确回扫进度，或回扫期刚开始、该词还没排上（无记录）都算回扫中
@@ -82,7 +87,8 @@ def kw_status(channel: str, kw: str, s: dict | None, backfill: dict,
 
 
 def build_rows(channel: str, words: list[str], kw_stats: dict,
-               backfill: dict, now: datetime) -> list[dict]:
+               backfill: dict, now: datetime,
+               retired: dict | None = None) -> list[dict]:
     # 回扫期是否进行中（存在未完成进度记录）：进行中时，X 词无记录视为待扫
     backfill_active = any(v != "done" for v in backfill.values())
     rows = []
@@ -96,14 +102,14 @@ def build_rows(channel: str, words: list[str], kw_stats: dict,
             "last_new": (s.get("last_new_at") or "—") if s else "—",
             "zero": s.get("zero_streak", 0) if s else 0,
             "status": kw_status(channel, kw, s, backfill, now,
-                                backfill_active),
+                                backfill_active, retired),
         })
     return rows
 
 
 def render(channel: str, rows: list[dict], args) -> None:
     if args.aging:
-        rows = [r for r in rows if r["status"] in ("枯竭", "老化")]
+        rows = [r for r in rows if r["status"] in ("退役", "枯竭", "老化")]
     if args.top:
         rows = sorted(rows, key=lambda r: -r["new"])[:args.top]
     else:
@@ -141,7 +147,8 @@ def main() -> int:
     render("fb", build_rows("fb", fb_words, fb_st.get("kw_stats", {}), {},
                             now), args)
     render("x", build_rows("x", x_words, x_st.get("kw_stats", {}),
-                           x_st.get("kw_backfill", {}), now), args)
+                           x_st.get("kw_backfill", {}), now,
+                           x_st.get("kw_retired", {})), args)
     return 0
 
 

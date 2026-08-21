@@ -37,14 +37,14 @@ bash platform/stop.sh    # 停止
 
 **巡检**：每小时跑一次，先同步费用（`curl -s -X POST http://127.0.0.1:8765/api/costs/sync`，Apify 真实账单 + Bright Data + 渠道估算入 `cost_records` 表）→ 查 3 个脚本进程是否存活 → 查近 1h/3h 逐小时新增（`scraper/inspect_stats.py`，只读）→ 查 fb_contacts 全量汇总（采集/已注册/待审核，按 post_url 域名分 FB/X，只读查询 `file:.cache/1688.db?mode=ro`）→ 对照 state JSON 日用量排除预算刹车 → 确认关键词枯竭才换词（`grep -qxF` 去重追加）并重启对应脚本生效。
 
-换词触发条件：先对照表 4 排除预算刹车/额度耗尽等外部原因；确认是词库问题后——**某渠道连续 2 小时新增 < 30 条，即可尝试更换关键词**（不用等彻底枯竭）。词级判据用 `python3 scraper/kw_stats.py --aging`（只读）：脚本把每词每次查询的表现记在 state JSON 的 `kw_stats`（q/posts/new/last_new_at/zero_streak=连续新号+0 次数，2026-08-22 起累计，此前历史不回溯），报表按此推导状态——枯竭（>7 天无新号且查询 ≥5 次）、老化（3~7 天无新号或连续+0 ≥10）、活跃、回扫中、观察（查询 <5 次）、未启用；**枯竭/老化词优先列入换词候选**，全量看 `kw_stats.py`、产量榜看 `--top N`。
+换词触发条件：先对照表 4 排除预算刹车/额度耗尽等外部原因；确认是词库问题后——**某渠道连续 2 小时新增 < 30 条，即可尝试更换关键词**（不用等彻底枯竭）。词级判据用 `python3 scraper/kw_stats.py --aging`（只读）：脚本把每词每次查询的表现记在 state JSON 的 `kw_stats`（q/posts/new/last_new_at/zero_streak=连续新号+0 次数，2026-08-22 起累计，此前历史不回溯），报表按此推导状态——退役（X 脚本自动判真枯竭，已移出轮转）、枯竭（>7 天无新号且查询 ≥5 次）、老化（3~7 天无新号或连续+0 ≥10）、活跃、回扫中、观察（查询 <5 次）、未启用；**枯竭/老化词优先列入换词候选**，全量看 `kw_stats.py`、产量榜看 `--top N`。**X 词自动退役（2026-08-22 起）**：增量/全量首拉连续 5 次帖 0 且连击跨度 ≥3 天 → 脚本自动记 `state.kw_retired` 并移出轮转（词库文件不动，退役词减少后轮转周期自动缩短）；误判复活删 `kw_retired` 对应键，确认死词可手工从 `.cache/x_keywords_all.txt` 删行（`grep -vFx`，禁止 `sort -u` 重写）。
 
 **X 换词标准流程（2026-08-21 起）**：X 词枯竭的判据是「帖还能搜到但新号连续 +0」（历史存量已采完，增量供给趋零，跨源去重也会吃掉一部分）。换词时不要盲目加词，先用 **WebBridge 在用户真实浏览器（带 X 登录态）逐词验证**：
 1. 策展候选词（新品类 / 新语种 / 新形态，先对照 `.cache/x_keywords_all.txt` 排除已有词）。**品类词首选从 B2B 平台类目页批量采**：made-in-china 类目目录 `https://www.made-in-china.com/products-directory/`（英文、结构干净，钻进一级类目页抓二级类目名即可，2026-08-21 实测好用）；world.1688.com 会重定向死循环、alibaba.com 首页重 JS 加载慢且中文本地化，均不推荐；
 2. 用 WebBridge 打开 `https://x.com/search?q=<url编码词>&f=live`（Latest 排序），`evaluate` 抽取 `article` 数、`article time` 最新时间戳、帖正文里的手机号正则命中；
 3. 收录标准：有结果且帖内含手机号/联系方式形态；只搜出无关帖或零结果的词弃用；
 4. 验证通过的词 `grep -qxF` 去重后追加到 `.cache/x_keywords_all.txt`（**禁止 `sort -u` 重写**），重启 X 脚本生效。
-注意：新词在 state 里无 `kw_backfill` 记录，重启时用较大的 `--backfill-days`（如 180）可让新词回扫历史存量，老词已标 done 不受影响；但回扫吃行数预算，加词规模对照剩余预算（state 里 200000 行总上限）。
+注意：新词在 state 里无 `kw_backfill` 记录，重启时用较大的 `--backfill-days`（如 180）可让新词回扫历史存量，老词已标 done 不受影响；但回扫吃行数预算，加词规模对照剩余预算（state 里 200000 行总上限）。**回扫自 2026-08-22 起改为倒序**：新词从当天零点往历史倒着扫（cursor=下一待扫窗口终点，逐窗递减），连续 5 个窗口「有帖但新号 +0」即判枯竭提前收工（标 done，kw_since 锚在开工上沿），扫到 floor（backfill-days 天前）也算完成——加新词不再需要硬吃完整历史的旧帖，旧格式 backfill 记录一律废弃重来。
 
 **X/FB 词库共享（2026-08-21 起）**：词库都存文件不在数据库——FB 为脚本内置 `KEYWORDS`（234 词）+ `.cache/fb_keywords_extra.txt` 追加，X 为内置 `X_KEYWORDS` + `.cache/x_keywords_all.txt` 覆盖。X 验证通过的新词应同步跑一遍 FB 验证（WebBridge 开 `https://www.facebook.com/search/posts/?q=<url编码词>`，统计正文中国手机号命中数 C，C>0 才收录，同 08-18 口径），通过的 `grep -qxF` 追加到 `.cache/fb_keywords_extra.txt` 并重启 FB 脚本；反向同理。两平台卖家人群重叠但帖源不同，跨平台复用验证过的词是低成本扩量手段。
 
