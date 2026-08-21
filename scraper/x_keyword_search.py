@@ -123,7 +123,9 @@ def load_state() -> dict:
     + kw_since 每词增量锚点（上次成功抓取的 unix 时刻）
     + kw_backfill 每词回扫窗口进度（"done" 或 {"cursor","win"}；
       旧版日期字符串格式读取时自动迁移）
-    + total_results / total_new 累计行数 / 累计新号（总预算记账）。"""
+    + total_results / total_new 累计行数 / 累计新号（总预算记账）
+    + kw_stats 每词采集表现（q/posts/new/first_at/last_q_at/last_new_at/
+      zero_streak，kw_stats.py 报表据此推导老化状态）。"""
     if STATE_PATH.exists():
         try:
             st = json.loads(STATE_PATH.read_text())
@@ -133,11 +135,30 @@ def load_state() -> dict:
             st.setdefault("kw_backfill", {})
             st.setdefault("total_results", 0)
             st.setdefault("total_new", 0)
+            st.setdefault("kw_stats", {})
             return st
         except Exception:
             pass
     return {"offset": 0, "daily": {}, "kw_since": {}, "kw_backfill": {},
-            "total_results": 0, "total_new": 0}
+            "total_results": 0, "total_new": 0, "kw_stats": {}}
+
+
+def record_kw_stat(st: dict, kw: str, n_posts: int, n_new: int) -> None:
+    """每词每次查询后记账：累计查询/帖/新号，维护 last_new_at 与连续+0
+    次数（zero_streak，出新号即清零）。时间戳为北京时间字符串。"""
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    s = st["kw_stats"].setdefault(kw, {"q": 0, "posts": 0, "new": 0,
+                                       "first_at": now, "last_q_at": None,
+                                       "last_new_at": None, "zero_streak": 0})
+    s["q"] += 1
+    s["posts"] += n_posts
+    s["new"] += n_new
+    s["last_q_at"] = now
+    if n_new > 0:
+        s["last_new_at"] = now
+        s["zero_streak"] = 0
+    else:
+        s["zero_streak"] += 1
 
 
 def save_state(st: dict) -> None:
@@ -451,6 +472,7 @@ def run_round(db, accounts: list, keywords: list[str], args, st: dict) -> dict:
             st["total_new"] += n_new
             stats["posts"] += n_posts
             stats["new"] += n_new
+            record_kw_stat(st, kw, n_posts, n_new)
             save_state(st)
             if cursor is not None:
                 n_ts, n_out = count_out_of_window(items, cursor, end)

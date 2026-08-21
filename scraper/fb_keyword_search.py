@@ -157,16 +157,38 @@ class AccountError(Exception):
 # ---------------------------------------------------------------- 状态文件
 
 def load_state() -> dict:
-    """关键词轮转 offset + 按北京日期的当日用量（机器本地时区即北京）。"""
+    """关键词轮转 offset + 按北京日期的当日用量（机器本地时区即北京）
+    + kw_stats 每词采集表现（q/posts/new/first_at/last_q_at/last_new_at/
+      zero_streak，kw_stats.py 报表据此推导老化状态）。"""
     if STATE_PATH.exists():
         try:
             st = json.loads(STATE_PATH.read_text())
             st.setdefault("offset", 0)
             st.setdefault("daily", {})
+            st.setdefault("kw_stats", {})
             return st
         except Exception:
             pass
-    return {"offset": 0, "daily": {}}
+    return {"offset": 0, "daily": {}, "kw_stats": {}}
+
+
+def record_kw_stat(st: dict, kw: str, n_posts: int, n_new: int) -> None:
+    """每词每轮记账（SERP+memo23 双源合并）：累计查询/帖/新号，维护
+    last_new_at 与连续+0 次数（zero_streak，出新号即清零）。
+    时间戳为北京时间字符串。"""
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    s = st["kw_stats"].setdefault(kw, {"q": 0, "posts": 0, "new": 0,
+                                       "first_at": now, "last_q_at": None,
+                                       "last_new_at": None, "zero_streak": 0})
+    s["q"] += 1
+    s["posts"] += n_posts
+    s["new"] += n_new
+    s["last_q_at"] = now
+    if n_new > 0:
+        s["last_new_at"] = now
+        s["zero_streak"] = 0
+    else:
+        s["zero_streak"] += 1
 
 
 def save_state(st: dict) -> None:
@@ -387,6 +409,8 @@ def run_round(db, bd, accounts: list, keywords: list[str], args,
              "memo23_results": 0, "memo23_new": 0}
 
     for kw in batch:
+        kw_posts = 0  # 本词本轮双源合计帖数（SERP 结果数 + memo23 帖数）
+        kw_new = 0    # 本词本轮双源合计新号
         # ---- SERP：Google+Bing 各 1 页 ----
         if usage["serp_queries"] >= args.serp_daily_queries:
             if stats["serp_queries"] or kw == batch[0]:
@@ -403,6 +427,8 @@ def run_round(db, bd, accounts: list, keywords: list[str], args,
                 n_org = sum(len(r.get("organic") or []) for r in records
                             if isinstance(r, dict) and not r.get("error"))
                 n_new = harvest_serp(db, records)
+                kw_posts += n_org
+                kw_new += n_new
                 stats["serp_new"] += n_new
                 log(f"  [serp/{engine}]「{q}」: 结果 {n_org}，新号 +{n_new}")
                 time.sleep(args.delay)
@@ -415,6 +441,8 @@ def run_round(db, bd, accounts: list, keywords: list[str], args,
             stats["memo23_results"] += len(items)
             save_state(st)
             n_new = harvest_memo23(db, items)
+            kw_posts += len(items)
+            kw_new += n_new
             stats["memo23_new"] += n_new
             log(f"  [memo23]「{kw}」: 帖 {len(items)}，新号 +{n_new}"
                 f"（当日 {usage['memo23_results']}/{args.memo23_daily_results}）")
@@ -423,6 +451,8 @@ def run_round(db, bd, accounts: list, keywords: list[str], args,
             log("  memo23 无可用 apify 账号，跳过该源")
         else:
             log(f"  memo23 当日结果达顶 {args.memo23_daily_results}，跳过该源")
+        record_kw_stat(st, kw, kw_posts, kw_new)
+        save_state(st)
     return stats
 
 
