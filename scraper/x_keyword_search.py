@@ -25,18 +25,19 @@ xquik/x-tweet-scraper（Apify，pay-per-result $0.15/千帖，免 X 登录）：
 个窗口。窗口用 since_time:/until_time: unix 秒窗，初长 1 天，**从今天
 零点倒着往历史扫**（甜区先吃）：结果顶满 maxItems 视为截断 → 窗长减半
 （下限 5 分钟）原地重扫，未顶满 → 往历史推进一窗并翻倍窗长；连续
-DUP_STOP_WINDOWS(5) 窗「有帖但新号 +0」即提前收工（深历史全是泛词/
-早期波次采过的重复帖，不再花钱买），扫到 --backfill-days 深度下限
-也收工；收工后转 since_time 增量，锚点定在开工上沿 top（跨天无空洞）。
+DUP_STOP_WINDOWS(5) 窗「有帖但新号 +0」或连续 EMPTY_STOP_WINDOWS(10)
+窗无帖即提前收工（前者是深历史全是泛词/早期波次采过的重复帖，后者是
+词已死，都不再花钱买），扫到 --backfill-days 深度下限也收工；收工后转 since_time 增量，锚点定在开工上沿 top（跨天无空洞）。
 回扫进度记 state.kw_backfill[kw]={"cursor","win","dup","floor","top"}，
 旧版格式（正序游标/日期字符串）读取时废弃重来。
 总预算刹车：--total-budget-usd（默认 30，按 $0.15/千帖折算行数上限），
 累计用量记 state.total_results，耗尽即停机；累计新号记 state.total_new。
 回扫与增量同样受 --daily-results 日预算刹车，自然摊到多天完成。
 
-词退役（2026-08-22 起）：增量/全量首拉连续 RETIRE_ZP_SCANS(5) 次帖 0
-且连击跨度 ≥ RETIRE_ZP_DAYS(3) 天 → 判真枯竭，记 state.kw_retired 并
-移出轮转（词库文件不动；退役词减少后轮转周期自动缩短，活词扫得更勤）。
+词退役（2026-08-22 起）：增量/全量首拉连续 RETIRE_ZP_SCANS(3) 轮帖 0
+→ 判真枯竭，记 state.kw_retired 并移出轮转（词库文件不动；退役词减少
+后轮转周期自动缩短，活词扫得更勤）。生命周期：回扫连续 10 空窗收工
+换下一个词 → 之后每轮轮到仍帖 0 记一击 → 连续 3 轮帖 0 退役。
 误判复活：删 state.kw_retired 对应键即可，下轮恢复扫描。
 
 用法：
@@ -156,12 +157,10 @@ def load_state() -> dict:
             "kw_retired": {}}
 
 
-# 词退役判据：非回扫查询（增量/全量首拉）连续 RETIRE_ZP_SCANS 次帖 0
-# 且连击跨度 ≥ RETIRE_ZP_DAYS 天 → 判真枯竭（不是一时没帖），移入
-# state.kw_retired 退出轮转。词库里词多时一轮要 ~9 小时才轮到一词，
-# 所以 5 次天然跨约 2 天，跨度下限再兜一道防小词库高频误杀。
-RETIRE_ZP_SCANS = 5
-RETIRE_ZP_DAYS = 3
+# 词退役判据：非回扫查询（增量/全量首拉）连续 RETIRE_ZP_SCANS 轮帖 0
+# → 判真枯竭，移入 state.kw_retired 退出轮转。词库 276 词时每轮间隔
+# ~9 小时，3 轮 ≈ 1 天多，死词一天出头即淘汰。
+RETIRE_ZP_SCANS = 3
 
 
 def record_kw_stat(st: dict, kw: str, n_posts: int, n_new: int,
@@ -193,14 +192,10 @@ def record_kw_stat(st: dict, kw: str, n_posts: int, n_new: int,
     s["zp"] = s.get("zp", 0) + 1
     if not s.get("zp_since"):
         s["zp_since"] = now
-    span_days = (time.time() -
-                 time.mktime(time.strptime(s["zp_since"],
-                                           "%Y-%m-%d %H:%M:%S"))) / 86400
     retired = st.setdefault("kw_retired", {})
-    if (s["zp"] >= RETIRE_ZP_SCANS and span_days >= RETIRE_ZP_DAYS
-            and kw not in retired):
+    if s["zp"] >= RETIRE_ZP_SCANS and kw not in retired:
         retired[kw] = {"at": now, "zp": s["zp"], "q": s["q"]}
-        log(f"  ☠「{kw}」连续 {s['zp']} 次（{span_days:.1f} 天）增量帖 0，"
+        log(f"  ☠「{kw}」连续 {s['zp']} 轮增量帖 0，"
             f"判定枯竭退役，移出轮转")
 
 
@@ -371,7 +366,8 @@ def get_backfill(st: dict, kw: str, backfill_days: int) -> dict | str:
     """该词回扫状态："done" 或 {"cursor","win","dup","floor","top"}——
     倒序回扫：cursor=下一待扫窗口终点 unix 时刻（从今天零点往历史扫），
     floor=深度下限（N 天前零点，扫到即完成），top=开工上沿（收工后增量
-    锚点定在这里，跨天回扫也不会留空洞），dup=连续「有帖但新号+0」窗数。
+    锚点定在这里，跨天回扫也不会留空洞），dup=连续「有帖但新号+0」窗数、
+    emp=连续空窗数（任一连击满阈值即提前收工，见 advance）。
     未开始的词现场生成；旧版格式（正序游标 dict / 日期字符串）语义已
     废弃，一律按全新倒序回扫重新开始（已扫过的多为空窗，重扫成本极低）。"""
     v = st["kw_backfill"].get(kw)
@@ -381,7 +377,7 @@ def get_backfill(st: dict, kw: str, backfill_days: int) -> dict | str:
         return v
     d = datetime.date.fromisoformat(_ymd(backfill_days))
     top = backfill_end_ts()
-    return {"cursor": top, "win": MAX_WINDOW_SEC, "dup": 0,
+    return {"cursor": top, "win": MAX_WINDOW_SEC, "dup": 0, "emp": 0,
             "floor": int(time.mktime(d.timetuple())), "top": top}
 
 
@@ -416,6 +412,9 @@ def build_query(st: dict, kw: str, args) -> tuple[str, str, int | None, int | No
 # 倒序回扫提前收工阈值：连续 N 个窗口有帖但新号 +0，视为深历史全是
 # 已被泛词/早期波次采过的重复帖，不再花钱买（词保留在增量轮转里）
 DUP_STOP_WINDOWS = 5
+# 连续空窗（帖 0）也要收工：窗口最长 1 天，10 连空 ≈ 最近 10 天无帖，
+# 再往深挖大概率也是空的——死词不该白扫几十个空窗磨到 floor
+EMPTY_STOP_WINDOWS = 10
 
 
 def advance(st: dict, kw: str, args, mode: str,
@@ -425,10 +424,11 @@ def advance(st: dict, kw: str, args, mode: str,
     回扫（倒序，窗口 [start, end)）：返回数顶满实际生效 maxItems 视为截断
     → 窗长减半、end 原地不动重扫（已到下限仍顶满则有损前进并告警）；
     未顶满 → 下一窗往历史推进（end=start）、窗长翻倍（上限 1 天），并按
-    n_posts/n_new 维护 dup 连击（空窗不计）。dup 满 DUP_STOP_WINDOWS 或
-    扫到 floor 即置 done，增量锚点定在开工上沿 top（不是收工时刻——
-    回扫可能跨天，[top, 收工时刻) 的帖子由增量覆盖，2026-08-19 空洞
-    修复的语义在倒序下由 top 承担）。
+    n_posts/n_new 维护连击：有帖无新号 dup+1、空窗 emp+1、出新号双清。
+    dup 满 DUP_STOP_WINDOWS 或 emp 满 EMPTY_STOP_WINDOWS 或扫到 floor
+    即置 done，增量锚点定在开工上沿 top（不是收工时刻——回扫可能跨天，
+    [top, 收工时刻) 的帖子由增量覆盖，2026-08-19 空洞修复的语义在倒序
+    下由 top 承担）。
     增量/全量：锚点推到当前时刻再回拨 1 小时重叠带——X 搜索有索引延迟，
     发布后未及时入索引的帖会被 since_time 永久跳过，重叠带的重复帖靠
     落库号码去重消化（2026-08-19 实测诊断确认此漏检）。
@@ -436,32 +436,42 @@ def advance(st: dict, kw: str, args, mode: str,
     if mode.startswith("回扫"):
         bf = get_backfill(st, kw, args.backfill_days)
         win, dup = bf["win"], bf.get("dup", 0)
+        emp = bf.get("emp", 0)
         floor, top = bf["floor"], bf["top"]
         if n_items >= mi_used:
             if win > MIN_WINDOW_SEC:
                 new_win = max(win // 2, MIN_WINDOW_SEC)
                 st["kw_backfill"][kw] = {"cursor": end, "win": new_win,
-                                         "dup": dup, "floor": floor,
-                                         "top": top}
+                                         "dup": dup, "emp": emp,
+                                         "floor": floor, "top": top}
                 return f"截断缩窗 {_fmt_span(win)}→{_fmt_span(new_win)}"
             st["kw_backfill"][kw] = {"cursor": start, "win": MIN_WINDOW_SEC,
-                                     "dup": dup, "floor": floor, "top": top}
+                                     "dup": dup, "emp": emp,
+                                     "floor": floor, "top": top}
             return f"最小窗仍顶满 {n_items}，有损前进"
         if n_new > 0:
-            dup = 0
+            dup, emp = 0, 0
         elif n_posts > 0:
             dup += 1
+            emp = 0
+        else:
+            emp += 1
         if dup >= DUP_STOP_WINDOWS:
             st["kw_backfill"][kw] = "done"
             st["kw_since"][kw] = top
             return f"回扫提前收工：连续 {dup} 窗有帖无新号"
+        if emp >= EMPTY_STOP_WINDOWS:
+            st["kw_backfill"][kw] = "done"
+            st["kw_since"][kw] = top
+            return f"回扫提前收工：连续 {emp} 窗无帖"
         if start <= floor:
             st["kw_backfill"][kw] = "done"
             st["kw_since"][kw] = top
             return "回扫完成"
         st["kw_backfill"][kw] = {"cursor": start,
                                  "win": min(win * 2, MAX_WINDOW_SEC),
-                                 "dup": dup, "floor": floor, "top": top}
+                                 "dup": dup, "emp": emp,
+                                 "floor": floor, "top": top}
         return None
     st["kw_since"][kw] = int(time.time()) - 3600  # 1 小时重叠带，抗索引延迟
     return None
