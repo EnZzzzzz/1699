@@ -9,8 +9,9 @@
 ```bash
 # ① FB 关键词直搜采号（memo23 + BD SERP 双源，常驻循环；
 #    2026-08-21 重写为「牧场」模型，与 X 同款：每词隔 3 天刺探一次
-#    （SERP 双引擎各 1 页 + memo23 最新 50 帖），有新号则放大 maxItems
-#    深翻最多 3 批，连续 3 次会话无新号自动退役）
+#    （SERP 双引擎各 1 页 + memo23 最新 50 帖），有新号则 maxItems 按 ×4
+#    倍增深翻（50→200→400 封顶，2026-08-22 起，挖到 +0 为止），
+#    连续 3 次会话无新号自动退役）
 nohup python3 scraper/fb_keyword_search.py --keywords-file .cache/fb_keywords_extra.txt \
   --memo23-daily-results 5000 >> .cache/fb_keyword_search.log 2>&1 &
 
@@ -19,7 +20,7 @@ nohup python3 scraper/fb_keyword_search.py --keywords-file .cache/fb_keywords_ex
 #    按 until_time 往历史翻页深挖（每批 50，封顶 20 批）直到某批 +0；
 #    连续 3 次会话无新号自动退役，无回扫/增量之分）
 nohup python3 scraper/x_keyword_search.py --keywords-file .cache/x_keywords_all.txt \
-  --per-round 5 --interval 600 --delay 3 --daily-results 5000 \
+  --per-round 5 --interval 600 --delay 3 --daily-results 80000 \
   >> .cache/x_keyword_search.log 2>&1 &
 
 # ③ WhatsApp 注册态查询（Apify，10 分钟一拍的常驻循环）
@@ -31,6 +32,7 @@ nohup bash -c 'while true; do python3 scraper/wa_check_apify.py \
 要点：
 - 词库：FB 用 `.cache/fb_keywords_extra.txt`（内置词之外的扩展词），X 用 `.cache/x_keywords_all.txt`；加词直接追加新行，**禁止 `sort -u` 重写词库**。
 - 状态/预算记 `.cache/fb_keyword_search_state.json` 与 `.cache/x_keyword_search_state.json`；日志在 `.cache/*.log`，排查先看日志尾部。
+- **深翻倍增策略（无游标数据源统一采用，2026-08-22 起）**：没有分页游标的数据源（如 memo23），深翻 = 用更大 maxItems 重跑整个 run、按交付结果计费（每批都重复交付前面所有帖），等步进加批会把钱烧在重复交付上。因此统一用「小批量刺探 + 出号倍增 + 单批封顶」：首批刺探 `PROBE_ITEMS`(50)，这批出号则下批 maxItems ×`DIG_MULTIPLIER`(4)（50→200→400），单批封顶 `DIG_MAX_ITEMS`(400)，任一批新号 +0 / 帖空 / 单批到顶即换词；热词单词会话最多交付 650 条 ≈ $1.24。参数集中在 `fb_keyword_search.py` 顶部（PROBE_ITEMS/DIG_MULTIPLIER/DIG_MAX_ITEMS），调策略只改这三个数。有真游标的源（X 的 until_time 翻页）不适用——每批都是新帖不重复计费，直接按批翻到 +0 为止。
 - Apify 402/403 欠费时脚本会记 `providers.quota_exhausted_at` 并自动轮换账号，30 天账期内跳过耗尽账号；充值到账后需清掉该标记（`UPDATE providers SET quota_exhausted_at=NULL WHERE kind='apify'`）再重启脚本。
 - 群线脚本（`fb_group_discover_bd.py` / `fb_group_bd.py`）**已封存，一律不启动**（单号成本是直搜的 10~40 倍，2026-08-19 用户拍板）。
 
@@ -41,18 +43,18 @@ bash platform/start.sh   # 一键启动后端（FastAPI，端口 8765）+ 前端
 bash platform/stop.sh    # 停止
 ```
 
-**巡检**：每小时跑一次，先同步费用（`curl -s -X POST http://127.0.0.1:8765/api/costs/sync`，Apify 真实账单 + Bright Data + 渠道估算入 `cost_records` 表）→ 查 3 个脚本进程是否存活 → 查近 1h/3h 逐小时新增（`scraper/inspect_stats.py`，只读）→ 查 fb_contacts 全量汇总（采集/已注册/待审核，按 post_url 域名分 FB/X，只读查询 `file:.cache/1688.db?mode=ro`）→ 对照 state JSON 日用量排除预算刹车 → 确认关键词枯竭才换词（`grep -qxF` 去重追加）并重启对应脚本生效。
+**巡检**：每小时跑一次，费用已自动同步（后端启动起每 30 分钟跑一轮 `costs.sync_all`，见 `app/main.py` 的 cost-sync 线程；要立刻刷新仍可手动 `curl -s -X POST http://127.0.0.1:8765/api/costs/sync`）→ 查 3 个脚本进程是否存活 → 查近 1h/3h 逐小时新增（`scraper/inspect_stats.py`，只读）→ 查 fb_contacts 全量汇总（采集/已注册/待审核，按 post_url 域名分 FB/X，只读查询 `file:.cache/1688.db?mode=ro`）→ 对照 state JSON 日用量排除预算刹车 → 确认关键词枯竭才换词（`grep -qxF` 去重追加）并重启对应脚本生效。
 
 换词触发条件：先对照表 4 排除预算刹车/额度耗尽等外部原因；确认是词库问题后——**某渠道连续 2 小时新增 < 30 条，即可尝试更换关键词**（不用等彻底枯竭）。词级判据用 `python3 scraper/kw_stats.py --aging`（只读）：脚本把每词每次查询的表现记在 state JSON 的 `kw_stats`（q/posts/new/last_new_at/zero_streak=连续新号+0 次数，2026-08-22 起累计，此前历史不回溯），报表按此推导状态——退役（X/FB 脚本自动判真枯竭，已移出轮转）、枯竭（>7 天无新号且查询 ≥5 次）、老化（3~7 天无新号或连续+0 ≥10）、活跃、观察（查询 <5 次）、未启用；**枯竭/老化词优先列入换词候选**，全量看 `kw_stats.py`、产量榜看 `--top N`。**词自动退役（X 2026-08-22 重写版起，FB 2026-08-21 重写版起同款）**：两脚本均为「牧场」模型——每词隔 3 天刺探一次，热词往深翻，连续 3 次会话无新号（≈9 天无产出）→ 自动记 `state.kw_retired` 并移出轮转（词库文件不动）；误判复活删 `kw_retired` 对应键，确认死词可手工从词库文件删行（`grep -vFx`，禁止 `sort -u` 重写）。
 
 **X 换词标准流程（2026-08-21 起）**：X 词枯竭的判据是「帖还能搜到但新号连续 +0」（历史存量已采完，增量供给趋零，跨源去重也会吃掉一部分）。换词时不要盲目加词，先用 **WebBridge 在用户真实浏览器（带 X 登录态）逐词验证**：
-1. 策展候选词（新品类 / 新语种 / 新形态，先对照 `.cache/x_keywords_all.txt` 排除已有词）。**品类词首选从 B2B 平台类目页批量采**：made-in-china 类目目录 `https://www.made-in-china.com/products-directory/`（英文、结构干净，钻进一级类目页抓二级类目名即可，2026-08-21 实测好用）；world.1688.com 会重定向死循环、alibaba.com 首页重 JS 加载慢且中文本地化，均不推荐；
-2. 用 WebBridge 打开 `https://x.com/search?q=<url编码词>&f=live`（Latest 排序），`evaluate` 抽取 `article` 数、`article time` 最新时间戳、帖正文里的手机号正则命中；
+1. 策展候选词（新品类 / 新语种 / 新形态，先对照 `.cache/x_keywords_all.txt` 排除已有词）。**品类词首选从 B2B 平台类目页批量采**：1688 国际站即阿里巴巴国际站 `https://www.alibaba.com/`（2026-08-22 用户确认官网，类目目录 `catalog.html`；首页重 JS，navigate 后等 6~10s 再 evaluate），或 made-in-china 类目目录 `https://www.made-in-china.com/products-directory/`（英文、结构干净，2026-08-21 实测好用）；world.1688.com 在真实浏览器里也 ERR_TOO_MANY_REDIRECTS 死循环（2026-08-22 实测），禁用；完整挖词流程见项目 skill `.kimi-code/skills/1688-keyword-mining/`；
+2. **禁止 URL 拼接关键词直链（2026-08-22 用户指定）**：用 WebBridge 打开 `https://x.com/` 首页 → snapshot 找搜索框（`data-testid="SearchBox_Search_Input"`）→ fill 输入关键词 → 回车 → 切 Latest 标签；然后 `evaluate` 抽取 `article` 数、`article time` 最新时间戳、帖正文里的手机号正则命中；全程控制频率（搜索间隔 5~15s 随机，连续操作 ≤15 分钟停手汇报），防风控封号；
 3. 收录标准：有结果且帖内含手机号/联系方式形态；只搜出无关帖或零结果的词弃用；
 4. 验证通过的词 `grep -qxF` 去重后追加到 `.cache/x_keywords_all.txt`（**禁止 `sort -u` 重写**），重启 X 脚本生效。
 注意：新词在 state 里无 `kw_stats` 记录即视为「到期」，重启后下一轮就会刺探它的最新 50 帖，无任何回扫成本；加词规模只需对照总预算（state 里 200000 行总上限，现行刺探模式每天顶格 ~92 次 × 50 帖 ≈ $0.7）。
 
-**X/FB 词库共享（2026-08-21 起）**：词库都存文件不在数据库——FB 为脚本内置 `KEYWORDS`（234 词）+ `.cache/fb_keywords_extra.txt` 追加，X 为内置 `X_KEYWORDS` + `.cache/x_keywords_all.txt` 覆盖。X 验证通过的新词应同步跑一遍 FB 验证（WebBridge 开 `https://www.facebook.com/search/posts/?q=<url编码词>`，统计正文中国手机号命中数 C，C>0 才收录，同 08-18 口径），通过的 `grep -qxF` 追加到 `.cache/fb_keywords_extra.txt` 并重启 FB 脚本；反向同理。两平台卖家人群重叠但帖源不同，跨平台复用验证过的词是低成本扩量手段。
+**X/FB 词库共享（2026-08-21 起）**：词库都存文件不在数据库——FB 为脚本内置 `KEYWORDS`（234 词）+ `.cache/fb_keywords_extra.txt` 追加，X 为内置 `X_KEYWORDS` + `.cache/x_keywords_all.txt` 覆盖。X 验证通过的新词应同步跑一遍 FB 验证（WebBridge 开 `https://www.facebook.com/` 首页 → 顶部搜索框输入关键词回车 → 切「帖子/Posts」标签，统计正文中国手机号命中数 C，C>0 才收录，同 08-18 口径；同样禁止拼 `?q=` 直链），通过的 `grep -qxF` 追加到 `.cache/fb_keywords_extra.txt` 并重启 FB 脚本；反向同理。两平台卖家人群重叠但帖源不同，跨平台复用验证过的词是低成本扩量手段。
 
 **巡检输出一律用表格，不用文字长段落**，固定四张表 + 一行结论：
 
@@ -119,7 +121,7 @@ bash platform/stop.sh    # 停止
 - 时间戳一律为**北京时间字符串**（`YYYY-MM-DD HH:MM:SS`），**不要再做 +8 偏移**（库里已是北京时区）。
 - SQLite 为 WAL 模式、爬虫可能正在写库：读连接用 `app.db.connect()`（只读，禁写）；写一律**短事务 + `PRAGMA busy_timeout = 30000`**。
 - 新增列/表走 `app.db.migrate()` 幂等迁移；涉及可能缺列的场景要**防御性探测**（参考 `api/data.py` 的 `PRAGMA table_info` 探测模式）。
-- `cost_records` 费用表（2026-08-21 起）：由 `POST /api/costs/sync`（`app/costs.py`）幂等 upsert；UNIQUE 键含 `service`，**估算行的 service 存 `''` 而非 NULL**（SQLite UNIQUE 中 NULL 互不相等，upsert 会失效）。估算单价常量与 scraper 写死值保持一致（来源行号见 `costs.py` 顶部注释），改价两边同步。
+- `cost_records` 费用表（2026-08-21 起）：由 `POST /api/costs/sync`（`app/costs.py`）幂等 upsert，另由后端 cost-sync 线程每 30 分钟自动触发（2026-08-22 起）；UNIQUE 键含 `service`，**估算行的 service 存 `''` 而非 NULL**（SQLite UNIQUE 中 NULL 互不相等，upsert 会失效）。估算单价常量与 scraper 写死值保持一致（来源行号见 `costs.py` 顶部注释），改价两边同步。特殊 service 行：`BALANCE`（BD 余额快照，date 为北京快照日）、`USAGE_CYCLE`（Apify 当前账期累计用量快照，detail 含套餐额度/月度上限；Apify 为订阅+后付费无充值余额，2026-08-22 起），两者供供应商页展示余额/用量。
 - `wa_registered` 语义：`1`=已注册、`0`=未注册、`NULL`=未查。**注意 NULL 不等价
   `wa_checked_at IS NULL`**：存在查了但结果为 NULL 的失败行（2026-08-20 实测约百条），
   「待查」口径一律用 `wa_registered IS NULL`。
@@ -127,6 +129,11 @@ bash platform/stop.sh    # 停止
   `fb_group_bd.is_cn_number(number, source)` 且 `bucket != 'overseas'`
   （intl/wa_me/wa_label_intl 形态剥壳后 11 位 1 开头的实为 +1 北美号，拒收；
   2026-08-20 已清库：overseas 406 条假中国号删除、0086 前缀 14 条救回 cn_uncertain）。
+- `mined_corpus` 语料表（2026-08-22 起）：1688 国际站（alibaba.com）挖词 skill
+  （`.kimi-code/skills/1688-keyword-mining/`）写入，**页面上看到的类目名/商品标题/链接全部入库**，
+  商品标题是后期重要语料。`kind` = category1/category/product，UNIQUE(source,kind,title,url)，
+  重复遇到只更新 `last_seen_at`。该 skill 流程：提取 → 清洗去重 → 语料入库 → 候选词直接追加
+  X/FB 词库（**不做 X/FB 人工验证**，差词靠词库日落机制自动退役，2026-08-22 用户拍板）。
 - 改后端代码后 uvicorn **不会自动 reload**，需重启才生效（重启见 `platform/start.sh`/`stop.sh`；注意 pidfile 记录的是父进程，杀端口占用进程时按实际监听 pid）。
 
 ## 5. 通用代码约定
