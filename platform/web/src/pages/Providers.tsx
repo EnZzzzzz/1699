@@ -16,6 +16,9 @@ import { ProviderFormDialog } from './providers/ProviderFormDialog'
 // 有代理通道概念的供应商类型；其他类型（如 apify 查号 API）不显示通道相关 UI
 const PROXY_KINDS = new Set(['qingguo'])
 
+// 支持卡片级费用同步的供应商类型（对应后端 /costs/sync?provider=...）
+const SYNCABLE_KINDS = new Set(['apify', 'brightdata'])
+
 // 配置值打码展示：长字符串保留前 4 位 + ****（仅卡片摘要，编辑表单仍回显明文）
 function maskConfigValue(value: unknown): string {
   const s = String(value ?? '')
@@ -90,6 +93,26 @@ function ProviderCard({ provider, onEdit, onChanged }: ProviderCardProps) {
   const [toggling, setToggling] = useState(false)
   const [probing, setProbing] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
+  const [syncing, setSyncing] = useState(false)
+
+  // 卡片级费用同步：只刷新该供应商的余额/账单（后端 /costs/sync?provider=...）
+  const handleSyncCosts = async () => {
+    setSyncing(true)
+    try {
+      const res = await api.syncProviderCosts(provider.kind, provider.name)
+      const block = res.brightdata ?? res.apify
+      if (block && block.ok === false) {
+        toast.warning(`「${provider.name}」费用同步失败，详见后端日志`)
+      } else {
+        toast.success(`「${provider.name}」费用已同步`)
+      }
+      onChanged()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '费用同步失败')
+    } finally {
+      setSyncing(false)
+    }
+  }
 
   const handleToggle = async (next: boolean) => {
     setToggling(true)
@@ -147,6 +170,14 @@ function ProviderCard({ provider, onEdit, onChanged }: ProviderCardProps) {
               {isProxy
                 ? `类型 ${provider.kind} · 通道 ${provider.channels.length} 条（可用 ${okCount}）`
                 : `类型 ${provider.kind}`}
+              {provider.billing &&
+                ` · ${provider.billing.label} $${provider.billing.usd.toFixed(2)}${
+                  provider.billing.consumed != null
+                    ? ` · 本账期消耗 $${provider.billing.consumed.toFixed(2)}`
+                    : ''
+                }${
+                  provider.billing.limit ? ` / 上限 $${provider.billing.limit}` : ''
+                }${provider.billing.as_of ? `（截至 ${provider.billing.as_of}）` : ''}`}
             </p>
           </div>
         </div>
@@ -165,6 +196,16 @@ function ProviderCard({ provider, onEdit, onChanged }: ProviderCardProps) {
             )}
           </div>
           <div className="flex items-center gap-2">
+            {SYNCABLE_KINDS.has(provider.kind) && (
+              <Button variant="outline" size="sm" onClick={handleSyncCosts} disabled={syncing}>
+                {syncing ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="mr-2 h-4 w-4" />
+                )}
+                {syncing ? '同步中…' : provider.kind === 'brightdata' ? '同步余额' : '同步用量'}
+              </Button>
+            )}
             <Button variant="outline" size="sm" onClick={() => onEdit(provider)}>
               <Pencil className="mr-2 h-4 w-4" />
               编辑

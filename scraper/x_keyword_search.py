@@ -7,6 +7,9 @@
 
   每个词到期（距上次采集 ≥ SCAN_INTERVAL_DAYS 天，默认 3 天）就开一次
   采集会话：先刺探最新 PROBE_ITEMS(50) 帖（Latest 排序）：
+  - 实际搜索词由 x_query() 生成：词本身不含联系方式形态（whatsapp/
+    +86/wechat/微信/telegram/skype 等）的纯品类词自动拼 "+86 " 前缀
+    （2026-08-22 实测：纯品类直搜 50 帖 0 号，拼 +86 后 11 帖 5 号）；
   - 首批 50 帖挖到新号 → 按 until_time 往历史翻页续挖（每批 50），
     直到某批新号 +0 / 帖空 / 批数到顶 MAX_BATCHES_PER_WORD(20) 才换词；
   - 整会话一个新号都没有 → 连击 +1；
@@ -69,8 +72,26 @@ STATE_PATH = REPO_ROOT / ".cache" / "x_keyword_search_state.json"
 # ---------------------------------------------------------------- 策略参数
 SCAN_INTERVAL_SEC = 3 * 86400  # 每词最小采集间隔：给词 3 天长新帖
 RETIRE_STRIKES = 3             # 连续 3 次（≈9 天）无新号 → 退役
+FIRST_SESSION_MIN_POSTS = 10   # 首次会话帖数低于此值且无新号 → 无潜力新词，直接退役（不等连击）
 PROBE_ITEMS = 50               # 每批取 50 帖：首批刺探，有新号就往历史翻页
 MAX_BATCHES_PER_WORD = 20      # 单词单次会话最多 20 批（≈1000 帖 ≈ $0.15 封顶）
+
+# ---------------------------------------------------------------- 查询构造
+# 联系方式形态标记：词里已含这些形态的原样搜；纯品类词查询时自动拼
+# "+86 " 前缀（2026-08-22 实测：纯品类词直搜 50 帖 0 号；拼 +86 后
+# 11 帖 5 号、拼 whatsapp +86 后 4 帖 4 号，见 .cache/x_combo_test.py）
+CONTACT_MARKERS = ("whatsapp", "+86", "0086", "wechat", "微信",
+                   "telegram", "skype", "viber", "wa.me", "wa.link", "t.me")
+
+
+def x_query(kw: str) -> str:
+    """词库词 → 实际搜索词：纯品类词自动拼 '+86 ' 前缀，其余原样透传
+    （可带 X 高级搜索语法）。kw_stats 始终按原词记账。"""
+    low = kw.lower()
+    if any(m in low for m in CONTACT_MARKERS):
+        return kw
+    return f"+86 {kw}"
+
 
 # ---------------------------------------------------------------- X 专属词库
 # 内置关键词库（2026-08-18 全量实测策展版）：经 WebBridge 真实浏览器逐词
@@ -149,7 +170,8 @@ def load_state() -> dict:
 def record_kw_stat(st: dict, kw: str, n_posts: int, n_new: int) -> None:
     """每词每次采集后记账：累计查询/帖/新号，维护 last_new_at 与连击
     （zero_streak=连续无新号次数）；连击满 RETIRE_STRIKES 移入
-    kw_retired 退出轮转。时间戳为北京时间字符串。"""
+    kw_retired 退出轮转；首次会话帖数过少且无新号（无潜力新词）
+    直接退役不等连击。时间戳为北京时间字符串。"""
     now = time.strftime("%Y-%m-%d %H:%M:%S")
     s = st["kw_stats"].setdefault(kw, {"q": 0, "posts": 0, "new": 0,
                                        "first_at": now, "last_q_at": None,
@@ -164,7 +186,13 @@ def record_kw_stat(st: dict, kw: str, n_posts: int, n_new: int) -> None:
         return
     s["zero_streak"] += 1
     retired = st.setdefault("kw_retired", {})
-    if s["zero_streak"] >= RETIRE_STRIKES and kw not in retired:
+    if s["q"] == 1 and n_posts < FIRST_SESSION_MIN_POSTS and kw not in retired:
+        retired[kw] = {"at": now, "strikes": s["zero_streak"], "q": s["q"],
+                       "reason": "first_session_few_posts",
+                       "posts": n_posts}
+        log(f"  ☠「{kw}」首次会话仅 {n_posts} 帖且无新号，"
+            f"判定无潜力新词，直接退役")
+    elif s["zero_streak"] >= RETIRE_STRIKES and kw not in retired:
         retired[kw] = {"at": now, "strikes": s["zero_streak"], "q": s["q"]}
         log(f"  ☠「{kw}」连续 {s['zero_streak']} 次无新号"
             f"（≈{s['zero_streak'] * SCAN_INTERVAL_SEC // 86400} 天无产出），"
@@ -373,11 +401,14 @@ def dig_word(db, accounts: list, kw: str, args, st: dict,
              usage: dict, stats: dict) -> bool | None:
     """到期词的完整采集会话：先刺探最新 50 帖；挖到新号就按 until_time
     往历史翻页续挖（每批 50），直到某批新号 +0 / 帖空 / 批数到顶才换词。
+    实际搜索词由 x_query(kw) 生成（纯品类词自动拼 +86 前缀）。
     返回 True=会话完成（已记账），None=首批 run 失败（不记账，下轮重试）。
     会话按整体记账：有新号则连击清零，整会话 +0 才记一击。"""
     seen_urls: set[str] = set()
     until: int | None = None
     n_posts = n_new = 0
+    base_q = x_query(kw)
+    disp = kw if base_q == kw else f"{kw} → {base_q}"
     for batch_no in range(1, MAX_BATCHES_PER_WORD + 1):
         if not accounts:
             raise AccountError("全部 apify 账号额度耗尽")
@@ -388,7 +419,7 @@ def dig_word(db, accounts: list, kw: str, args, st: dict,
             if st["total_results"] >= args.total_rows_cap:
                 stats["budget_out"] = True
                 break
-        term = f"{kw} until_time:{until}" if until else kw
+        term = f"{base_q} until_time:{until}" if until else base_q
         items = x_search(db.conn, accounts, term, PROBE_ITEMS)
         if items is None:  # 首批失败整词不算；翻页中断则已采部分照记
             return None if batch_no == 1 else True
@@ -401,8 +432,9 @@ def dig_word(db, accounts: list, kw: str, args, st: dict,
         stats["new"] += n
         n_posts += p
         n_new += n
+        save_state(st)  # 每批落盘：重启后用量/游标不漂移
         tag = "刺探" if batch_no == 1 else f"深翻{batch_no}"
-        log(f"  [x][{tag}]「{kw}」: 帖 {p}，新号 +{n}"
+        log(f"  [x][{tag}]「{disp}」: 帖 {p}，新号 +{n}"
             f"（当日 {usage['x_results']}/{args.daily_results}）")
         if n == 0 or not items:
             break  # 这批没挖到新号（或帖空）：挖干了，换下一个词
@@ -429,6 +461,7 @@ def run_round(db, accounts: list, keywords: list[str], args, st: dict) -> dict:
     batch = pick_due(st, keywords, args.per_round)
     if not batch:
         return stats
+    save_state(st)  # 游标先落盘：中途重启从持久化的断点继续，不跳词
 
     for kw in batch:
         if usage["x_results"] >= args.daily_results:

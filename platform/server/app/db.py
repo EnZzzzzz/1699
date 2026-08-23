@@ -114,6 +114,13 @@ def migrate() -> None:
             "detail_json TEXT, "
             "synced_at TEXT NOT NULL, "
             "UNIQUE(date, provider, channel, service, source))")
+        # 采集脚本参数配置表（/scripts 页调参落库，scripts.py seed 默认值）：
+        # name=fb/x/wa，params 为 JSON（{"memo23_daily_results":10000} 等）
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS script_configs ("
+            "name TEXT PRIMARY KEY, "
+            "params TEXT NOT NULL DEFAULT '{}', "
+            "updated_at TEXT)")
         # P4：work_items 批次索引（生产库表由 fetcher 建，平台只补索引不建表；
         # 探测式——表不存在则跳过，防御性）
         tables = {r[0] for r in conn.execute(

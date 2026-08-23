@@ -87,6 +87,18 @@ export interface Provider {
   enabled: number
   config: Record<string, unknown>
   channels: ProviderChannel[]
+  billing?: ProviderBilling | null
+}
+
+// 供应商费用侧信息（来自 cost_records real 行）：brightdata=可用余额快照
+// （consumed 为本账期消耗，两者均按 config.billing_offset 校准为官方后台口径），
+// apify=本账期已用（limit 为套餐月度硬上限，无快照时退化为本月已用）
+export interface ProviderBilling {
+  label: string
+  usd: number
+  as_of: string | null
+  limit?: number | null
+  consumed?: number | null
 }
 
 export interface CreateProviderRequest {
@@ -125,6 +137,43 @@ export interface ProviderConfigSchemaResponse {
   tunnel_cache_path?: string
   tunnel_cache_exists?: boolean
   tunnel_cache_structure?: Record<string, unknown> | null
+}
+
+// ---------- 采集脚本管理（/scripts） ----------
+
+export type ScriptName = 'fb' | 'x' | 'wa'
+
+// 各脚本额度/产量统计（键按脚本类型出现，缺数据为 null，前端展示 —）
+export interface ScriptStats {
+  memo23_used?: number | null
+  memo23_limit?: number | null
+  serp_queries?: number | null
+  x_used?: number | null
+  x_limit?: number | null
+  total_results?: number | null
+  total_cap?: number | null
+  collected_today?: number | null
+  checked_today?: number | null
+  backlog?: number | null
+}
+
+export interface ScriptInfo {
+  name: ScriptName
+  title: string
+  log_file: string
+  running: boolean
+  pid: number | null
+  started_at: string | null
+  uptime: string | null
+  params: Record<string, number>
+  stats: ScriptStats
+}
+
+// 日志增量 tail 响应：content 为新增内容，offset 为下次续传位置
+export interface ScriptLogChunk {
+  content: string
+  offset: number
+  missing?: boolean
 }
 
 // ---------- 接口方法 ----------
@@ -175,6 +224,33 @@ export const api = {
   providerConfigSchema: (kind?: string) =>
     request<ProviderConfigSchemaResponse>(
       `/providers/config-schema${kind ? `?kind=${encodeURIComponent(kind)}` : ''}`),
+  // 手动触发单个供应商的费用同步（brightdata=余额快照，apify=该账号账单/用量）
+  syncProviderCosts: (kind: string, name: string) =>
+    request<{ synced_at: string; brightdata?: { ok: boolean }; apify?: { ok: boolean } }>(
+      `/costs/sync?provider=${encodeURIComponent(kind)}&account=${encodeURIComponent(name)}`,
+      { method: 'POST' }),
+  // ---------- 采集脚本管理 ----------
+  scriptsList: () => request<ScriptInfo[]>('/scripts'),
+  scriptStart: (name: ScriptName, params?: Record<string, number>) =>
+    request<{ pid: number }>(`/scripts/${name}/start`, {
+      method: 'POST',
+      body: JSON.stringify(params ? { params } : {}),
+    }),
+  scriptStop: (name: ScriptName) =>
+    request<{ stopped: number }>(`/scripts/${name}/stop`, { method: 'POST' }),
+  scriptRestart: (name: ScriptName, params?: Record<string, number>) =>
+    request<{ pid: number }>(`/scripts/${name}/restart`, {
+      method: 'POST',
+      body: JSON.stringify(params ? { params } : {}),
+    }),
+  // 保存参数（仅落库，重启后生效）
+  scriptSaveParams: (name: ScriptName, params: Record<string, number>) =>
+    request<{ name: string; params: Record<string, number> }>(`/scripts/${name}/params`, {
+      method: 'POST',
+      body: JSON.stringify({ params }),
+    }),
+  scriptLogs: (name: ScriptName, offset: number) =>
+    request<ScriptLogChunk>(`/scripts/${name}/logs?offset=${offset}`),
 }
 
 // ---------- 通用数据加载 Hook（加载态 / 错误态 / 自动刷新） ----------

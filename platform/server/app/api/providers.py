@@ -11,6 +11,7 @@
 """
 
 import json
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
@@ -53,6 +54,83 @@ class ProviderPatch(BaseModel):
 
 # ==================== 读取 ====================
 
+def _bd_offset(config) -> float:
+    """brightdata provider config 里的 billing_offset（试用额度等抵扣差值）。
+
+    官方 /balance API 的 balance 只扣待结算费用，不含试用额度（trial credit）
+    覆盖的用量，与后台 Billing 页 Balance 差一个固定抵扣额；该差值手工校准后
+    存 config.billing_offset（表单保存后为字符串，需容忍解析）。新账期或新增
+    赠送额度后需重新校准。非法值按 0 处理。
+    """
+    try:
+        return float((config or {}).get("billing_offset") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _provider_billing(conn) -> dict:
+    """从 cost_records real 行取各供应商费用侧信息，键为 (kind, name)。
+
+    - brightdata：最新一条 BALANCE 快照（detail_json 含 pending_costs），
+      按 config.billing_offset 校准为与官方后台一致的两个口径：
+      可用余额 = balance − offset（对应后台 Balance），
+      本账期消耗 = pending_costs + offset（对应后台 Consumed）
+    - apify：订阅+后付费无余额概念，取最新 USAGE_CYCLE 快照（当前账期累计
+      用量 + detail 里的月度上限）；无快照时退化为本月真实账单累计
+      （date 为 Apify 原始 UTC 账单日期，月界按北京月份近似）
+    cost_records 表不存在（migrate 未跑）时返回空。
+    """
+    tables = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    if "cost_records" not in tables:
+        return {}
+    result = {}
+    # as_of 用 synced_at（北京时间，精确到秒），反映快照/数据的实际同步时刻
+    row = conn.execute(
+        "SELECT usd, synced_at, detail_json FROM cost_records"
+        " WHERE provider='brightdata' AND service='BALANCE' AND source='real'"
+        " ORDER BY date DESC, synced_at DESC LIMIT 1").fetchone()
+    if row:
+        pending = (_parse_json(row["detail_json"]) or {}).get("pending_costs")
+        for name, cfg in conn.execute(
+                "SELECT name, config_json FROM providers"
+                " WHERE kind='brightdata'").fetchall():
+            offset = _bd_offset(_parse_json(cfg))
+            info = {
+                "label": "可用余额",
+                "usd": round(row["usd"] - offset, 2),
+                "as_of": row["synced_at"],
+            }
+            if pending is not None:
+                info["consumed"] = round(float(pending) + offset, 2)
+            result[("brightdata", name)] = info
+    month0 = time.strftime("%Y-%m-01")
+    for name, in conn.execute(
+            "SELECT name FROM providers WHERE kind='apify'").fetchall():
+        snap = conn.execute(
+            "SELECT usd, synced_at, detail_json FROM cost_records"
+            " WHERE provider='apify' AND channel=? AND service='USAGE_CYCLE'"
+            " AND source='real' ORDER BY date DESC, synced_at DESC LIMIT 1",
+            (f"account:{name}",)).fetchone()
+        if snap:
+            detail = _parse_json(snap["detail_json"]) or {}
+            result[("apify", name)] = {
+                "label": "本账期已用", "usd": snap["usd"],
+                "as_of": snap["synced_at"],
+                "limit": detail.get("maxMonthlyUsageUsd")}
+            continue
+        agg = conn.execute(
+            "SELECT SUM(usd), MAX(synced_at) FROM cost_records"
+            " WHERE provider='apify' AND channel=? AND source='real'"
+            " AND date >= ? AND service != 'USAGE_CYCLE'",
+            (f"account:{name}", month0)).fetchone()
+        if agg and agg["SUM(usd)"] is not None:
+            result[("apify", name)] = {
+                "label": "本月已用", "usd": agg["SUM(usd)"],
+                "as_of": agg["MAX(synced_at)"]}
+    return result
+
+
 @router.get("")
 def list_providers():
     with connect() as conn:
@@ -60,6 +138,7 @@ def list_providers():
             "SELECT * FROM providers ORDER BY id").fetchall()
         channels = conn.execute(
             "SELECT * FROM proxy_channels ORDER BY provider_id, id").fetchall()
+        billing = _provider_billing(conn)
 
     by_provider = {}
     for ch in channels:
@@ -70,6 +149,7 @@ def list_providers():
         item = dict(p)
         item["config_json"] = _parse_json(item.get("config_json"))
         item["proxy_channels"] = by_provider.get(p["id"], [])
+        item["billing"] = billing.get((p["kind"], p["name"]))
         result.append(item)
     return result
 

@@ -11,14 +11,16 @@
 #    2026-08-21 重写为「牧场」模型，与 X 同款：每词隔 3 天刺探一次
 #    （SERP 双引擎各 1 页 + memo23 最新 50 帖），有新号则 maxItems 按 ×4
 #    倍增深翻（50→200→400 封顶，2026-08-22 起，挖到 +0 为止），
-#    连续 3 次会话无新号自动退役）
+#    连续 3 次会话无新号自动退役；首次会话帖 <10 且无新号
+#    直接退役不等连击，2026-08-23 起）
 nohup python3 scraper/fb_keyword_search.py --keywords-file .cache/fb_keywords_extra.txt \
   --memo23-daily-results 5000 >> .cache/fb_keyword_search.log 2>&1 &
 
 # ② X 关键词直搜采号（xquik/x-tweet-scraper 单源，常驻循环，10 分钟一轮；
 #    2026-08-22 重写为「牧场」模型：每词隔 3 天刺探一次最新 50 帖，有新号
 #    按 until_time 往历史翻页深挖（每批 50，封顶 20 批）直到某批 +0；
-#    连续 3 次会话无新号自动退役，无回扫/增量之分）
+#    连续 3 次会话无新号自动退役，首次会话帖 <10 且无新号直接退役，
+#    无回扫/增量之分）
 nohup python3 scraper/x_keyword_search.py --keywords-file .cache/x_keywords_all.txt \
   --per-round 5 --interval 600 --delay 3 --daily-results 80000 \
   >> .cache/x_keyword_search.log 2>&1 &
@@ -43,9 +45,11 @@ bash platform/start.sh   # 一键启动后端（FastAPI，端口 8765）+ 前端
 bash platform/stop.sh    # 停止
 ```
 
-**巡检**：每小时跑一次，费用已自动同步（后端启动起每 30 分钟跑一轮 `costs.sync_all`，见 `app/main.py` 的 cost-sync 线程；要立刻刷新仍可手动 `curl -s -X POST http://127.0.0.1:8765/api/costs/sync`）→ 查 3 个脚本进程是否存活 → 查近 1h/3h 逐小时新增（`scraper/inspect_stats.py`，只读）→ 查 fb_contacts 全量汇总（采集/已注册/待审核，按 post_url 域名分 FB/X，只读查询 `file:.cache/1688.db?mode=ro`）→ 对照 state JSON 日用量排除预算刹车 → 确认关键词枯竭才换词（`grep -qxF` 去重追加）并重启对应脚本生效。
+三个采集脚本也可在管理系统 `/scripts` 页启停、调参与看实时日志（2026-08-23 起；调参仅落库 `script_configs`，重启进程后才生效）。
 
-换词触发条件：先对照表 4 排除预算刹车/额度耗尽等外部原因；确认是词库问题后——**某渠道连续 2 小时新增 < 30 条，即可尝试更换关键词**（不用等彻底枯竭）。词级判据用 `python3 scraper/kw_stats.py --aging`（只读）：脚本把每词每次查询的表现记在 state JSON 的 `kw_stats`（q/posts/new/last_new_at/zero_streak=连续新号+0 次数，2026-08-22 起累计，此前历史不回溯），报表按此推导状态——退役（X/FB 脚本自动判真枯竭，已移出轮转）、枯竭（>7 天无新号且查询 ≥5 次）、老化（3~7 天无新号或连续+0 ≥10）、活跃、观察（查询 <5 次）、未启用；**枯竭/老化词优先列入换词候选**，全量看 `kw_stats.py`、产量榜看 `--top N`。**词自动退役（X 2026-08-22 重写版起，FB 2026-08-21 重写版起同款）**：两脚本均为「牧场」模型——每词隔 3 天刺探一次，热词往深翻，连续 3 次会话无新号（≈9 天无产出）→ 自动记 `state.kw_retired` 并移出轮转（词库文件不动）；误判复活删 `kw_retired` 对应键，确认死词可手工从词库文件删行（`grep -vFx`，禁止 `sort -u` 重写）。
+**巡检**：每小时跑一次，费用已自动同步（后端启动起每 30 分钟跑一轮 `costs.sync_all`，见 `app/main.py` 的 cost-sync 线程；要立刻刷新仍可手动 `curl -s -X POST http://127.0.0.1:8765/api/costs/sync`，或点供应商页卡片上的「同步余额/同步用量」按钮（按供应商单独同步，走 `/api/costs/sync?provider=<kind>&account=<name>`））→ 查 3 个脚本进程是否存活 → 查近 1h/3h 逐小时新增（`scraper/inspect_stats.py`，只读）→ 查 fb_contacts 全量汇总（采集/已注册/待审核，按 post_url 域名分 FB/X，只读查询 `file:.cache/1688.db?mode=ro`）→ 对照 state JSON 日用量排除预算刹车 → 确认关键词枯竭才换词（`grep -qxF` 去重追加）并重启对应脚本生效。
+
+换词触发条件：先对照表 4 排除预算刹车/额度耗尽等外部原因；确认是词库问题后——**某渠道连续 2 小时新增 < 30 条，即可尝试更换关键词**（不用等彻底枯竭）。词级判据用 `python3 scraper/kw_stats.py --aging`（只读）：脚本把每词每次查询的表现记在 state JSON 的 `kw_stats`（q/posts/new/last_new_at/zero_streak=连续新号+0 次数，2026-08-22 起累计，此前历史不回溯），报表按此推导状态——退役（X/FB 脚本自动判真枯竭，已移出轮转）、枯竭（>7 天无新号且查询 ≥5 次）、老化（3~7 天无新号或连续+0 ≥10）、活跃、观察（查询 <5 次）、未启用；**枯竭/老化词优先列入换词候选**，全量看 `kw_stats.py`、产量榜看 `--top N`。**词自动退役（X 2026-08-22 重写版起，FB 2026-08-21 重写版起同款）**：两脚本均为「牧场」模型——每词隔 3 天刺探一次，热词往深翻，连续 3 次会话无新号（≈9 天无产出）→ 自动记 `state.kw_retired` 并移出轮转（词库文件不动）；**首次会话帖数 <10 且无新号的词判定无潜力，首次即退役不等连击**（`FIRST_SESSION_MIN_POSTS`，2026-08-23 起，kw_retired 里带 `reason: first_session_few_posts`）；误判复活删 `kw_retired` 对应键，确认死词可手工从词库文件删行（`grep -vFx`，禁止 `sort -u` 重写）。
 
 **X 换词标准流程（2026-08-21 起）**：X 词枯竭的判据是「帖还能搜到但新号连续 +0」（历史存量已采完，增量供给趋零，跨源去重也会吃掉一部分）。换词时不要盲目加词，先用 **WebBridge 在用户真实浏览器（带 X 登录态）逐词验证**：
 1. 策展候选词（新品类 / 新语种 / 新形态，先对照 `.cache/x_keywords_all.txt` 排除已有词）。**品类词首选从 B2B 平台类目页批量采**：1688 国际站即阿里巴巴国际站 `https://www.alibaba.com/`（2026-08-22 用户确认官网，类目目录 `catalog.html`；首页重 JS，navigate 后等 6~10s 再 evaluate），或 made-in-china 类目目录 `https://www.made-in-china.com/products-directory/`（英文、结构干净，2026-08-21 实测好用）；world.1688.com 在真实浏览器里也 ERR_TOO_MANY_REDIRECTS 死循环（2026-08-22 实测），禁用；完整挖词流程见项目 skill `.kimi-code/skills/1688-keyword-mining/`；
@@ -121,7 +125,7 @@ bash platform/stop.sh    # 停止
 - 时间戳一律为**北京时间字符串**（`YYYY-MM-DD HH:MM:SS`），**不要再做 +8 偏移**（库里已是北京时区）。
 - SQLite 为 WAL 模式、爬虫可能正在写库：读连接用 `app.db.connect()`（只读，禁写）；写一律**短事务 + `PRAGMA busy_timeout = 30000`**。
 - 新增列/表走 `app.db.migrate()` 幂等迁移；涉及可能缺列的场景要**防御性探测**（参考 `api/data.py` 的 `PRAGMA table_info` 探测模式）。
-- `cost_records` 费用表（2026-08-21 起）：由 `POST /api/costs/sync`（`app/costs.py`）幂等 upsert，另由后端 cost-sync 线程每 30 分钟自动触发（2026-08-22 起）；UNIQUE 键含 `service`，**估算行的 service 存 `''` 而非 NULL**（SQLite UNIQUE 中 NULL 互不相等，upsert 会失效）。估算单价常量与 scraper 写死值保持一致（来源行号见 `costs.py` 顶部注释），改价两边同步。特殊 service 行：`BALANCE`（BD 余额快照，date 为北京快照日）、`USAGE_CYCLE`（Apify 当前账期累计用量快照，detail 含套餐额度/月度上限；Apify 为订阅+后付费无充值余额，2026-08-22 起），两者供供应商页展示余额/用量。
+- `cost_records` 费用表（2026-08-21 起）：由 `POST /api/costs/sync`（`app/costs.py`）幂等 upsert，另由后端 cost-sync 线程每 30 分钟自动触发（2026-08-22 起）；UNIQUE 键含 `service`，**估算行的 service 存 `''` 而非 NULL**（SQLite UNIQUE 中 NULL 互不相等，upsert 会失效）。估算单价常量与 scraper 写死值保持一致（来源行号见 `costs.py` 顶部注释），改价两边同步。特殊 service 行：`BALANCE`（BD 余额快照，date 为北京快照日，存官方 API 原始值）、`USAGE_CYCLE`（Apify 当前账期累计用量快照，detail 含套餐额度/月度上限；Apify 为订阅+后付费无充值余额，2026-08-22 起），两者供供应商页展示余额/用量。**BD 余额口径**（2026-08-22 起）：官方 `/balance` API 的 `balance` 只扣待结算费用（`pending_costs`），不含 trial credit 抵扣的用量，与后台 Billing 页 Balance 差一个固定抵扣额；校准差值存 provider `config.billing_offset`（当前 7.57，源自 8/10 trial credit $7.50 抵扣），供应商页展示「可用余额 = balance − offset、本账期消耗 = pending_costs + offset」（`api/providers.py` `_bd_offset`），与官方后台一致；**新账期（9/1）或新增赠送额度后需重新校准/清零该 offset**。
 - `wa_registered` 语义：`1`=已注册、`0`=未注册、`NULL`=未查。**注意 NULL 不等价
   `wa_checked_at IS NULL`**：存在查了但结果为 NULL 的失败行（2026-08-20 实测约百条），
   「待查」口径一律用 `wa_registered IS NULL`。
@@ -134,6 +138,11 @@ bash platform/stop.sh    # 停止
   商品标题是后期重要语料。`kind` = category1/category/product，UNIQUE(source,kind,title,url)，
   重复遇到只更新 `last_seen_at`。该 skill 流程：提取 → 清洗去重 → 语料入库 → 候选词直接追加
   X/FB 词库（**不做 X/FB 人工验证**，差词靠词库日落机制自动退役，2026-08-22 用户拍板）。
+- `script_configs` 表（2026-08-23 起）：`/scripts` 页采集脚本启动参数配置，`name` 主键
+  （fb/x/wa），`params` 为 JSON（fb `memo23_daily_results` / x `daily_results` / wa `min_batch`），
+  由 `app/scripts.py` seed 默认值、`POST /api/scripts/{name}/params` upsert；脚本只认启动参数，
+  改配置需重启进程才生效。进程探测用 `pgrep -f` 特征匹配（不写 pidfile），WA 停止时 bash
+  循环壳与 python 子进程一起杀。
 - 改后端代码后 uvicorn **不会自动 reload**，需重启才生效（重启见 `platform/start.sh`/`stop.sh`；注意 pidfile 记录的是父进程，杀端口占用进程时按实际监听 pid）。
 
 ## 5. 通用代码约定

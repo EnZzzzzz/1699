@@ -1,5 +1,5 @@
 import { NavLink, Outlet } from 'react-router-dom'
-import { LayoutDashboard, ServerCog, Database, Sun, Moon, Monitor } from 'lucide-react'
+import { LayoutDashboard, ServerCog, Database, Sun, Moon, Monitor, TerminalSquare } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useTheme, type Theme } from '@/lib/theme'
 import { Toaster } from '@/components/ui/sonner'
@@ -8,6 +8,7 @@ const navItems = [
   { to: '/', label: '整体看板', icon: LayoutDashboard, end: true },
   { to: '/data', label: '数据浏览', icon: Database, end: false },
   { to: '/providers', label: '供应商', icon: ServerCog, end: false },
+  { to: '/scripts', label: '采集脚本', icon: TerminalSquare, end: false },
 ]
 
 const themeMeta: Record<Theme, { label: string; icon: typeof Sun }> = {

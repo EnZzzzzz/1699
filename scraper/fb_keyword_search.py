@@ -29,6 +29,10 @@
   num=100）：查询词自动补 site:facebook.com 前缀，摘要预览 parse_post
   挖中国号落 fb_contacts（帖/主页链接都算，群链接派生 group_id）。
 
+查询构造：词里已含 whatsapp/+86/微信/wechat 等联系形态（含 vx/ws 货代缩写）
+的原样搜；纯品类词自动拼前缀（memo23 拼 "whatsapp "、SERP 拼 "+86 "，
+2026-08-22 与 X 同款，纯品类词直搜正文无联系方式，实测新号 +0）。
+
 跨源去重：number 列有 UNIQUE 约束（save_fb_contacts 走 INSERT OR IGNORE），
 但同号可能一边存 86 前缀形态、一边存裸 11 位，精确匹配挡不住，故落库前
 先 SELECT 查重（后 11 位对齐，与 X 脚本同口径），命中即跳过——深挖的
@@ -78,6 +82,7 @@ STATE_PATH = REPO_ROOT / ".cache" / "fb_keyword_search_state.json"
 # ---------------------------------------------------------------- 策略参数
 SCAN_INTERVAL_SEC = 3 * 86400  # 每词最小采集间隔：给词 3 天长新帖
 RETIRE_STRIKES = 3             # 连续 3 次（≈9 天）会话无新号 → 退役
+FIRST_SESSION_MIN_POSTS = 10   # 首次会话帖数低于此值且无新号 → 无潜力新词，直接退役（不等连击）
 PROBE_ITEMS = 50               # memo23 首批刺探帖数
 DIG_MULTIPLIER = 4             # 深翻倍增倍率：这批出号，下批 maxItems ×4
 DIG_MAX_ITEMS = 400            # 单批 maxItems 上限（memo23 无游标，同 maxItems
@@ -218,7 +223,8 @@ def load_state() -> dict:
 def record_kw_stat(st: dict, kw: str, n_posts: int, n_new: int) -> None:
     """每词每次会话后记账（SERP+memo23 双源合并）：累计查询/帖/新号，
     维护 last_new_at 与连击（zero_streak=连续无新号会话数）；连击满
-    RETIRE_STRIKES 移入 kw_retired 退出轮转。时间戳为北京时间字符串。"""
+    RETIRE_STRIKES 移入 kw_retired 退出轮转；首次会话帖数过少且无新号
+    （无潜力新词）直接退役不等连击。时间戳为北京时间字符串。"""
     now = time.strftime("%Y-%m-%d %H:%M:%S")
     s = st["kw_stats"].setdefault(kw, {"q": 0, "posts": 0, "new": 0,
                                        "first_at": now, "last_q_at": None,
@@ -233,7 +239,13 @@ def record_kw_stat(st: dict, kw: str, n_posts: int, n_new: int) -> None:
         return
     s["zero_streak"] += 1
     retired = st.setdefault("kw_retired", {})
-    if s["zero_streak"] >= RETIRE_STRIKES and kw not in retired:
+    if s["q"] == 1 and n_posts < FIRST_SESSION_MIN_POSTS and kw not in retired:
+        retired[kw] = {"at": now, "strikes": s["zero_streak"], "q": s["q"],
+                       "reason": "first_session_few_posts",
+                       "posts": n_posts}
+        log(f"  ☠「{kw}」首次会话仅 {n_posts} 帖且无新号，"
+            f"判定无潜力新词，直接退役")
+    elif s["zero_streak"] >= RETIRE_STRIKES and kw not in retired:
         retired[kw] = {"at": now, "strikes": s["zero_streak"], "q": s["q"]}
         log(f"  ☠「{kw}」连续 {s['zero_streak']} 次会话无新号"
             f"（≈{s['zero_streak'] * SCAN_INTERVAL_SEC // 86400} 天无产出），"
@@ -320,6 +332,26 @@ class BDClient:
                 log(f"  scrape 异常[{engine}]「{query}」（第{attempt + 1}/3次）: {e}")
                 time.sleep(min(2 ** attempt * 5, 20))
         return []
+
+
+# ---------------------------------------------------------------- 查询构造
+# 联系方式形态标记：词里已含这些形态的原样搜；纯品类词查询时自动拼联系
+# 前缀（memo23 拼 "whatsapp "、SERP 拼 "+86 "），与 X 脚本同款
+# （2026-08-22 实测：纯品类词直搜帖多但正文无联系方式，新号 +0）
+CONTACT_MARKERS = ("whatsapp", "+86", "0086", "wechat", "微信",
+                   "telegram", "skype", "viber", "wa.me", "wa.link", "t.me")
+CONTACT_TOKENS = ("vx", "ws")  # 货代圈缩写，按整词匹配避免误伤 news/windows
+
+
+def fb_query(kw: str, prefix: str) -> str:
+    """词库词 → 实际查询词：纯品类词拼联系前缀，已含联系形态的原样透传。
+    kw_stats 始终按原词记账。"""
+    low = kw.lower()
+    if any(m in low for m in CONTACT_MARKERS):
+        return kw
+    if any(t in low.split() for t in CONTACT_TOKENS):
+        return kw
+    return f"{prefix} {kw}"
 
 
 def serp_query(kw: str) -> str:
@@ -540,7 +572,7 @@ def dig_word(db, bd, accounts: list, kw: str, args, st: dict,
 
     # ---- SERP：Google+Bing 各 1 页 ----
     if usage["serp_queries"] < args.serp_daily_queries:
-        q = serp_query(kw)
+        q = serp_query(fb_query(kw, "+86"))
         for engine in ("google", "bing"):
             if usage["serp_queries"] >= args.serp_daily_queries:
                 break
@@ -562,6 +594,8 @@ def dig_word(db, bd, accounts: list, kw: str, args, st: dict,
 
     # ---- memo23：刺探 + 深挖（出号则下批 maxItems ×DIG_MULTIPLIER，封顶 DIG_MAX_ITEMS）----
     if accounts and usage["memo23_results"] < args.memo23_daily_results:
+        mq = fb_query(kw, "whatsapp")
+        disp = kw if mq == kw else f"{kw} → {mq}"  # 拼过前缀的日志里显示原词
         seen_urls: set[str] = set()
         items_target = PROBE_ITEMS
         batch_no = 0
@@ -574,7 +608,7 @@ def dig_word(db, bd, accounts: list, kw: str, args, st: dict,
                 log(f"  memo23 当日结果达顶 {args.memo23_daily_results}，"
                     f"「{kw}」深挖中止")
                 break
-            items = memo23_search(db.conn, accounts, kw, items_target)
+            items = memo23_search(db.conn, accounts, mq, items_target)
             if items is None:  # 首批失败且 SERP 也没跑成 → 整词不记账
                 if batch_no == 1 and not recorded:
                     return None
@@ -588,7 +622,7 @@ def dig_word(db, bd, accounts: list, kw: str, args, st: dict,
             n_new += n
             save_state(st)
             tag = "刺探" if batch_no == 1 else f"深翻{batch_no}"
-            log(f"  [memo23/{tag}]「{kw}」: 帖 {len(items)}（新帖 {p}），"
+            log(f"  [memo23/{tag}]「{disp}」: 帖 {len(items)}（新帖 {p}），"
                 f"新号 +{n}"
                 f"（当日 {usage['memo23_results']}/{args.memo23_daily_results}）")
             if n == 0 or not items:

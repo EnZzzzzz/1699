@@ -30,6 +30,7 @@ FB_STATE = CACHE_DIR / "fb_keyword_search_state.json"
 X_STATE = CACHE_DIR / "x_keyword_search_state.json"
 
 APIFY_USAGE_API = "https://api.apify.com/v2/users/me/usage/monthly"
+APIFY_ME_API = "https://api.apify.com/v2/users/me"
 BD_BALANCE_API = "https://api.brightdata.com/balance"
 
 X_COST_PER_ROW = 0.00015        # scraper/x_keyword_search.py:102
@@ -84,16 +85,19 @@ def _get_json(url: str, token: str) -> dict:
         return json.load(r)
 
 
-def sync_apify() -> dict:
+def sync_apify(account: str | None = None) -> dict:
     """同步 Apify 账号级真实账单（dailyServiceUsages 逐日逐服务 upsert）。
 
     多账号时 channel 记为 account:<name> 区分。失败不抛，返回 error。
+    account 传入时只同步该账号（供应商卡片单独刷新用）。
     """
     conn = _open_write()
     try:
         provs = conn.execute(
             "SELECT name, config_json FROM providers"
             " WHERE kind='apify' AND enabled=1").fetchall()
+        if account is not None:
+            provs = [p for p in provs if p[0] == account]
         if not provs:
             return {"ok": False, "error": "providers 表无 enabled 的 apify 账号"}
         results = []
@@ -108,6 +112,7 @@ def sync_apify() -> dict:
             # 逐账期回溯历史账单：当前账期 → 按 usageCycle.startAt 往前逐期查，
             # 直到某账期无任何用量或达到上限（防无限回溯）
             query_date: str | None = None  # None=当前账期
+            cur_cycle: dict | None = None   # 当前账期响应（用于 USAGE_CYCLE 快照）
             for _ in range(4):
                 url = APIFY_USAGE_API + (f"?date={query_date}" if query_date else "")
                 try:
@@ -115,6 +120,8 @@ def sync_apify() -> dict:
                 except (urllib.error.URLError, OSError, ValueError) as e:
                     failed = str(e)
                     break
+                if query_date is None:
+                    cur_cycle = data
                 days = data.get("dailyServiceUsages", [])
                 for day in days:
                     date = str(day.get("date", ""))[:10]  # 原始 UTC 账单日期
@@ -133,6 +140,27 @@ def sync_apify() -> dict:
                 # 下一轮回溯：本账期开始前一天
                 query_date = (_date.fromisoformat(start_at[:10])
                               - _td(days=1)).isoformat()
+            # 账期用量快照（date 存北京快照日，与上面的 UTC 账单日期口径不同）：
+            # Apify 是订阅+后付费，无充值余额；记录当前账期累计用量，
+            # 套餐额度/月度上限放 detail（取自 /v2/users/me 的 plan）
+            if failed is None and cur_cycle:
+                plan: dict = {}
+                try:
+                    me = _get_json(APIFY_ME_API, token)
+                    plan = ((me.get("data") or {}).get("plan") or {})
+                except (urllib.error.URLError, OSError, ValueError):
+                    pass  # plan 拿不到就只记用量
+                _upsert(
+                    conn, time.strftime("%Y-%m-%d"), "apify",
+                    f"account:{name}", "USAGE_CYCLE", "real", None, "usd",
+                    float(cur_cycle.get(
+                        "totalUsageCreditsUsdAfterVolumeDiscount") or 0),
+                    detail={
+                        "usageCycle": cur_cycle.get("usageCycle"),
+                        "monthlyUsageCreditsUsd":
+                            plan.get("monthlyUsageCreditsUsd"),
+                        "maxMonthlyUsageUsd": plan.get("maxMonthlyUsageUsd"),
+                    })
             if failed:
                 results.append({"account": name, "ok": False, "error": failed})
             else:
