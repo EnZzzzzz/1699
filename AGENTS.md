@@ -143,6 +143,19 @@ bash platform/stop.sh    # 停止
   由 `app/scripts.py` seed 默认值、`POST /api/scripts/{name}/params` upsert；脚本只认启动参数，
   改配置需重启进程才生效。进程探测用 `pgrep -f` 特征匹配（不写 pidfile），WA 停止时 bash
   循环壳与 python 子进程一起杀。
+- `/scripts` 页选词启动（2026-08-23 起，仅 fb/x）：点「启动」弹选词面板（搜索/全选/清空，
+  退役词带标记），`GET /api/scripts/{name}/keywords` 出词库清单（fb=内置 KEYWORDS+追加文件
+  合并，x=`.cache/x_keywords_all.txt` 覆盖内置，内置词库用 ast 静态解析脚本源码不 import）。
+  选词子集落盘 `.cache/{name}_keywords_selected.txt` 并记录到 `.cache/script_kw_selection.json`，
+  启动命令改写词库参数（fb 用 `--keywords-only-file` 覆盖内置词库，x 直接换 `--keywords-file`
+  路径）；**全选=默认词库并清除选词记录**，restart 不传选词、自动沿用上次记录。
+  平台启动脚本时在日志写一段分隔标记（`=====` 横幅：时间/pid/参数/词库/完整命令，
+  2026-08-24 起），区分历次运行；手动 nohup 启动的没有此标记。
+- `/keywords` 词库页（2026-08-24 起）：`GET /api/keywords`（`app/api/keywords.py`）直接读
+  两个 state JSON 的 `kw_stats`/`kw_retired` 按词合并两平台产量，**搜索/筛选/排序/分页全部
+  服务端做**（page/page_size/q/platform/status/sort/order）。kw_stats 每词字段：
+  q（累计轮数）/posts/new（累计新号）/**last_new（上一轮新号，2026-08-24 起记账，历史词为
+  null）**/first_at/last_q_at/last_new_at/zero_streak；retired 口径=存在过的平台全部退役。
 - 改后端代码后 uvicorn **不会自动 reload**，需重启才生效（重启见 `platform/start.sh`/`stop.sh`；注意 pidfile 记录的是父进程，杀端口占用进程时按实际监听 pid）。
 
 ## 5. 通用代码约定

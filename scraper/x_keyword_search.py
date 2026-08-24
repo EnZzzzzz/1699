@@ -179,6 +179,7 @@ def record_kw_stat(st: dict, kw: str, n_posts: int, n_new: int) -> None:
     s["q"] += 1
     s["posts"] += n_posts
     s["new"] += n_new
+    s["last_new"] = n_new  # 上一轮（最近一次会话）新号数，供 /api/keywords 展示
     s["last_q_at"] = now
     if n_new > 0:
         s["last_new_at"] = now
@@ -380,6 +381,22 @@ def pick_due(st: dict, keywords: list[str], limit: int) -> list[str]:
     return due
 
 
+def _earliest_due(st: dict, words: list[str]) -> float | None:
+    """这批词里最早过冷静期的时间戳（任一词无 last_q_at 记录视为
+    立刻到期，返回 None，调用方省略到期时间）。"""
+    oldest_q: float | None = None
+    for kw in words:
+        last_q = st["kw_stats"].get(kw, {}).get("last_q_at")
+        if not last_q:
+            return None
+        try:
+            ts = time.mktime(time.strptime(last_q, "%Y-%m-%d %H:%M:%S"))
+        except ValueError:
+            return None
+        oldest_q = ts if oldest_q is None else min(oldest_q, ts)
+    return oldest_q + SCAN_INTERVAL_SEC
+
+
 def _oldest_ts(items: list[dict]) -> int | None:
     """本批帖子里最老的 createdAt（unix 秒），作下一批 until_time 翻页锚点。"""
     oldest = None
@@ -460,6 +477,15 @@ def run_round(db, accounts: list, keywords: list[str], args, st: dict) -> dict:
     stats = {"results": 0, "posts": 0, "new": 0, "budget_out": False}
     batch = pick_due(st, keywords, args.per_round)
     if not batch:
+        # 无到期词也要留一行说明，否则选词试运行时日志完全静默只能靠猜
+        active = [kw for kw in keywords if kw not in st["kw_retired"]]
+        if not active:
+            log(f"  词库 {len(keywords)} 个词全部已退役，无词可跑")
+        else:
+            nxt = _earliest_due(st, active)
+            log(f"  本轮无到期词：{len(active)} 个词均在冷静期"
+                + (f"，最早 {time.strftime('%m-%d %H:%M', time.localtime(nxt))}"
+                   f" 到期" if nxt else ""))
         return stats
     save_state(st)  # 游标先落盘：中途重启从持久化的断点继续，不跳词
 

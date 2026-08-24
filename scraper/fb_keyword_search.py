@@ -232,6 +232,7 @@ def record_kw_stat(st: dict, kw: str, n_posts: int, n_new: int) -> None:
     s["q"] += 1
     s["posts"] += n_posts
     s["new"] += n_new
+    s["last_new"] = n_new  # 上一轮（最近一次会话）新号数，供 /api/keywords 展示
     s["last_q_at"] = now
     if n_new > 0:
         s["last_new_at"] = now
@@ -559,6 +560,22 @@ def pick_due(st: dict, keywords: list[str], limit: int) -> list[str]:
     return due
 
 
+def _earliest_due(st: dict, words: list[str]) -> float | None:
+    """这批词里最早过冷静期的时间戳（任一词无 last_q_at 记录视为
+    立刻到期，返回 None，调用方省略到期时间）。"""
+    oldest_q: float | None = None
+    for kw in words:
+        last_q = st["kw_stats"].get(kw, {}).get("last_q_at")
+        if not last_q:
+            return None
+        try:
+            ts = time.mktime(time.strptime(last_q, "%Y-%m-%d %H:%M:%S"))
+        except ValueError:
+            return None
+        oldest_q = ts if oldest_q is None else min(oldest_q, ts)
+    return oldest_q + SCAN_INTERVAL_SEC
+
+
 def dig_word(db, bd, accounts: list, kw: str, args, st: dict,
              usage: dict, stats: dict) -> bool | None:
     """到期词的完整采集会话：SERP 双引擎各查一页（搜索引擎结果无深挖
@@ -656,6 +673,15 @@ def run_round(db, bd, accounts: list, keywords: list[str], args,
              "memo23_results": 0, "memo23_new": 0}
     batch = pick_due(st, keywords, args.per_round)
     if not batch:
+        # 无到期词也要留一行说明，否则选词试运行时日志完全静默只能靠猜
+        active = [kw for kw in keywords if kw not in st["kw_retired"]]
+        if not active:
+            log(f"  词库 {len(keywords)} 个词全部已退役，无词可跑")
+        else:
+            nxt = _earliest_due(st, active)
+            log(f"  本轮无到期词：{len(active)} 个词均在冷静期"
+                + (f"，最早 {time.strftime('%m-%d %H:%M', time.localtime(nxt))}"
+                   f" 到期" if nxt else ""))
         return stats
 
     for kw in batch:
@@ -676,6 +702,8 @@ def main() -> int:
         description="FB 关键词直搜采号（memo23+SERP 双源常驻，刺探模式）")
     ap.add_argument("--keywords-file",
                     help="追加关键词文件（一行一个，与内置词库合并去重）")
+    ap.add_argument("--keywords-only-file",
+                    help="只跑该文件里的关键词（覆盖内置词库，不合并）")
     ap.add_argument("--per-round", type=int, default=10,
                     help="每轮最多采集几个到期词")
     ap.add_argument("--interval", type=int, default=3600, help="两轮间隔秒数")
@@ -687,12 +715,18 @@ def main() -> int:
     ap.add_argument("--once", action="store_true", help="跑一轮即退出")
     args = ap.parse_args()
 
-    keywords = list(KEYWORDS)
-    if args.keywords_file:
-        for line in Path(args.keywords_file).read_text().splitlines():
-            kw = line.strip()
-            if kw and kw not in keywords:
-                keywords.append(kw)
+    if args.keywords_only_file:
+        keywords = [ln.strip() for ln in
+                    Path(args.keywords_only_file).read_text().splitlines()
+                    if ln.strip()]
+        log(f"使用 --keywords-only-file 覆盖词库：{len(keywords)} 个")
+    else:
+        keywords = list(KEYWORDS)
+        if args.keywords_file:
+            for line in Path(args.keywords_file).read_text().splitlines():
+                kw = line.strip()
+                if kw and kw not in keywords:
+                    keywords.append(kw)
     log(f"关键词库 {len(keywords)} 个，每词间隔 "
         f"{SCAN_INTERVAL_SEC // 86400} 天，每轮最多 {args.per_round} 个到期词")
 

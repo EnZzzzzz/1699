@@ -176,6 +176,66 @@ export interface ScriptLogChunk {
   missing?: boolean
 }
 
+// 选词面板：单个关键词（retired=脚本已自动退役，选了也会被跳过）
+export interface ScriptKeyword {
+  word: string
+  retired: boolean
+}
+
+// GET /scripts/{name}/keywords 响应：默认词库全量 + 当前选词状态
+export interface ScriptKeywordsResp {
+  keywords: ScriptKeyword[]
+  selection_active: boolean
+  selected_count: number | null
+}
+
+// 启动选项：params 先落配置；keywords 选词子集（fb/x）；clearKeywords 回默认词库
+export interface ScriptStartOptions {
+  params?: Record<string, number>
+  keywords?: string[]
+  clearKeywords?: boolean
+}
+
+// ---------- 词库产量（/keywords） ----------
+
+export type KeywordPlatformFilter = 'all' | 'x' | 'fb'
+export type KeywordStatusFilter = 'all' | 'active' | 'x_retired' | 'fb_retired' | 'retired'
+export type KeywordSort = 'total_new' | 'last_new' | 'q'
+  | 'x_new' | 'x_last_new' | 'x_q'
+  | 'fb_new' | 'fb_last_new' | 'fb_q'
+
+// 单平台统计；该平台没查过则整个子对象为 null；last_new 历史词缺失为 null
+export interface KeywordPlatformStat {
+  q: number
+  new: number
+  last_new: number | null
+  last_q_at: string | null
+  retired: boolean
+}
+
+export interface KeywordItem {
+  kw: string
+  x: KeywordPlatformStat | null
+  fb: KeywordPlatformStat | null
+}
+
+export interface KeywordsPage {
+  items: KeywordItem[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export interface KeywordsQuery {
+  q?: string
+  platform?: KeywordPlatformFilter
+  status?: KeywordStatusFilter
+  sort?: KeywordSort
+  order?: 'asc' | 'desc'
+  page?: number
+  page_size?: number
+}
+
 // ---------- 接口方法 ----------
 
 // 后端 provider 原始结构（config_json / proxy_channels）归一化为前端
@@ -231,10 +291,14 @@ export const api = {
       { method: 'POST' }),
   // ---------- 采集脚本管理 ----------
   scriptsList: () => request<ScriptInfo[]>('/scripts'),
-  scriptStart: (name: ScriptName, params?: Record<string, number>) =>
+  scriptStart: (name: ScriptName, opts?: ScriptStartOptions) =>
     request<{ pid: number }>(`/scripts/${name}/start`, {
       method: 'POST',
-      body: JSON.stringify(params ? { params } : {}),
+      body: JSON.stringify({
+        params: opts?.params,
+        keywords: opts?.keywords,
+        clear_keywords: opts?.clearKeywords ?? false,
+      }),
     }),
   scriptStop: (name: ScriptName) =>
     request<{ stopped: number }>(`/scripts/${name}/stop`, { method: 'POST' }),
@@ -251,6 +315,22 @@ export const api = {
     }),
   scriptLogs: (name: ScriptName, offset: number) =>
     request<ScriptLogChunk>(`/scripts/${name}/logs?offset=${offset}`),
+  // 选词面板数据（仅 fb/x）
+  scriptKeywords: (name: ScriptName) =>
+    request<ScriptKeywordsResp>(`/scripts/${name}/keywords`),
+  // ---------- 词库产量 ----------
+  keywordsList: (params: KeywordsQuery = {}) => {
+    const qs = new URLSearchParams()
+    if (params.q) qs.set('q', params.q)
+    if (params.platform && params.platform !== 'all') qs.set('platform', params.platform)
+    if (params.status && params.status !== 'all') qs.set('status', params.status)
+    if (params.sort) qs.set('sort', params.sort)
+    if (params.order) qs.set('order', params.order)
+    if (params.page) qs.set('page', String(params.page))
+    if (params.page_size) qs.set('page_size', String(params.page_size))
+    const s = qs.toString()
+    return request<KeywordsPage>(`/keywords${s ? `?${s}` : ''}`)
+  },
 }
 
 // ---------- 通用数据加载 Hook（加载态 / 错误态 / 自动刷新） ----------

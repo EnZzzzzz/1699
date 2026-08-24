@@ -3,14 +3,15 @@
 
 路由前缀 /scripts（由 app.api 挂载在 /api 下）：
 - GET  /scripts                 三脚本汇总：运行状态、pid、启动时间、当前参数、额度/产量
-- POST /scripts/{name}/start    启动（body 可带 params 先落配置）
+- GET  /scripts/{name}/keywords 选词面板数据（仅 fb/x）：默认词库 + 退役标记 + 当前选词
+- POST /scripts/{name}/start    启动（body 可带 params 先落配置；fb/x 可带 keywords 选词）
 - POST /scripts/{name}/stop     停止（SIGTERM → SIGKILL 兜底）
-- POST /scripts/{name}/restart  重启（先停后启，body 可带 params 先落配置）
+- POST /scripts/{name}/restart  重启（先停后启，body 可带 params 先落配置；沿用上次选词）
 - POST /scripts/{name}/params   保存参数（仅落库，不隐式重启）
 - GET  /scripts/{name}/logs     日志增量 tail（offset 续传）
 """
 
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -26,6 +27,10 @@ class ScriptParamsBody(BaseModel):
 
 class ScriptStartBody(BaseModel):
     params: Optional[dict] = None
+    # fb/x 选词启动：关键词子集；None=沿用上次选词/默认词库
+    keywords: Optional[List[str]] = None
+    # 清除选词记录，回到默认词库（全选时前端传 true）
+    clear_keywords: bool = False
 
 
 def _spec_or_404(name: str) -> None:
@@ -56,13 +61,25 @@ def list_scripts():
     return result
 
 
+@router.get("/{name}/keywords")
+def script_keywords(name: str):
+    """选词面板数据（仅 fb/x，wa 无词库概念）。"""
+    _spec_or_404(name)
+    if name not in scripts.SPECS or name == "wa":
+        raise HTTPException(status_code=422, detail="该脚本不支持选词")
+    return scripts.list_keywords(name)
+
+
 @router.post("/{name}/start")
 def start_script(name: str, body: ScriptStartBody = None):
     _spec_or_404(name)
     try:
         if body and body.params:
             scripts.save_params(name, body.params)
-        return scripts.start(name)
+        return scripts.start(
+            name,
+            keywords=body.keywords if body else None,
+            clear_keywords=body.clear_keywords if body else False)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     except RuntimeError as e:

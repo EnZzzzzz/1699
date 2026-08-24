@@ -16,6 +16,7 @@ import {
 } from 'lucide-react'
 import { ScriptParamsDialog } from './scripts/ScriptParamsDialog'
 import { ScriptLogDialog } from './scripts/ScriptLogDialog'
+import { ScriptStartDialog } from './scripts/ScriptStartDialog'
 
 // 数值展示：null/undefined 为 —
 function num(v: number | null | undefined): string {
@@ -94,9 +95,11 @@ function ScriptStats({ script }: { script: ScriptInfo }) {
   )
 }
 
-function ScriptCard({ script, onChanged, onEditParams, onShowLogs }: {
+function ScriptCard({ script, onChanged, onStart, onEditParams, onShowLogs }: {
   script: ScriptInfo
   onChanged: () => void
+  /** fb/x 启动走选词面板；wa 直接启动（不传 onStart） */
+  onStart?: (script: ScriptInfo) => void
   onEditParams: (script: ScriptInfo) => void
   onShowLogs: (script: ScriptInfo) => void
 }) {
@@ -145,7 +148,7 @@ function ScriptCard({ script, onChanged, onEditParams, onShowLogs }: {
           <div className="flex items-center gap-2">
             <Button
               variant="outline" size="sm"
-              onClick={() => handleAction('start')}
+              onClick={() => (onStart ? onStart(script) : handleAction('start'))}
               disabled={script.running || acting !== null}
             >
               {acting === 'start' ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Play className="mr-2 h-4 w-4" />}
@@ -208,10 +211,18 @@ function ScriptCard({ script, onChanged, onEditParams, onShowLogs }: {
 
 export default function Scripts() {
   const { data, loading, error, reload } = useApiData(api.scriptsList, 5000)
+  const [startTarget, setStartTarget] = useState<ScriptInfo | null>(null)
   const [paramsTarget, setParamsTarget] = useState<ScriptInfo | null>(null)
   const [logsTarget, setLogsTarget] = useState<ScriptInfo | null>(null)
+  const [startOpen, setStartOpen] = useState(false)
   const [paramsOpen, setParamsOpen] = useState(false)
   const [logsOpen, setLogsOpen] = useState(false)
+
+  // fb/x 启动前弹选词面板；wa 无词库概念，由卡片内直接启动
+  const openStart = (script: ScriptInfo) => {
+    setStartTarget(script)
+    setStartOpen(true)
+  }
 
   const openParams = (script: ScriptInfo) => {
     setParamsTarget(script)
@@ -242,6 +253,7 @@ export default function Scripts() {
               key={s.name}
               script={s}
               onChanged={reload}
+              onStart={s.name === 'wa' ? undefined : openStart}
               onEditParams={openParams}
               onShowLogs={openLogs}
             />
@@ -249,6 +261,12 @@ export default function Scripts() {
         </div>
       )}
 
+      <ScriptStartDialog
+        open={startOpen}
+        onOpenChange={setStartOpen}
+        script={startTarget}
+        onStarted={reload}
+      />
       <ScriptParamsDialog
         open={paramsOpen}
         onOpenChange={setParamsOpen}

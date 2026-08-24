@@ -3,12 +3,13 @@
 
 from fastapi import APIRouter
 
-from app.api import costs, dashboard, data, health, providers, scripts
+from app.api import costs, dashboard, data, health, keywords, providers, scripts
 
 api_router = APIRouter(prefix="/api")
 api_router.include_router(health.router)
 api_router.include_router(dashboard.router)
 api_router.include_router(data.router)
+api_router.include_router(keywords.router)
 api_router.include_router(providers.router)
 api_router.include_router(costs.router)
 api_router.include_router(scripts.router)

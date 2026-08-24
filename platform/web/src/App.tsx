@@ -3,6 +3,7 @@ import Layout from '@/components/Layout'
 import Dashboard from '@/pages/Dashboard'
 import Providers from '@/pages/Providers'
 import Scripts from '@/pages/Scripts'
+import Keywords from '@/pages/Keywords'
 import { DataPage } from './pages/Data'
 
 export default function App() {
@@ -11,6 +12,7 @@ export default function App() {
       <Route element={<Layout />}>
         <Route path="/" element={<Dashboard />} />
         <Route path="/data" element={<DataPage />} />
+        <Route path="/keywords" element={<Keywords />} />
         <Route path="/providers" element={<Providers />} />
         <Route path="/scripts" element={<Scripts />} />
         <Route path="*" element={<Navigate to="/" replace />} />

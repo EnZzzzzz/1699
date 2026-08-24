@@ -3,9 +3,13 @@
 
 - 进程探测唯一事实源是进程表（pgrep -f 特征匹配），脚本可能由平台外启动；
 - 脚本只认启动参数，调参靠「保存参数 + 重启进程」生效（不改 scraper/ 脚本）；
-- 额度/产量统计：state JSON 读日用量，fb_contacts 只读查今日采集/查号数。
+- 额度/产量统计：state JSON 读日用量，fb_contacts 只读查今日采集/查号数；
+- 选词启动（fb/x）：start 可带关键词子集，落盘 .cache/{name}_keywords_selected.txt
+  并改写启动命令的词库文件参数（fb 用 --keywords-only-file 覆盖内置词库）；
+  选择记录存 .cache/script_kw_selection.json，restart 沿用上次选词。
 """
 
+import ast
 import json
 import os
 import signal
@@ -61,6 +65,24 @@ _STATE_FILES = {
     "x": ".cache/x_keyword_search_state.json",
     "wa": None,
 }
+
+# 默认词库文件（SPECS 启动命令里 --keywords-file 指向的文件）
+_DEFAULT_KW_FILES = {
+    "fb": ".cache/fb_keywords_extra.txt",
+    "x": ".cache/x_keywords_all.txt",
+}
+
+# 内置词库提取源：脚本文件 + 列表字面量变量名（ast 静态解析，不 import 脚本）
+_BUILTIN_SRC = {
+    "fb": ("scraper/fb_keyword_search.py", "KEYWORDS"),
+    "x": ("scraper/x_keyword_search.py", "X_KEYWORDS"),
+}
+
+# 选词记录：name → 选词文件相对路径（restart 沿用上次选词）
+_SEL_STATE = ".cache/script_kw_selection.json"
+
+# 选词启动时落盘的文件模板
+_SEL_KW_FILE = ".cache/{}_keywords_selected.txt"
 
 
 def _bj_today() -> str:
@@ -148,6 +170,152 @@ def save_params(name: str, params: dict) -> dict:
     return merged
 
 
+# ==================== 词库清单与选词启动（fb/x） ====================
+
+def _read_words(rel: str) -> list[str]:
+    """读词库文件（一行一词，去空行），文件不存在返回空列表。"""
+    try:
+        return [ln.strip() for ln in
+                (PROJECT_ROOT / rel).read_text(encoding="utf-8").splitlines()
+                if ln.strip()]
+    except OSError:
+        return []
+
+
+def _builtin_keywords(name: str) -> list[str]:
+    """ast 静态解析脚本源码里的内置词库列表字面量（不 import，避免重依赖）。
+
+    解析失败/找不到返回空列表（防御性，不炸接口）。
+    """
+    src = _BUILTIN_SRC.get(name)
+    if not src:
+        return []
+    path, var = src
+    try:
+        tree = ast.parse(
+            (PROJECT_ROOT / path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    for node in ast.walk(tree):
+        # 同时匹配 `KEYWORDS = [...]` 与 `X_KEYWORDS: list[str] = [...]`
+        target = None
+        value = None
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target, value = node.targets[0], node.value
+        elif isinstance(node, ast.AnnAssign):
+            target, value = node.target, node.value
+        if (isinstance(target, ast.Name) and target.id == var
+                and isinstance(value, (ast.List, ast.Tuple))):
+            words = [el.value for el in value.elts
+                     if isinstance(el, ast.Constant)
+                     and isinstance(el.value, str)]
+            if words:
+                return words
+    return []
+
+
+def default_keywords(name: str) -> list[str]:
+    """脚本默认生效词库（去重，保序）。
+
+    - fb：内置 KEYWORDS + 追加文件（--keywords-file 合并语义）；
+    - x：默认启动命令传了 --keywords-file（覆盖语义），词库=文件词，
+      文件缺失/为空时回退内置 X_KEYWORDS；
+    - wa：无词库概念，返回空。
+    """
+    if name == "fb":
+        words = _builtin_keywords("fb")
+        for w in _read_words(_DEFAULT_KW_FILES["fb"]):
+            if w not in words:
+                words.append(w)
+        return words
+    if name == "x":
+        return _read_words(_DEFAULT_KW_FILES["x"]) or _builtin_keywords("x")
+    return []
+
+
+def _read_selection() -> dict:
+    """读选词记录 JSON，损坏返回空 dict。"""
+    try:
+        return json.loads(
+            (PROJECT_ROOT / _SEL_STATE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_selection(data: dict) -> None:
+    path = PROJECT_ROOT / _SEL_STATE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2),
+                    encoding="utf-8")
+
+
+def list_keywords(name: str) -> dict:
+    """选词面板数据：默认词库全量 + 退役标记 + 当前选词状态。"""
+    retired = set((_load_state(name).get("kw_retired") or {}).keys())
+    sel = _read_selection().get(name)
+    sel_words = _read_words(sel) if sel else []
+    return {
+        "keywords": [{"word": w, "retired": w in retired}
+                     for w in default_keywords(name)],
+        "selection_active": bool(sel_words),
+        "selected_count": len(sel_words) if sel_words else None,
+    }
+
+
+def _save_selection(name: str, keywords: list[str]) -> str:
+    """选词落盘 .cache/{name}_keywords_selected.txt 并记录，返回文件相对路径。"""
+    rel = _SEL_KW_FILE.format(name)
+    path = PROJECT_ROOT / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(keywords) + "\n", encoding="utf-8")
+    data = _read_selection()
+    data[name] = rel
+    _write_selection(data)
+    return rel
+
+
+def _clear_selection(name: str) -> None:
+    data = _read_selection()
+    if name in data:
+        del data[name]
+        _write_selection(data)
+
+
+def _swap_kw_arg(name: str, cmd: list[str], kw_rel: str) -> list[str]:
+    """把启动命令里的 --keywords-file 参数值替换为指定词库文件。
+
+    fb 选词需覆盖内置词库，flag 换成 --keywords-only-file；
+    x 的 --keywords-file 本来就是覆盖语义，只换文件路径。
+    """
+    flag = "--keywords-only-file" if name == "fb" else "--keywords-file"
+    if "--keywords-file" in cmd:
+        i = cmd.index("--keywords-file")
+        cmd[i] = flag
+        cmd[i + 1] = kw_rel
+    return cmd
+
+
+def _resolve_kw_file(name: str, keywords: list[str] = None,
+                     clear_keywords: bool = False) -> str:
+    """决定本次启动使用的词库文件（仅 fb/x；其余返回 None）。
+
+    - keywords 非空：落盘选词文件并记录；
+    - clear_keywords：清除选词记录，用默认词库；
+    - 否则沿用上次选词（文件还在的话），无记录用默认词库。
+    """
+    if name not in _DEFAULT_KW_FILES:
+        return None
+    if keywords:
+        return _save_selection(name, keywords)
+    if clear_keywords:
+        _clear_selection(name)
+        return _DEFAULT_KW_FILES[name]
+    sel = _read_selection().get(name)
+    if sel and (PROJECT_ROOT / sel).exists():
+        return sel
+    return _DEFAULT_KW_FILES[name]
+
+
 # ==================== 进程管理 ====================
 
 def _pgrep(sig: str) -> list[int]:
@@ -228,11 +396,34 @@ def status(name: str) -> dict:
     }
 
 
-def start(name: str, params: dict = None) -> dict:
+def _write_start_banner(name: str, logf, pid: int, params: dict,
+                        cmd: list[str], kw_file: str = None) -> None:
+    """启动分隔段：写进日志文件，区分历次运行并留档启动参数。"""
+    lines = [
+        "=" * 78,
+        f"===== 启动「{SPECS[name]['title']}」"
+        f" @ {time.strftime('%Y-%m-%d %H:%M:%S')} pid={pid}",
+        f"===== 参数: {' '.join(f'{k}={v}' for k, v in params.items())}",
+    ]
+    if kw_file:
+        kind = ("默认词库" if kw_file == _DEFAULT_KW_FILES.get(name)
+                else "选词")
+        lines.append(f"===== 词库: {kw_file}（{kind}，{len(_read_words(kw_file))} 个）")
+    lines.append(f"===== 命令: {' '.join(cmd)}")
+    lines.append("=" * 78)
+    logf.write(("\n" + "\n".join(lines) + "\n").encode("utf-8"))
+
+
+def start(name: str, params: dict = None, keywords: list = None,
+          clear_keywords: bool = False) -> dict:
     """按配置（可叠加临时参数）启动脚本，等 1.5s 确认存活。
 
     子进程 cwd=项目根，stdout/stderr 追加进日志文件，start_new_session
     脱离后端进程组（后端退出不带走采集脚本）。已在运行则直接报错。
+
+    fb/x 支持选词启动：keywords 为非空字符串列表时落盘选词文件并改写
+    启动命令的词库参数；clear_keywords=True 清除选词记录回到默认词库；
+    两者都不传则沿用上次选词（无记录用默认词库）。
     """
     if status(name)["running"]:
         raise RuntimeError(f"「{SPECS[name]['title']}」已在运行中")
@@ -241,12 +432,20 @@ def start(name: str, params: dict = None) -> dict:
         merged.update(validate_params(name, params))
     cmd = [part.format(**{k: str(v) for k, v in merged.items()})
            for part in SPECS[name]["cmd"]]
+    if keywords is not None:
+        keywords = [str(w).strip() for w in keywords if str(w).strip()]
+        if not keywords:
+            raise ValueError("选词列表不能为空（不选词请用 clear_keywords）")
+    kw_file = _resolve_kw_file(name, keywords, clear_keywords)
+    if kw_file:
+        cmd = _swap_kw_arg(name, cmd, kw_file)
     log_path = PROJECT_ROOT / SPECS[name]["log"]
     log_path.parent.mkdir(parents=True, exist_ok=True)
     logf = open(log_path, "ab", buffering=0)
     proc = subprocess.Popen(
         cmd, cwd=str(PROJECT_ROOT), stdout=logf, stderr=subprocess.STDOUT,
         start_new_session=True)
+    _write_start_banner(name, logf, proc.pid, merged, cmd, kw_file)
     time.sleep(1.5)
     if proc.poll() is not None or not status(name)["running"]:
         logf.close()
@@ -286,7 +485,7 @@ def stop(name: str) -> dict:
 
 
 def restart(name: str, params: dict = None) -> dict:
-    """先停后启（stop + start）。"""
+    """先停后启（stop + start）。选词沿用上次记录（见 start）。"""
     stop(name)
     return start(name, params)
 
