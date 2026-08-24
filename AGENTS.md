@@ -129,10 +129,15 @@ bash platform/stop.sh    # 停止
 - `wa_registered` 语义：`1`=已注册、`0`=未注册、`NULL`=未查。**注意 NULL 不等价
   `wa_checked_at IS NULL`**：存在查了但结果为 NULL 的失败行（2026-08-20 实测约百条），
   「待查」口径一律用 `wa_registered IS NULL`。
-- fb_contacts 号码入库口径：**只收中国手机号**。过滤统一走
+- fb_contacts 号码入库口径：**只收中国手机号，统一存裸 11 位**。过滤统一走
   `fb_group_bd.is_cn_number(number, source)` 且 `bucket != 'overseas'`
   （intl/wa_me/wa_label_intl 形态剥壳后 11 位 1 开头的实为 +1 北美号，拒收；
   2026-08-20 已清库：overseas 406 条假中国号删除、0086 前缀 14 条救回 cn_uncertain）。
+  **2026-08-24 起 `save_fb_contacts`（fetcher/db.py）落库前把 +86/0086/86 +
+  11 位手机段统一剥壳为裸 11 位**（此前 declared_wa 保留原文国家码/00 国际前缀
+  致三种形态并存，已清洗：86 形态 7854 条、0086 形态 668 条，重复号合并字段后
+  删除；清洗脚本 `util/strip_cn_prefix.py`（幂等、默认先备份）可反复跑；
+  `8612345678901` 非标号段残留 1 条已标 invalid 未动）。
 - `mined_corpus` 语料表（2026-08-22 起）：1688 国际站（alibaba.com）挖词 skill
   （`.kimi-code/skills/1688-keyword-mining/`）写入，**页面上看到的类目名/商品标题/链接全部入库**，
   商品标题是后期重要语料。`kind` = category1/category/product，UNIQUE(source,kind,title,url)，

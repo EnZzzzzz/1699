@@ -114,6 +114,8 @@ export interface FbExportQuery {
   dateTo?: string
   /** first=仅未导出过的（默认）；repeat=含已导出过的 */
   mode?: 'first' | 'repeat'
+  /** 最多导出条数（最新优先），0/undefined=不限 */
+  limit?: number
 }
 
 function qs(params: Record<string, string | number | undefined>): string {
@@ -138,7 +140,7 @@ export const dataApi = {
     request<Paged<FbContactItem>>(
       `/data/fb-contacts${qs({ wa: wa || undefined, bucket: bucket || undefined, source: source || undefined, q, page, size })}`),
   // 导出 FB/X 联系方式（blob 下载，非 JSON，不走 request()），返回文件名与条数
-  exportFbContacts: async ({ wa, bucket, source, q, fields, format, dateFrom, dateTo, mode }: FbExportQuery): Promise<{ filename: string; count: number }> => {
+  exportFbContacts: async ({ wa, bucket, source, q, fields, format, dateFrom, dateTo, mode, limit }: FbExportQuery): Promise<{ filename: string; count: number }> => {
     const path = `/data/fb-contacts/export${qs({
       wa: wa || undefined,
       bucket: bucket || undefined,
@@ -149,6 +151,7 @@ export const dataApi = {
       date_from: dateFrom || undefined,
       date_to: dateTo || undefined,
       mode: mode || undefined,
+      limit: limit || undefined,
     })}`
     let res: Response
     try {

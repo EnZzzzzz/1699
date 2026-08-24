@@ -326,6 +326,7 @@ def export_fb_contacts(
     date_from: str = Query(default=""),
     date_to: str = Query(default=""),
     mode: str = Query(default="first"),
+    limit: int = Query(default=0, ge=0),
 ):
     """导出 FB / X 联系方式（沿用列表筛选，全量不分页）。
 
@@ -335,6 +336,7 @@ def export_fb_contacts(
     （YYYY-MM-DD，含首尾日），空则不限。
     mode：first=仅首次导出（未导出过的号码，默认）；repeat=重复导出
     （含已导出过的）。导出成功后统一回写 exported_at。
+    limit：最多导出条数（按 id 倒序取最新 N 条），0=不限。
     """
     keys = [k.strip() for k in fields.split(",") if k.strip()]
     keys = [k for k in keys if k in _EXPORT_FIELDS]
@@ -350,7 +352,8 @@ def export_fb_contacts(
         cur = conn.cursor()
         if _fb_tables(cur):
             where_sql, params = _fb_where(wa, bucket, source, q)
-            conds = [where_sql[7:]] if where_sql else []
+            # 剥掉 "WHERE " 前缀（6 字符；条件本身可能以 ( 开头，不能多切）
+            conds = [where_sql[len("WHERE "):]] if where_sql else []
             if date_from:
                 conds.append("c.first_seen_at >= ?")
                 params.append(f"{date_from} 00:00:00")
@@ -366,6 +369,9 @@ def export_fb_contacts(
             if mode == "first" and has_exported:
                 conds.append("c.exported_at IS NULL")
             where_sql = f"WHERE {' AND '.join(conds)}" if conds else ""
+            limit_sql = " LIMIT ?" if limit > 0 else ""
+            if limit > 0:
+                params.append(limit)
             # SELECT 全量导出所需列（白名单字段的最大集）+ id（回写标记用）
             data_rows = cur.execute(
                 f"""
@@ -373,7 +379,7 @@ def export_fb_contacts(
                        c.wa_source, c.wa_registered, c.wa_checked_at
                 FROM fb_contacts c LEFT JOIN fb_posts p ON p.url = c.post_url
                 {where_sql}
-                ORDER BY c.id DESC
+                ORDER BY c.id DESC{limit_sql}
                 """,
                 params,
             ).fetchall()

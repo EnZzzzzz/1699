@@ -835,11 +835,19 @@ class ShopDB:
         declared_wa 桶 → wa_source='declared'；cn_uncertain/overseas →
         wa_source=NULL。author（FB 发帖人名）仅补空不覆盖。
         返回本次实际新增行数。
+
+        入库口径（2026-08-24 起）：+86 / 0086 / 86 + 11 位中国手机号统一
+        剥壳存裸 11 位（parse_post 的 declared_wa 会保留原文国家码/00 国际
+        前缀，在这里归一；861[3-9] 段之外的号不动）。清洗脚本
+        util/strip_cn_prefix.py 与同一正则。
         """
         now = _now()
         inserted = 0
         for p in phones:
             number = (p.get("number") or "").strip()
+            m = re.fullmatch(r"\+?(?:00)?86(1[3-9]\d{9})", number)
+            if m:
+                number = m.group(1)
             bucket = p.get("bucket") or ""
             if not number or bucket not in ("declared_wa", "cn_uncertain",
                                             "overseas"):

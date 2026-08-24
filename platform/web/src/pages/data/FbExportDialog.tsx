@@ -41,6 +41,7 @@ export function FbExportDialog({ open, onOpenChange, filters }: FbExportDialogPr
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
   const [mode, setMode] = useState<'first' | 'repeat'>('first')
+  const [limit, setLimit] = useState('')
   const [exporting, setExporting] = useState(false)
 
   const toggle = (key: string, checked: boolean) =>
@@ -55,12 +56,17 @@ export function FbExportDialog({ open, onOpenChange, filters }: FbExportDialogPr
       toast.error('开始日期不能晚于结束日期')
       return
     }
+    const limitNum = limit.trim() === '' ? 0 : Number(limit)
+    if (!Number.isInteger(limitNum) || limitNum < 0) {
+      toast.error('导出数量需为正整数')
+      return
+    }
     // 列顺序固定按 FIELD_OPTIONS 展示顺序，不受勾选先后影响
     const fields = FIELD_OPTIONS.filter((f) => selected.includes(f.key)).map((f) => f.key)
     setExporting(true)
     try {
       const { filename, count } = await dataApi.exportFbContacts({
-        ...filters, fields, format, dateFrom, dateTo, mode,
+        ...filters, fields, format, dateFrom, dateTo, mode, limit: limitNum,
       })
       toast.success(`已导出 ${count} 条 → ${filename}`)
       onOpenChange(false)
@@ -115,6 +121,20 @@ export function FbExportDialog({ open, onOpenChange, filters }: FbExportDialogPr
                 onChange={(e) => setDateTo(e.target.value)}
               />
               <span className="text-xs text-muted-foreground">留空不限</span>
+            </div>
+          </div>
+          <div className="space-y-2">
+            <p className="text-sm font-medium">导出数量</p>
+            <div className="flex items-center gap-2">
+              <Input
+                type="number"
+                min={1}
+                className="w-40"
+                placeholder="不限"
+                value={limit}
+                onChange={(e) => setLimit(e.target.value)}
+              />
+              <span className="text-xs text-muted-foreground">留空不限，按最新优先取前 N 条</span>
             </div>
           </div>
           <div className="space-y-2">
