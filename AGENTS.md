@@ -4,7 +4,7 @@
 
 ## 1. 日常运行
 
-**常驻采集脚本共 3 个，均在项目根目录下启动（先确认无残留进程再启动）：**
+**常驻采集脚本共 4 个，均在项目根目录下启动（先确认无残留进程再启动）：**
 
 ```bash
 # ① FB 关键词直搜采号（memo23 + BD SERP 双源，常驻循环；
@@ -29,6 +29,20 @@ nohup python3 scraper/x_keyword_search.py --keywords-file .cache/x_keywords_all.
 nohup bash -c 'while true; do python3 scraper/wa_check_apify.py \
   --bucket declared_wa,cn_uncertain --min-batch 100; sleep 600; done' \
   >> .cache/wa_check_apify.log 2>&1 &
+
+# ④ 领英美国 HNW 采号（Apify 双 actor 常驻循环：harvestapi 搜人 →
+#    skip-trace 查号 → 州级验证 → devscrapper 查 WA 注册态；
+#    2026-08-25 上线，调研见 docs/linkedin-hnw-research.md。
+#    目标：us_contacts wa_registered=1 达 500 条自动退出（exit 0）；
+#    预算刹车 --max-budget 80（按各 run 官方 usageTotalUsd + WA $0.004/号
+#    估算累计，到顶 exit 3）；30 地点 × 5 职位 = 150 组合搜完也会退出，
+#    需加 --locations/--titles 新词重启。州级验证 = trace 记录地址州与
+#    领英州一致才收号（同名错人严重，宁可漏不可错）；性别走 SSA 离线
+#    数据集（.cache/ssa_gender.json 缓存，ssa.gov 直连 403，2026-08-25
+#    实测需经 web.archive.org 镜像取 names.zip 放 .cache/ssa_names/ 构建）。
+#    状态 .cache/linkedin_us_search_state.json；进度看 --stats）
+nohup python3 scraper/linkedin_us_search.py \
+  >> .cache/linkedin_us_search.log 2>&1 &
 ```
 
 要点：
@@ -45,9 +59,9 @@ bash platform/start.sh   # 一键启动后端（FastAPI，端口 8765）+ 前端
 bash platform/stop.sh    # 停止
 ```
 
-三个采集脚本也可在管理系统 `/scripts` 页启停、调参与看实时日志（2026-08-23 起；调参仅落库 `script_configs`，重启进程后才生效）。
+FB/X/WA 三个采集脚本也可在管理系统 `/scripts` 页启停、调参与看实时日志（2026-08-23 起；调参仅落库 `script_configs`，重启进程后才生效）；领英脚本（④）暂不接入 /scripts 页，只能命令行启停。
 
-**巡检**：每小时跑一次，费用已自动同步（后端启动起每 30 分钟跑一轮 `costs.sync_all`，见 `app/main.py` 的 cost-sync 线程；要立刻刷新仍可手动 `curl -s -X POST http://127.0.0.1:8765/api/costs/sync`，或点供应商页卡片上的「同步余额/同步用量」按钮（按供应商单独同步，走 `/api/costs/sync?provider=<kind>&account=<name>`））→ 查 3 个脚本进程是否存活 → 查近 1h/3h 逐小时新增（`scraper/inspect_stats.py`，只读）→ 查 fb_contacts 全量汇总（采集/已注册/待审核，按 post_url 域名分 FB/X，只读查询 `file:.cache/1688.db?mode=ro`）→ 对照 state JSON 日用量排除预算刹车 → 确认关键词枯竭才换词（`grep -qxF` 去重追加）并重启对应脚本生效。
+**巡检**：每小时跑一次，费用已自动同步（后端启动起每 30 分钟跑一轮 `costs.sync_all`，见 `app/main.py` 的 cost-sync 线程；要立刻刷新仍可手动 `curl -s -X POST http://127.0.0.1:8765/api/costs/sync`，或点供应商页卡片上的「同步余额/同步用量」按钮（按供应商单独同步，走 `/api/costs/sync?provider=<kind>&account=<name>`））→ 查 4 个脚本进程是否存活（领英脚本额外看 `--stats` 的 WA 已注册进度与 state 费用）→ 查近 1h/3h 逐小时新增（`scraper/inspect_stats.py`，只读）→ 查 fb_contacts 全量汇总（采集/已注册/待审核，按 post_url 域名分 FB/X，只读查询 `file:.cache/1688.db?mode=ro`）→ 对照 state JSON 日用量排除预算刹车 → 确认关键词枯竭才换词（`grep -qxF` 去重追加）并重启对应脚本生效。
 
 换词触发条件：先对照表 4 排除预算刹车/额度耗尽等外部原因；确认是词库问题后——**某渠道连续 2 小时新增 < 30 条，即可尝试更换关键词**（不用等彻底枯竭）。词级判据用 `python3 scraper/kw_stats.py --aging`（只读）：脚本把每词每次查询的表现记在 state JSON 的 `kw_stats`（q/posts/new/last_new_at/zero_streak=连续新号+0 次数，2026-08-22 起累计，此前历史不回溯），报表按此推导状态——退役（X/FB 脚本自动判真枯竭，已移出轮转）、枯竭（>7 天无新号且查询 ≥5 次）、老化（3~7 天无新号或连续+0 ≥10）、活跃、观察（查询 <5 次）、未启用；**枯竭/老化词优先列入换词候选**，全量看 `kw_stats.py`、产量榜看 `--top N`。**词自动退役（X 2026-08-22 重写版起，FB 2026-08-21 重写版起同款）**：两脚本均为「牧场」模型——每词隔 3 天刺探一次，热词往深翻，连续 3 次会话无新号（≈9 天无产出）→ 自动记 `state.kw_retired` 并移出轮转（词库文件不动）；**首次会话帖数 <10 且无新号的词判定无潜力，首次即退役不等连击**（`FIRST_SESSION_MIN_POSTS`，2026-08-23 起，kw_retired 里带 `reason: first_session_few_posts`）；误判复活删 `kw_retired` 对应键，确认死词可手工从词库文件删行（`grep -vFx`，禁止 `sort -u` 重写）。
 
@@ -69,6 +83,7 @@ bash platform/stop.sh    # 停止
 | FB 直搜 | 18539 | ✅ 运行中 | 当前轮关键词：xxx |
 | X 直搜 | — | ❌ 已退出 | 日志尾部原因一行 |
 | WA 查号 | 17269 | ✅ 运行中 | 上轮已查 N 条 |
+| 领英直采 | — | ❌ 已退出 | WA 已注册 N/500，原因一行 |
 
 表 2 · 逐小时明细（近 4 小时，按采集时间 first_seen_at 分小时；每小时采集的号按当前查号结果细分为 已注册/待审核/其中无效号，FB/X 分列；WA 已查 = 该小时查号完成数）：
 
@@ -138,6 +153,25 @@ bash platform/stop.sh    # 停止
   致三种形态并存，已清洗：86 形态 7854 条、0086 形态 668 条，重复号合并字段后
   删除；清洗脚本 `util/strip_cn_prefix.py`（幂等、默认先备份）可反复跑；
   `8612345678901` 非标号段残留 1 条已标 invalid 未动）。
+- fb_contacts WA 头像画像列（2026-08-25 起，由 `scraper/wa_avatar_profile.py`
+  defensive ALTER 自建）：actor `clearpath/whatsapp-profile-avatar-age-gender-api`
+  按号计费（实测 $7.53/千号，500 号起批/万号封顶，每个送检号都计费），
+  只查 `wa_registered=1` 且 `wa_profiled_at IS NULL` 的号。`wa_gender`
+  （male/female/unknown）与 `wa_age` 均为**头像推断，只做参考不做硬过滤**
+  （实测 500 号：头像覆盖 94%、性别产出 47%、仅 individual_portrait
+  子集出性别）；`wa_avatar_url` 是 waavatar.xyz 代理链、时效未知，
+  要留图需送检后尽快另行下载；`wa_profile_json` 存原始行兜底。
+  进度看 `python3 scraper/wa_avatar_profile.py --stats`。
+- `us_leads` / `us_contacts` 领英美国采号表（2026-08-25 起，由
+  `scraper/linkedin_us_search.py` 自建，CREATE TABLE IF NOT EXISTS，不走
+  platform migrate，平台侧暂无页面读取）：`us_leads` 一人一行
+  （linkedin_url 唯一；traced/trace_matched/state_verified 记查号进度，
+  gender 为 SSA 名字推断 male/female/unknown；age 为采纳 trace 记录的
+  age/born 字段推断，数据经纪来源只有约 39% 记录带值，NULL=未知，
+  2026-08-25 起新增列，此前存量 lead 为 NULL）；`us_contacts` 一号一行
+  （number 唯一，归一化 11 位 `1XXXXXXXXXX`；只收州级验证通过 lead 的号码，
+  wa_source/wa_registered/wa_checked_at 三态语义同 fb_contacts）。
+  进度与费用看 `python3 scraper/linkedin_us_search.py --stats`（只读）。
 - `mined_corpus` 语料表（2026-08-22 起）：1688 国际站（alibaba.com）挖词 skill
   （`.kimi-code/skills/1688-keyword-mining/`）写入，**页面上看到的类目名/商品标题/链接全部入库**，
   商品标题是后期重要语料。`kind` = category1/category/product，UNIQUE(source,kind,title,url)，
