@@ -78,6 +78,8 @@ def _provider_billing(conn) -> dict:
     - apify：订阅+后付费无余额概念，取最新 USAGE_CYCLE 快照（当前账期累计
       用量 + detail 里的月度上限）；无快照时退化为本月真实账单累计
       （date 为 Apify 原始 UTC 账单日期，月界按北京月份近似）
+    - numberchecker：预充值余额制，取该账号最新 BALANCE 快照（官方 /v1/balance
+      原始值，无需校准）
     cost_records 表不存在（migrate 未跑）时返回空。
     """
     tables = {r[0] for r in conn.execute(
@@ -128,6 +130,19 @@ def _provider_billing(conn) -> dict:
             result[("apify", name)] = {
                 "label": "本月已用", "usd": agg["SUM(usd)"],
                 "as_of": agg["MAX(synced_at)"]}
+    # numberchecker：预充值余额制，取该账号最新 BALANCE 快照直接展示
+    for name, in conn.execute(
+            "SELECT name FROM providers WHERE kind='numberchecker'").fetchall():
+        snap = conn.execute(
+            "SELECT usd, synced_at FROM cost_records"
+            " WHERE provider='numberchecker' AND channel=?"
+            " AND service='BALANCE' AND source='real'"
+            " ORDER BY date DESC, synced_at DESC LIMIT 1",
+            (f"account:{name}",)).fetchone()
+        if snap:
+            result[("numberchecker", name)] = {
+                "label": "可用余额", "usd": snap["usd"],
+                "as_of": snap["synced_at"]}
     return result
 
 
@@ -184,9 +199,15 @@ _APIFY_CONFIG_TEMPLATE = {
     "api_token": "",    # Apify Console → Settings → API tokens
 }
 
+# numberchecker.ai（WhatsApp 批量查号，文件任务制，预充值余额）
+_NUMBERCHECKER_CONFIG_TEMPLATE = {
+    "api_key": "",      # platform.numberchecker.ai 后台的 API Key
+}
+
 _CONFIG_TEMPLATES = {
     "qingguo": _QINGGUO_CONFIG_TEMPLATE,
     "apify": _APIFY_CONFIG_TEMPLATE,
+    "numberchecker": _NUMBERCHECKER_CONFIG_TEMPLATE,
 }
 
 

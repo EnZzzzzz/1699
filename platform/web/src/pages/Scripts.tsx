@@ -1,4 +1,4 @@
-// 采集脚本管理页：三脚本卡片（状态/额度/产量）+ 启停/重启 + 参数配置 + 实时日志
+// 采集脚本管理页：四脚本卡片（状态/额度/产量）+ 启停/重启 + 参数配置 + 实时日志
 import { useState } from 'react'
 import { toast } from 'sonner'
 import { api, useApiData, type ScriptInfo } from '@/lib/api'
@@ -87,6 +87,18 @@ function ScriptStats({ script }: { script: ScriptInfo }) {
       </div>
     )
   }
+  if (script.name === 'li') {
+    return (
+      <div className="space-y-3">
+        <QuotaRow label="WA 已注册进度" used={s.li_wa_registered} limit={s.li_target} />
+        <QuotaRow label="累计费用（美元）" used={s.li_cost} limit={s.li_budget} />
+        <MetricRow label="总 leads" value={s.li_leads} />
+        <MetricRow label="总号码" value={s.li_contacts} />
+        <MetricRow label="待查 WA" value={s.li_pending} />
+        <MetricRow label="已搜组合" value={s.li_combos} />
+      </div>
+    )
+  }
   return (
     <div className="space-y-3">
       <MetricRow label="今日已查" value={s.checked_today} />
@@ -98,7 +110,7 @@ function ScriptStats({ script }: { script: ScriptInfo }) {
 function ScriptCard({ script, onChanged, onStart, onEditParams, onShowLogs }: {
   script: ScriptInfo
   onChanged: () => void
-  /** fb/x 启动走选词面板；wa 直接启动（不传 onStart） */
+  /** fb/x 启动走选词面板；wa/li 无词库直接启动（不传 onStart） */
   onStart?: (script: ScriptInfo) => void
   onEditParams: (script: ScriptInfo) => void
   onShowLogs: (script: ScriptInfo) => void
@@ -218,7 +230,7 @@ export default function Scripts() {
   const [paramsOpen, setParamsOpen] = useState(false)
   const [logsOpen, setLogsOpen] = useState(false)
 
-  // fb/x 启动前弹选词面板；wa 无词库概念，由卡片内直接启动
+  // fb/x 启动前弹选词面板；wa/li 无词库概念，由卡片内直接启动
   const openStart = (script: ScriptInfo) => {
     setStartTarget(script)
     setStartOpen(true)
@@ -237,7 +249,7 @@ export default function Scripts() {
     <div className="p-6">
       <PageHeader
         title="采集脚本"
-        desc="三个常驻采集脚本的启停、额度配置与实时日志（5s 自动刷新）"
+        desc="四个常驻采集脚本的启停、额度配置与实时日志（5s 自动刷新）"
       />
 
       {loading && !data ? (
@@ -253,7 +265,7 @@ export default function Scripts() {
               key={s.name}
               script={s}
               onChanged={reload}
-              onStart={s.name === 'wa' ? undefined : openStart}
+              onStart={s.name === 'fb' || s.name === 'x' ? openStart : undefined}
               onEditParams={openParams}
               onShowLogs={openLogs}
             />

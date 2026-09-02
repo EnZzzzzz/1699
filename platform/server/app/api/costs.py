@@ -15,9 +15,9 @@ router = APIRouter(prefix="/costs", tags=["costs"])
 def sync_costs(provider: Optional[str] = None, account: Optional[str] = None):
     """同步费用记录：Apify 真实账单 + Bright Data + 渠道估算，幂等 upsert。
 
-    不带参数 = 全量同步；provider=brightdata / apify 时只同步对应供应商
-    （apify 可用 account=<provider 名> 进一步限定单账号），供供应商卡片
-    单独刷新余额/用量。
+    不带参数 = 全量同步；provider=brightdata / apify / numberchecker 时只同步
+    对应供应商（apify/numberchecker 可用 account=<provider 名> 进一步限定
+    单账号），供供应商卡片单独刷新余额/用量。
     """
     costs.migrate()
     if provider == "brightdata":
@@ -26,6 +26,9 @@ def sync_costs(provider: Optional[str] = None, account: Optional[str] = None):
     if provider == "apify":
         return {"synced_at": costs._bj_now(),
                 "apify": costs.sync_apify(account)}
+    if provider == "numberchecker":
+        return {"synced_at": costs._bj_now(),
+                "numberchecker": costs.sync_numberchecker(account)}
     return costs.sync_all()
 
 

@@ -57,11 +57,12 @@ export function ProviderFormDialog({ open, onOpenChange, provider, onSaved }: Pr
       .catch(() => setSchemaKeys([]))
   }, [open, kind])
 
-  // 切换类型：apify 且当前配置行为空时预填 api_token 行
+  // 切换类型：apify/numberchecker 且当前配置行为空时预填对应凭证行
   const handleKindChange = (next: string) => {
     setKind(next)
     const blank = rows.every((r) => !r.key.trim() && !r.value.trim())
     if (next === 'apify' && blank) setRows([{ key: 'api_token', value: '' }])
+    if (next === 'numberchecker' && blank) setRows([{ key: 'api_key', value: '' }])
   }
 
   const setRow = (idx: number, patch: Partial<ConfigRow>) => {
@@ -147,6 +148,7 @@ export function ProviderFormDialog({ open, onOpenChange, provider, onSaved }: Pr
                   <SelectContent>
                     <SelectItem value="qingguo">qingguo（青果）</SelectItem>
                     <SelectItem value="apify">apify（WhatsApp 查号 API）</SelectItem>
+                    <SelectItem value="numberchecker">numberchecker（WhatsApp 批量查号）</SelectItem>
                   </SelectContent>
                 </Select>
               )}

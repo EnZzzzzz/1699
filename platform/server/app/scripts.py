@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""采集脚本（FB 直搜 / X 直搜 / WA 查号）进程与额度管理。
+"""采集脚本（FB 直搜 / X 直搜 / WA 查号 / 领英美国 HNW 直采）进程与额度管理。
 
 - 进程探测唯一事实源是进程表（pgrep -f 特征匹配），脚本可能由平台外启动；
 - 脚本只认启动参数，调参靠「保存参数 + 重启进程」生效（不改 scraper/ 脚本）；
@@ -57,6 +57,18 @@ SPECS = {
                 " sleep 600; done"],
         "params": {"min_batch": {"default": 100, "min": 1, "max": 1000000}},
     },
+    # 领英：无词库概念（同 wa）；target/max_budget 达顶脚本自行退出，
+    # 其余参数（interval/limit/titles/locations）用脚本默认值不暴露
+    "li": {
+        "title": "领英美国 HNW 直采",
+        "sig": "scraper/linkedin_us_search.py",
+        "log": ".cache/linkedin_us_search.log",
+        "cmd": ["python3", "scraper/linkedin_us_search.py",
+                "--target", "{target}",
+                "--max-budget", "{max_budget}"],
+        "params": {"target": {"default": 500, "min": 1, "max": 1000000},
+                   "max_budget": {"default": 80, "min": 1, "max": 100000}},
+    },
 }
 
 # state JSON 路径（无 state 文件的脚本为 None）
@@ -64,6 +76,7 @@ _STATE_FILES = {
     "fb": ".cache/fb_keyword_search_state.json",
     "x": ".cache/x_keyword_search_state.json",
     "wa": None,
+    "li": ".cache/linkedin_us_search_state.json",
 }
 
 # 默认词库文件（SPECS 启动命令里 --keywords-file 指向的文件）
@@ -503,16 +516,21 @@ def _load_state(name: str) -> dict:
         return {}
 
 
-def _fb_contacts_count(where: str, params: tuple = ()) -> int:
-    """fb_contacts 只读计数（表不存在防御性返回 0）。"""
+def _table_count(table: str, where: str, params: tuple = ()):
+    """只读计数（表不存在防御性返回 None，由前端展示 —）。"""
     with connect() as conn:
         tables = {r[0] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'")}
-        if "fb_contacts" not in tables:
-            return 0
+        if table not in tables:
+            return None
         return conn.execute(
-            f"SELECT COUNT(*) FROM fb_contacts WHERE {where}", params
+            f"SELECT COUNT(*) FROM {table} WHERE {where}", params
         ).fetchone()[0]
+
+
+def _fb_contacts_count(where: str, params: tuple = ()) -> int:
+    """fb_contacts 只读计数（表不存在防御性返回 0）。"""
+    return _table_count("fb_contacts", where, params) or 0
 
 
 def stats(name: str) -> dict:
@@ -538,6 +556,22 @@ def stats(name: str) -> dict:
             "collected_today": _fb_contacts_count(
                 "(post_url LIKE '%x.com%' OR post_url LIKE '%twitter%')"
                 " AND substr(first_seen_at,1,10)=?", (today,)),
+        }
+    if name == "li":
+        # 领英：进度/费用读 state JSON，产量读 us_leads/us_contacts
+        # （两表由采集脚本自建，可能尚不存在，缺表返回 None 前端展示 —）
+        params = get_params(name)
+        return {
+            "li_wa_registered": _table_count(
+                "us_contacts", "wa_registered=1"),
+            "li_target": params["target"],
+            "li_cost": state.get("cost_usd"),
+            "li_budget": params["max_budget"],
+            "li_leads": _table_count("us_leads", "1=1"),
+            "li_contacts": _table_count("us_contacts", "1=1"),
+            "li_pending": _table_count(
+                "us_contacts", "wa_registered IS NULL"),
+            "li_combos": len(state.get("searched_combos") or []),
         }
     # wa：无 state 文件，今日已查/待查积压直接查库
     # （待查口径 = wa_registered IS NULL，见 AGENTS.md §4）

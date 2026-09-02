@@ -50,6 +50,14 @@ export interface Overview {
   contacts: { total: number; with_mobile: number; wa_registered: number; wa_unregistered: number; wa_unchecked: number }
 }
 
+// 微信在线状态（chatbot 子仓容器扫描）：online 个 / total 个账号
+export interface WechatStatus {
+  ts: string
+  online: number
+  total: number
+  accounts: { name: string; wxid: string; online: boolean; keys_ok: boolean; pid: number | null }[]
+}
+
 export interface Pipeline {
   window: { start: string; end: string; bucket: 'hour' | 'day' }
   backlog: number
@@ -141,7 +149,7 @@ export interface ProviderConfigSchemaResponse {
 
 // ---------- 采集脚本管理（/scripts） ----------
 
-export type ScriptName = 'fb' | 'x' | 'wa'
+export type ScriptName = 'fb' | 'x' | 'wa' | 'li'
 
 // 各脚本额度/产量统计（键按脚本类型出现，缺数据为 null，前端展示 —）
 export interface ScriptStats {
@@ -155,6 +163,14 @@ export interface ScriptStats {
   collected_today?: number | null
   checked_today?: number | null
   backlog?: number | null
+  li_wa_registered?: number | null
+  li_target?: number | null
+  li_cost?: number | null
+  li_budget?: number | null
+  li_leads?: number | null
+  li_contacts?: number | null
+  li_pending?: number | null
+  li_combos?: number | null
 }
 
 export interface ScriptInfo {
@@ -251,6 +267,7 @@ function normalizeProvider(p: any): Provider {
 
 export const api = {
   health: () => request<{ ok: boolean }>('/health'),
+  wechatStatus: () => request<WechatStatus>('/wechat/status'),
   overview: () => request<Overview>('/dashboard/overview'),
   pipeline: (period: PipelinePeriod = '12h', start?: string, end?: string) => {
     let qs: string
@@ -284,9 +301,9 @@ export const api = {
   providerConfigSchema: (kind?: string) =>
     request<ProviderConfigSchemaResponse>(
       `/providers/config-schema${kind ? `?kind=${encodeURIComponent(kind)}` : ''}`),
-  // 手动触发单个供应商的费用同步（brightdata=余额快照，apify=该账号账单/用量）
+  // 手动触发单个供应商的费用同步（brightdata/numberchecker=余额快照，apify=该账号账单/用量）
   syncProviderCosts: (kind: string, name: string) =>
-    request<{ synced_at: string; brightdata?: { ok: boolean }; apify?: { ok: boolean } }>(
+    request<{ synced_at: string; brightdata?: { ok: boolean }; apify?: { ok: boolean }; numberchecker?: { ok: boolean } }>(
       `/costs/sync?provider=${encodeURIComponent(kind)}&account=${encodeURIComponent(name)}`,
       { method: 'POST' }),
   // ---------- 采集脚本管理 ----------

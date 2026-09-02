@@ -12,7 +12,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from 'recharts'
 import { PageHeader, LoadingState, ErrorState, EmptyState } from '@/components/PageState'
-import { Store, Contact, Hourglass, ArrowDownUp, Timer, MessagesSquare, AtSign, BadgeCheck, CalendarIcon } from 'lucide-react'
+import { Store, Contact, Hourglass, ArrowDownUp, Timer, MessagesSquare, AtSign, BadgeCheck, CalendarIcon, MessageCircle } from 'lucide-react'
 
 const REFRESH_MS = 30_000 // 30 秒自动刷新
 
@@ -41,6 +41,7 @@ function StatCard({ title, children, icon: Icon }: { title: string; children: Re
 
 export default function Dashboard() {
   const overview = useApiData(api.overview, REFRESH_MS)
+  const wechat = useApiData(api.wechatStatus, REFRESH_MS)
   const [period, setPeriod] = useState<PipelinePeriod>('12h')
   // 自定义时间段：范围日历一次选齐起止日期，选齐后才发起请求（避免半截区间打后端）
   const [range, setRange] = useState<DateRange | undefined>()
@@ -163,8 +164,8 @@ export default function Dashboard() {
       {/* ==================== FB / X 采号管道（置顶） ==================== */}
       <h2 className="mt-6 text-base font-semibold">FB / X 采号管道</h2>
 
-      {/* 总数 + 速率卡片行 */}
-      <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-3">
+      {/* 总数 + 速率卡片行（含微信在线） */}
+      <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
         <StatCard title="FB 采号总数" icon={MessagesSquare}>
           <div className="text-3xl font-bold text-chart-fb">
             {fp ? `${fp.snapshot.fb_registered.toLocaleString()}/${fp.snapshot.fb_total.toLocaleString()}` : '—'}
@@ -200,6 +201,23 @@ export default function Dashboard() {
               {fp.snapshot.reg_rate !== null && ` · 全表注册率 ${(fp.snapshot.reg_rate * 100).toFixed(1)}%`}
             </p>
           )}
+        </StatCard>
+
+        {/* 微信在线账号（chatbot 子仓容器扫描，30 秒缓存） */}
+        <StatCard title="微信在线" icon={MessageCircle}>
+          <div className="text-3xl font-bold text-emerald-400">
+            {wechat.data ? wechat.data.online : '—'}
+            <span className="ml-1 text-sm font-normal text-muted-foreground">
+              / {wechat.data ? wechat.data.total : '—'} 个账号
+            </span>
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {wechat.error && !wechat.data
+              ? wechat.error
+              : wechat.data
+                ? wechat.data.accounts.map((a) => `${a.name}${a.online ? '' : '（离线）'}`).join(' · ')
+                : '扫描中…'}
+          </p>
         </StatCard>
       </div>
 

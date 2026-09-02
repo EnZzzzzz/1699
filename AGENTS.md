@@ -59,7 +59,7 @@ bash platform/start.sh   # 一键启动后端（FastAPI，端口 8765）+ 前端
 bash platform/stop.sh    # 停止
 ```
 
-FB/X/WA 三个采集脚本也可在管理系统 `/scripts` 页启停、调参与看实时日志（2026-08-23 起；调参仅落库 `script_configs`，重启进程后才生效）；领英脚本（④）暂不接入 /scripts 页，只能命令行启停。
+FB/X/WA/领英四个采集脚本也可在管理系统 `/scripts` 页启停、调参与看实时日志（FB/X/WA 2026-08-23 起，领英 2026-09-02 起；调参仅落库 `script_configs`，重启进程后才生效；领英暴露 target/max_budget 两个参数，无词库概念不弹选词面板）。
 
 **巡检**：每小时跑一次，费用已自动同步（后端启动起每 30 分钟跑一轮 `costs.sync_all`，见 `app/main.py` 的 cost-sync 线程；要立刻刷新仍可手动 `curl -s -X POST http://127.0.0.1:8765/api/costs/sync`，或点供应商页卡片上的「同步余额/同步用量」按钮（按供应商单独同步，走 `/api/costs/sync?provider=<kind>&account=<name>`））→ 查 4 个脚本进程是否存活（领英脚本额外看 `--stats` 的 WA 已注册进度与 state 费用）→ 查近 1h/3h 逐小时新增（`scraper/inspect_stats.py`，只读）→ 查 fb_contacts 全量汇总（采集/已注册/待审核，按 post_url 域名分 FB/X，只读查询 `file:.cache/1688.db?mode=ro`）→ 对照 state JSON 日用量排除预算刹车 → 确认关键词枯竭才换词（`grep -qxF` 去重追加）并重启对应脚本生效。
 
@@ -172,13 +172,25 @@ FB/X/WA 三个采集脚本也可在管理系统 `/scripts` 页启停、调参与
   （number 唯一，归一化 11 位 `1XXXXXXXXXX`；只收州级验证通过 lead 的号码，
   wa_source/wa_registered/wa_checked_at 三态语义同 fb_contacts）。
   进度与费用看 `python3 scraper/linkedin_us_search.py --stats`（只读）。
+- numberchecker.ai WA 查号（2026-09-03 起，`scraper/wa_check_numberchecker.py`，
+  手动跑未常驻）：**只服务 us_contacts（美国号）**——实测 API 拒收 +86
+  （china_mainland_not_supported），fb_contacts 主池查不了；单任务去重后
+  最少 500 号，默认 `--min-batch 500` 攒批开火。$1.00/万号（约为 Apify
+  devscrapper 的 1/40），文件任务制：POST /v1/tasks 上传 txt（E.164 每行
+  一个，task_type=ws）→ /v1/gettasks 轮询到 exported → result_url zip 内
+  `all.csv`（列 number,activated，yes/no，number 不带 + 号）。余额预充值制，
+  GET /v1/balance；key 存 providers 表 `kind='numberchecker'`（config.api_key），
+  费用同步 `sync_numberchecker` 落 BALANCE real 快照，估算行读
+  `.cache/wa_check_numberchecker_state.json` 的 daily 已查数（脚本记账），
+  单价常量 NC_WA_COST_PER_NUMBER 与脚本 COST_PER_NUMBER 两边同步。
 - `mined_corpus` 语料表（2026-08-22 起）：1688 国际站（alibaba.com）挖词 skill
   （`.kimi-code/skills/1688-keyword-mining/`）写入，**页面上看到的类目名/商品标题/链接全部入库**，
   商品标题是后期重要语料。`kind` = category1/category/product，UNIQUE(source,kind,title,url)，
   重复遇到只更新 `last_seen_at`。该 skill 流程：提取 → 清洗去重 → 语料入库 → 候选词直接追加
   X/FB 词库（**不做 X/FB 人工验证**，差词靠词库日落机制自动退役，2026-08-22 用户拍板）。
 - `script_configs` 表（2026-08-23 起）：`/scripts` 页采集脚本启动参数配置，`name` 主键
-  （fb/x/wa），`params` 为 JSON（fb `memo23_daily_results` / x `daily_results` / wa `min_batch`），
+  （fb/x/wa/li），`params` 为 JSON（fb `memo23_daily_results` / x `daily_results` /
+  wa `min_batch` / li `target`+`max_budget`），
   由 `app/scripts.py` seed 默认值、`POST /api/scripts/{name}/params` upsert；脚本只认启动参数，
   改配置需重启进程才生效。进程探测用 `pgrep -f` 特征匹配（不写 pidfile），WA 停止时 bash
   循环壳与 python 子进程一起杀。
@@ -195,6 +207,11 @@ FB/X/WA 三个采集脚本也可在管理系统 `/scripts` 页启停、调参与
   服务端做**（page/page_size/q/platform/status/sort/order）。kw_stats 每词字段：
   q（累计轮数）/posts/new（累计新号）/**last_new（上一轮新号，2026-08-24 起记账，历史词为
   null）**/first_at/last_q_at/last_new_at/zero_streak；retired 口径=存在过的平台全部退役。
+- `/api/wechat/status` 微信在线状态（2026-09-02 起）：数据来自 `chatbot/` 子仓
+  （git submodule，EnZzzzzz/ChatBot，私有仓）的 `tools/wxaccounts.py` 容器扫描，
+  online = 微信进程在跑且 db_dir 存在；后端 importlib 按路径加载、只读调用
+  （`write_config=False` 不改写 ~/.wechat-cli/），30 秒缓存。看板首行卡片
+  「微信在线」与供应商页顶部「微信」卡片（常驻、不随 Tab 切换）均走该接口。换机先 `git submodule update --init`。
 - 改后端代码后 uvicorn **不会自动 reload**，需重启才生效（重启见 `platform/start.sh`/`stop.sh`；注意 pidfile 记录的是父进程，杀端口占用进程时按实际监听 pid）。
 
 ## 5. 通用代码约定

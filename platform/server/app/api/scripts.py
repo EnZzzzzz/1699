@@ -2,7 +2,7 @@
 """采集脚本管理 API。
 
 路由前缀 /scripts（由 app.api 挂载在 /api 下）：
-- GET  /scripts                 三脚本汇总：运行状态、pid、启动时间、当前参数、额度/产量
+- GET  /scripts                 脚本汇总：运行状态、pid、启动时间、当前参数、额度/产量
 - GET  /scripts/{name}/keywords 选词面板数据（仅 fb/x）：默认词库 + 退役标记 + 当前选词
 - POST /scripts/{name}/start    启动（body 可带 params 先落配置；fb/x 可带 keywords 选词）
 - POST /scripts/{name}/stop     停止（SIGTERM → SIGKILL 兜底）
@@ -42,7 +42,7 @@ def _spec_or_404(name: str) -> None:
 
 @router.get("")
 def list_scripts():
-    """三脚本汇总卡片数据。seed 默认配置（幂等）后逐个拼状态。"""
+    """脚本汇总卡片数据。seed 默认配置（幂等）后逐个拼状态。"""
     scripts.ensure_configs()
     result = []
     for name, spec in scripts.SPECS.items():
@@ -63,9 +63,9 @@ def list_scripts():
 
 @router.get("/{name}/keywords")
 def script_keywords(name: str):
-    """选词面板数据（仅 fb/x，wa 无词库概念）。"""
+    """选词面板数据（仅 fb/x，wa/li 无词库概念）。"""
     _spec_or_404(name)
-    if name not in scripts.SPECS or name == "wa":
+    if name not in ("fb", "x"):
         raise HTTPException(status_code=422, detail="该脚本不支持选词")
     return scripts.list_keywords(name)
 

@@ -11,6 +11,8 @@
     X        $0.00015/行   （scraper/x_keyword_search.py:102）
     memo23   $0.0019/结果  （scraper/fb_keyword_search.py:51）
     WA 查号  $0.004/条     （scraper/wa_check_apify.py:214）
+    WA 查号(NC) $0.0001/条 （scraper/wa_check_numberchecker.py 顶部 COST_PER_NUMBER，
+                            官方 $1.00/万号；只服务 us_contacts，不支持 +86）
     BD SERP  $0.0015/条   （控制台确认 Web Scraper API $1.50/1k records，
                             1 次 SERP 查询 = 1 条记录）
 """
@@ -28,14 +30,17 @@ from app.db import DB_PATH, migrate
 CACHE_DIR = Path(DB_PATH).parent
 FB_STATE = CACHE_DIR / "fb_keyword_search_state.json"
 X_STATE = CACHE_DIR / "x_keyword_search_state.json"
+NC_STATE = CACHE_DIR / "wa_check_numberchecker_state.json"
 
 APIFY_USAGE_API = "https://api.apify.com/v2/users/me/usage/monthly"
 APIFY_ME_API = "https://api.apify.com/v2/users/me"
 BD_BALANCE_API = "https://api.brightdata.com/balance"
+NC_BALANCE_API = "https://api.numberchecker.ai/v1/balance"
 
 X_COST_PER_ROW = 0.00015        # scraper/x_keyword_search.py:102
 MEMO23_COST_PER_RESULT = 0.0019  # scraper/fb_keyword_search.py:51
 WA_COST_PER_NUMBER = 0.004       # scraper/wa_check_apify.py:214
+NC_WA_COST_PER_NUMBER = 0.0001   # scraper/wa_check_numberchecker.py COST_PER_NUMBER
 BD_COST_PER_QUERY = 0.0015       # 控制台确认 $1.50/1k records，1 次 SERP 查询=1 条记录
 
 BD_SNAPSHOTS_API = ("https://api.brightdata.com/datasets/v3/snapshots"
@@ -233,6 +238,47 @@ def sync_brightdata() -> dict:
         conn.close()
 
 
+def sync_numberchecker(account: str | None = None) -> dict:
+    """同步 numberchecker.ai 余额快照（real 行，BALANCE）。
+
+    numberchecker 是预充值余额制（与 BD 类似，无账期概念）；
+    GET /v1/balance 返回余额（美元），date 存北京快照日。
+    多账号时 channel 记 account:<name>。失败不抛，返回 error。
+    """
+    conn = _open_write()
+    try:
+        provs = conn.execute(
+            "SELECT name, config_json FROM providers"
+            " WHERE kind='numberchecker' AND enabled=1").fetchall()
+        if account is not None:
+            provs = [p for p in provs if p[0] == account]
+        if not provs:
+            return {"ok": False,
+                    "error": "providers 表无 enabled 的 numberchecker 账号"}
+        results = []
+        for name, cfg in provs:
+            api_key = (json.loads(cfg) or {}).get("api_key")
+            if not api_key:
+                results.append({"account": name, "ok": False,
+                                "error": "config_json 缺 api_key"})
+                continue
+            try:
+                req = urllib.request.Request(
+                    NC_BALANCE_API, headers={"X-API-Key": api_key})
+                with urllib.request.urlopen(req, timeout=30) as r:
+                    body = json.load(r)
+                _upsert(conn, time.strftime("%Y-%m-%d"), "numberchecker",
+                        f"account:{name}", "BALANCE", "real", None, "usd",
+                        float(body.get("balance") or 0), detail=body)
+                results.append({"account": name, "ok": True, "rows": 1})
+            except (urllib.error.URLError, OSError, ValueError) as e:
+                results.append({"account": name, "ok": False, "error": str(e)})
+        conn.commit()
+        return {"ok": all(r.get("ok") for r in results), "accounts": results}
+    finally:
+        conn.close()
+
+
 def sync_estimates() -> dict:
     """同步渠道估算行：state JSON 日用量 × 写死单价 + WA 查号条数折算。"""
     n = 0
@@ -273,6 +319,17 @@ def sync_estimates() -> dict:
                     _upsert(conn, day, "apify", "wa_check", "", "estimate",
                             cnt, "numbers", cnt * WA_COST_PER_NUMBER)
                     n += 1
+        # WA 查号（numberchecker）：脚本 state JSON 日已查号数折算
+        # （只服务 us_contacts，与上面 fb_contacts 口径不重叠）
+        if NC_STATE.exists():
+            try:
+                daily = (json.loads(NC_STATE.read_text()) or {}).get("daily", {})
+            except ValueError:
+                daily = {}
+            for day, cnt in daily.items():
+                _upsert(conn, day, "numberchecker", "wa_check", "", "estimate",
+                        cnt, "numbers", (cnt or 0) * NC_WA_COST_PER_NUMBER)
+                n += 1
         conn.commit()
         return {"ok": True, "rows": n}
     finally:
@@ -286,6 +343,7 @@ def sync_all() -> dict:
         "synced_at": _bj_now(),
         "apify": sync_apify(),
         "estimates": sync_estimates(),
+        "numberchecker": sync_numberchecker(),
         # brightdata 最后跑：快照记录数口径覆盖 estimates 的 fb_serp 查询数口径
         "brightdata": sync_brightdata(),
     }

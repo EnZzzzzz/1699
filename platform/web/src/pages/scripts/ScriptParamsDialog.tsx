@@ -14,6 +14,10 @@ export const PARAM_FIELDS: Record<ScriptName, { key: string; label: string; desc
   fb: [{ key: 'memo23_daily_results', label: 'memo23 日额度', desc: 'memo23 actor 每日交付结果上限' }],
   x: [{ key: 'daily_results', label: '日结果上限', desc: '每日最多交付的搜索结果行数' }],
   wa: [{ key: 'min_batch', label: '最小批量', desc: '启动参数 --min-batch，每轮最少查号数量' }],
+  li: [
+    { key: 'target', label: 'WA 注册目标数', desc: 'us_contacts WA 已注册达此数自动退出（--target）' },
+    { key: 'max_budget', label: '预算上限（美元）', desc: 'state 累计费用达此值自动退出（--max-budget，整数美元）' },
+  ],
 }
 
 interface ScriptParamsDialogProps {

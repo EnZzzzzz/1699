@@ -3,10 +3,11 @@
 
 from fastapi import APIRouter
 
-from app.api import costs, dashboard, data, health, keywords, providers, scripts
+from app.api import costs, dashboard, data, health, keywords, providers, scripts, wechat
 
 api_router = APIRouter(prefix="/api")
 api_router.include_router(health.router)
+api_router.include_router(wechat.router)
 api_router.include_router(dashboard.router)
 api_router.include_router(data.router)
 api_router.include_router(keywords.router)

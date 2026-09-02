@@ -10,14 +10,14 @@ import {
 } from '@/components/ui/table'
 import { PageHeader, LoadingState, ErrorState, EmptyState } from '@/components/PageState'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { Activity, Loader2, Network, Pencil, Plus, RefreshCw } from 'lucide-react'
+import { Activity, Loader2, MessageCircle, Network, Pencil, Plus, RefreshCw } from 'lucide-react'
 import { ProviderFormDialog } from './providers/ProviderFormDialog'
 
 // 有代理通道概念的供应商类型；其他类型（如 apify 查号 API）不显示通道相关 UI
 const PROXY_KINDS = new Set(['qingguo'])
 
 // 支持卡片级费用同步的供应商类型（对应后端 /costs/sync?provider=...）
-const SYNCABLE_KINDS = new Set(['apify', 'brightdata'])
+const SYNCABLE_KINDS = new Set(['apify', 'brightdata', 'numberchecker'])
 
 // 配置值打码展示：长字符串保留前 4 位 + ****（仅卡片摘要，编辑表单仍回显明文）
 function maskConfigValue(value: unknown): string {
@@ -100,7 +100,7 @@ function ProviderCard({ provider, onEdit, onChanged }: ProviderCardProps) {
     setSyncing(true)
     try {
       const res = await api.syncProviderCosts(provider.kind, provider.name)
-      const block = res.brightdata ?? res.apify
+      const block = res.brightdata ?? res.apify ?? res.numberchecker
       if (block && block.ok === false) {
         toast.warning(`「${provider.name}」费用同步失败，详见后端日志`)
       } else {
@@ -203,7 +203,7 @@ function ProviderCard({ provider, onEdit, onChanged }: ProviderCardProps) {
                 ) : (
                   <RefreshCw className="mr-2 h-4 w-4" />
                 )}
-                {syncing ? '同步中…' : provider.kind === 'brightdata' ? '同步余额' : '同步用量'}
+                {syncing ? '同步中…' : provider.kind === 'apify' ? '同步用量' : '同步余额'}
               </Button>
             )}
             <Button variant="outline" size="sm" onClick={() => onEdit(provider)}>
@@ -253,6 +253,52 @@ function ProviderCard({ provider, onEdit, onChanged }: ProviderCardProps) {
   )
 }
 
+// 微信本机账号状态卡（chatbot 子仓容器扫描，走 /wechat/status，不在 providers 表）
+function WechatCard() {
+  const { data, error } = useApiData(api.wechatStatus, 60_000)
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className="flex h-9 w-9 items-center justify-center rounded-md bg-accent">
+            <MessageCircle className="h-4 w-4" />
+          </div>
+          <div>
+            <CardTitle className="text-base">微信</CardTitle>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              本机账号（chatbot 子仓扫描） · 在线 {data ? `${data.online}/${data.total}` : '—'}
+            </p>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {error && !data ? (
+          <p className="py-2 text-sm text-muted-foreground">{error}</p>
+        ) : !data ? (
+          <p className="py-2 text-sm text-muted-foreground">扫描中…</p>
+        ) : (
+          <div className="space-y-1.5">
+            {data.accounts.map((a) => (
+              <div key={a.name} className="flex items-center gap-3 text-sm">
+                <span className="w-36 shrink-0 font-mono text-muted-foreground">{a.name}</span>
+                <span className="font-mono">{a.wxid}</span>
+                {a.online ? (
+                  <Badge variant="outline" className="border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">在线</Badge>
+                ) : (
+                  <Badge variant="secondary">离线</Badge>
+                )}
+                {!a.keys_ok && (
+                  <Badge variant="outline" className="text-muted-foreground">无密钥</Badge>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
 export default function Providers() {
   const { data, loading, error, reload } = useApiData(api.providers, 60_000)
   const [formOpen, setFormOpen] = useState(false)
@@ -289,7 +335,12 @@ export default function Providers() {
     <div className="p-6">
       <PageHeader title="供应商" desc="代理池与第三方 API 凭证管理" />
 
-      <Tabs defaultValue="proxy">
+      {/* 微信本机账号状态（常驻显示，不随 Tab 切换） */}
+      <div className="mt-4">
+        <WechatCard />
+      </div>
+
+      <Tabs defaultValue="proxy" className="mt-4">
         <TabsList>
           <TabsTrigger value="proxy">代理池</TabsTrigger>
           <TabsTrigger value="api">第三方 API</TabsTrigger>
