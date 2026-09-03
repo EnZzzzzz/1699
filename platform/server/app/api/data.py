@@ -158,12 +158,22 @@ def list_fb_contacts(
 
         where_sql, params = _fb_where(wa, bucket, source, q)
         base = "FROM fb_contacts c LEFT JOIN fb_posts p ON p.url = c.post_url"
+        # 微信查号列由 migrate 补建，缺列（migrate 未跑）时返回 NULL 占位
+        fb_cols = {r[1] for r in cur.execute(
+            "PRAGMA table_info(fb_contacts)").fetchall()}
+        if "wx_registered" in fb_cols:
+            wx_sel = ("c.wx_registered, c.wx_checked_at, c.wx_nick,"
+                      " c.wx_gender, c.wx_avatar")
+        else:
+            wx_sel = ("NULL AS wx_registered, NULL AS wx_checked_at,"
+                      " NULL AS wx_nick, NULL AS wx_gender, NULL AS wx_avatar")
         total = cur.execute(
             f"SELECT COUNT(*) {base} {where_sql}", params).fetchone()[0]
         rows = cur.execute(
             f"""
             SELECT c.id, c.number, c.bucket, c.wa_source,
                    c.wa_registered, c.wa_checked_at,
+                   {wx_sel},
                    c.post_url, c.group_id, c.first_seen_at,
                    p.group_name AS group_name, p.keyword AS keyword
             {base}

@@ -133,6 +133,21 @@ def migrate() -> None:
             if "exported_at" not in fb_cols:
                 conn.execute(
                     "ALTER TABLE fb_contacts ADD COLUMN exported_at TEXT")
+            # 微信查号结果列（wx_lookup_runner.py 写回）：
+            # wx_registered 1=有微信 0=查不到 NULL=未查；wx_gender 与
+            # wa_gender 同口径 male/female/unknown；wx_avatar 为本地文件名
+            # （.cache/wx_avatars/<number>.jpg）
+            for col, ddl in (
+                ("wx_registered", "INTEGER"),
+                ("wx_checked_at", "TEXT"),
+                ("wx_username", "TEXT"),
+                ("wx_nick", "TEXT"),
+                ("wx_gender", "TEXT"),
+                ("wx_avatar", "TEXT"),
+            ):
+                if col not in fb_cols:
+                    conn.execute(
+                        f"ALTER TABLE fb_contacts ADD COLUMN {col} {ddl}")
         if "work_items" in tables:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_work_items_batch"

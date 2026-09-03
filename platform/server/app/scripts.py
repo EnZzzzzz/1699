@@ -69,6 +69,16 @@ SPECS = {
         "params": {"target": {"default": 500, "min": 1, "max": 1000000},
                    "max_budget": {"default": 80, "min": 1, "max": 100000}},
     },
+    # 微信查号：runner 走本机 wxserver HTTP（127.0.0.1:19002，launchctl 服务，
+    # 生命周期不归平台管）；跑一次直到未查清空自动退出，连续 5 error 熔断
+    "wx": {
+        "title": "微信查号",
+        "sig": "platform/server/wx_lookup_runner.py",
+        "log": ".cache/wx_lookup.log",
+        "cmd": ["python3", "platform/server/wx_lookup_runner.py",
+                "--interval", "{interval}"],
+        "params": {"interval": {"default": 3, "min": 2, "max": 60}},
+    },
 }
 
 # state JSON 路径（无 state 文件的脚本为 None）
@@ -77,6 +87,7 @@ _STATE_FILES = {
     "x": ".cache/x_keyword_search_state.json",
     "wa": None,
     "li": ".cache/linkedin_us_search_state.json",
+    "wx": None,
 }
 
 # 默认词库文件（SPECS 启动命令里 --keywords-file 指向的文件）
@@ -395,7 +406,7 @@ def status(name: str) -> dict:
             if cmd.startswith(("bash", "/bin/bash")):
                 main = {"pid": pid, **info}
                 break
-        elif "python3 scraper/" in cmd:
+        elif "python3 scraper/" in cmd or "python3 platform/" in cmd:
             main = {"pid": pid, **info}
             break
     if main is None and pids:
@@ -572,6 +583,19 @@ def stats(name: str) -> dict:
             "li_pending": _table_count(
                 "us_contacts", "wa_registered IS NULL"),
             "li_combos": len(state.get("searched_combos") or []),
+        }
+    if name == "wx":
+        # 微信查号：wx_* 列由 migrate 补建，缺列（migrate 未跑）返回 None 前端展示 —
+        with connect() as conn:
+            cols = {r[1] for r in conn.execute(
+                "PRAGMA table_info(fb_contacts)")}
+        if "wx_registered" not in cols:
+            return {"checked_today": None, "backlog": None}
+        return {
+            "checked_today": _fb_contacts_count(
+                "substr(wx_checked_at,1,10)=?", (today,)),
+            "backlog": _fb_contacts_count(
+                "wx_registered IS NULL AND length(number) = 11"),
         }
     # wa：无 state 文件，今日已查/待查积压直接查库
     # （待查口径 = wa_registered IS NULL，见 AGENTS.md §4）

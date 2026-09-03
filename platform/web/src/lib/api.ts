@@ -149,7 +149,7 @@ export interface ProviderConfigSchemaResponse {
 
 // ---------- 采集脚本管理（/scripts） ----------
 
-export type ScriptName = 'fb' | 'x' | 'wa' | 'li'
+export type ScriptName = 'fb' | 'x' | 'wa' | 'li' | 'wx'
 
 // 各脚本额度/产量统计（键按脚本类型出现，缺数据为 null，前端展示 —）
 export interface ScriptStats {

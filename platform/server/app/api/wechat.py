@@ -15,6 +15,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import FileResponse
 
 router = APIRouter(prefix="/wechat")
 
@@ -23,6 +24,9 @@ TZ = ZoneInfo("Asia/Shanghai")
 # 项目根目录下的 chatbot 子仓（git submodule: EnZzzzzz/ChatBot）
 WXACCOUNTS_PATH = (Path(__file__).resolve().parents[4]
                    / "chatbot" / "tools" / "wxaccounts.py")
+
+# 微信查号头像目录（wx_lookup_runner.py 下载写入）
+AVATAR_DIR = Path(__file__).resolve().parents[4] / ".cache" / "wx_avatars"
 
 CACHE_TTL = 30  # 秒
 _cache: dict = {"ts": 0.0, "data": None}
@@ -74,3 +78,14 @@ def status():
         raise
     except Exception as e:  # noqa: BLE001 - 扫描环境异常统一吐 503
         raise HTTPException(503, f"微信状态扫描失败：{e}")
+
+
+@router.get("/avatar/{number}")
+def avatar(number: str):
+    """微信查号头像（wx_lookup_runner 下载的 .cache/wx_avatars/<number>.jpg）。"""
+    if not number.isdigit():
+        raise HTTPException(400, "number 需为纯数字")
+    path = AVATAR_DIR / f"{number}.jpg"
+    if not path.exists():
+        raise HTTPException(404, "头像不存在")
+    return FileResponse(path)

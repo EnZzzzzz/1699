@@ -212,6 +212,22 @@ FB/X/WA/领英四个采集脚本也可在管理系统 `/scripts` 页启停、调
   online = 微信进程在跑且 db_dir 存在；后端 importlib 按路径加载、只读调用
   （`write_config=False` 不改写 ~/.wechat-cli/），30 秒缓存。看板首行卡片
   「微信在线」与供应商页顶部「微信」卡片（常驻、不随 Tab 切换）均走该接口。换机先 `git submodule update --init`。
+- 微信查号（2026-09-03 起，/scripts 页第 5 个脚本「微信查号」= `wx`）：
+  runner 为 `platform/server/wx_lookup_runner.py`（纯标准库），从 fb_contacts
+  取 `wx_registered IS NULL` 的裸 11 位号，逐号调本机 **wxserver**（chatbot 子仓
+  `tools/wxserver.py`，HTTP 127.0.0.1:19002，`POST /lookup`）查陌生人微信信息
+  写回 fb_contacts。**wxserver 生命周期不归平台管**（launchctl 服务
+  `com.wechatbot.wxserver`，当前从原始克隆 `/Volumes/DataDrive/proj/my/WeChatBot`
+  启动；子仓 `chatbot/tmp/` 私有备份不入库，故 runner 只走 HTTP，预检失败 exit 1）。
+  参数只有 `interval`（号间隔秒，默认 3 防频控）；**连续 5 个 error 熔断 exit 2**
+  （防频控期大规模误标 0）；error 含「未找到」才标 `wx_registered=0`，其他异常
+  保持 NULL 下轮重查；跑到未查清空自动 exit 0。UI 自动化抢微信焦点，运行期间勿动键鼠。
+- fb_contacts 微信查号列（2026-09-03 起，migrate 幂等 ALTER）：`wx_registered`
+  （1=有微信 0=查不到 NULL=未查）、`wx_checked_at`、`wx_username`、`wx_nick`、
+  `wx_gender`（male/female/unknown，与 wa_gender 同口径）、`wx_avatar`
+  （本地文件名，头像存 `.cache/wx_avatars/<number>.jpg`，经
+  `GET /api/wechat/avatar/{number}` 提供）；数据浏览 FB 联系方式 Tab 展示
+  微信（头像+昵称）/性别两列。
 - 改后端代码后 uvicorn **不会自动 reload**，需重启才生效（重启见 `platform/start.sh`/`stop.sh`；注意 pidfile 记录的是父进程，杀端口占用进程时按实际监听 pid）。
 
 ## 5. 通用代码约定

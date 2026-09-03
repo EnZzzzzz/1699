@@ -67,6 +67,12 @@ export interface FbContactItem {
   wa_source: string | null
   wa_registered: number | null
   wa_checked_at: string | null
+  // 微信查号结果（wx_lookup_runner 写回；列未迁移时全为 null）
+  wx_registered: number | null
+  wx_checked_at: string | null
+  wx_nick: string | null
+  wx_gender: 'male' | 'female' | 'unknown' | null
+  wx_avatar: string | null
   post_url: string
   group_id: string | null
   first_seen_at: string | null

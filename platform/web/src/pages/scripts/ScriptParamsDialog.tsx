@@ -18,6 +18,7 @@ export const PARAM_FIELDS: Record<ScriptName, { key: string; label: string; desc
     { key: 'target', label: 'WA 注册目标数', desc: 'us_contacts WA 已注册达此数自动退出（--target）' },
     { key: 'max_budget', label: '预算上限（美元）', desc: 'state 累计费用达此值自动退出（--max-budget，整数美元）' },
   ],
+  wx: [{ key: 'interval', label: '号间隔（秒）', desc: '启动参数 --interval，每个号码之间的间隔（防微信频控，建议 ≥3）' }],
 }
 
 interface ScriptParamsDialogProps {

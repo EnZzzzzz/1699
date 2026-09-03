@@ -69,6 +69,42 @@ function sourceBadge(postUrl: string) {
     : <Badge variant="outline" className="text-muted-foreground">FB</Badge>
 }
 
+// 微信查号单元格：有微信 → 头像+昵称；无微信/未查 → 徽标
+function wxCell(c: FbContactItem) {
+  if (c.wx_registered === 1) {
+    return (
+      <div className="flex items-center gap-2">
+        {c.wx_avatar && (
+          <img
+            src={`/api/wechat/avatar/${c.number}`}
+            alt=""
+            className="h-8 w-8 shrink-0 rounded-full bg-muted object-cover"
+            loading="lazy"
+            onError={(e) => { e.currentTarget.style.display = 'none' }}
+          />
+        )}
+        <span className="max-w-32 truncate text-sm" title={c.wx_nick ?? undefined}>
+          {c.wx_nick || '—'}
+        </span>
+      </div>
+    )
+  }
+  if (c.wx_registered === 0) {
+    return <Badge variant="secondary">无微信</Badge>
+  }
+  return (
+    <Badge variant="outline" className="text-muted-foreground">
+      未查
+    </Badge>
+  )
+}
+
+const WX_GENDER_LABELS: Record<string, string> = {
+  male: '男',
+  female: '女',
+  unknown: '未知',
+}
+
 export function FbTab() {
   const [wa, setWa] = useState<WaFilter | 'all'>('all')
   const [bucket, setBucket] = useState<FbBucket | 'all'>('all')
@@ -191,6 +227,8 @@ export function FbTab() {
                   <TableHead>分桶</TableHead>
                   <TableHead>WhatsApp</TableHead>
                   <TableHead>查询时间</TableHead>
+                  <TableHead>微信</TableHead>
+                  <TableHead>性别</TableHead>
                   <TableHead>来源群组</TableHead>
                   <TableHead>帖子链接</TableHead>
                   <TableHead>发现时间</TableHead>
@@ -205,6 +243,10 @@ export function FbTab() {
                     <TableCell>{waBadge(c)}</TableCell>
                     <TableCell className="text-sm text-muted-foreground">
                       {showTime(c.wa_checked_at)}
+                    </TableCell>
+                    <TableCell>{wxCell(c)}</TableCell>
+                    <TableCell className="text-sm">
+                      {c.wx_gender ? WX_GENDER_LABELS[c.wx_gender] ?? '—' : '—'}
                     </TableCell>
                     <TableCell className="max-w-56">
                       <div className="truncate text-sm" title={c.group_name ?? undefined}>
